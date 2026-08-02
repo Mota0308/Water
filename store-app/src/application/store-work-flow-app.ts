@@ -97,6 +97,26 @@ export type WorkAuditView = {
   at: Date;
 };
 
+export type UnitProgressView = TodayWorkSummary & {
+  unit: FixedUnit;
+};
+
+export type ReadonlyWorkView = {
+  id: string;
+  type: WorkType;
+  title: string;
+  unit: FixedUnit;
+  priority: WorkPriority;
+  status: WorkStatus;
+  dueAt: Date | null;
+  completedByDisplayName: string | null;
+  completedAt: Date | null;
+  lastUpdatedAt: Date;
+};
+
+export const CROSS_UNIT_READONLY_NOTICE =
+  "你正在查看其他單位的工作進度，此頁面只供查看，不可修改。";
+
 type AccountRecord = {
   _id: string;
   loginName: string;
@@ -327,6 +347,29 @@ export type StoreWorkFlowApp = {
   ): Promise<
     { ok: true; createdCount: number } | { ok: false; error: AuthError }
   >;
+  listUnitProgress(
+    sessionId: string,
+  ): Promise<
+    | {
+        ok: true;
+        units: UnitProgressView[];
+        readOnlyNotice: string;
+      }
+    | { ok: false; error: AuthError }
+  >;
+  getUnitWorkReadonly(
+    sessionId: string,
+    input: { unit: FixedUnit },
+  ): Promise<
+    | {
+        ok: true;
+        unit: FixedUnit;
+        works: ReadonlyWorkView[];
+        summary: TodayWorkSummary;
+        readOnlyNotice: string;
+      }
+    | { ok: false; error: AuthError | "invalid_unit" }
+  >;
 };
 
 const ACCOUNTS = "accounts";
@@ -481,6 +524,48 @@ export function createStoreWorkFlowApp(deps: {
       _id: randomUUID(),
       ...entry,
     });
+  }
+
+  async function listTodayWorkRecords(unit?: FixedUnit): Promise<WorkRecord[]> {
+    const today = now();
+    await generateRecurringForDateInternal(today);
+    const todayKey = hongKongDateKey(today);
+    const filter: Record<string, unknown> = {
+      status: { $in: ["pending", "completed"] },
+      type: { $in: ["adhoc", "recurring", "daily_settlement"] },
+    };
+    if (unit) {
+      filter.unit = unit;
+    }
+
+    return (
+      await db
+        .collection<WorkRecord>(WORKS)
+        .find(filter)
+        .sort({ dueAt: 1, createdAt: 1 })
+        .toArray()
+    ).filter((work) => {
+      if (work.status === "pending") return true;
+      if (work.status === "completed" && work.completedAt) {
+        return hongKongDateKey(work.completedAt) === todayKey;
+      }
+      return false;
+    });
+  }
+
+  function toReadonlyWorkView(work: WorkRecord): ReadonlyWorkView {
+    return {
+      id: work._id,
+      type: work.type,
+      title: work.title,
+      unit: work.unit,
+      priority: work.priority,
+      status: work.status,
+      dueAt: work.dueAt,
+      completedByDisplayName: work.completedByDisplayName,
+      completedAt: work.completedAt,
+      lastUpdatedAt: work.completedAt ?? work.createdAt,
+    };
   }
 
   async function generateRecurringForDateInternal(date: Date): Promise<number> {
@@ -850,51 +935,19 @@ export function createStoreWorkFlowApp(deps: {
       }
 
       const today = now();
-      await generateRecurringForDateInternal(today);
-      const todayKey = hongKongDateKey(today);
-
-      function isTodayWork(work: WorkRecord): boolean {
-        if (work.status === "pending") {
-          return true;
-        }
-        if (work.status === "completed" && work.completedAt) {
-          return hongKongDateKey(work.completedAt) === todayKey;
-        }
-        return false;
-      }
 
       if (session.role === "personal") {
         if (!session.fixedUnit) {
           return { ok: false, error: "fixed_unit_required" };
         }
 
-        const works = (
-          await db
-            .collection<WorkRecord>(WORKS)
-            .find({
-              unit: session.fixedUnit,
-              status: { $in: ["pending", "completed"] },
-              type: { $in: ["adhoc", "recurring", "daily_settlement"] },
-            })
-            .sort({ dueAt: 1, createdAt: 1 })
-            .toArray()
-        )
-          .filter(isTodayWork)
-          .map(toWorkView);
-
+        const works = (await listTodayWorkRecords(session.fixedUnit)).map(
+          toWorkView,
+        );
         return { ok: true, works, summary: summarizeWorks(works, today) };
       }
 
-      const works = (
-        await db
-          .collection<WorkRecord>(WORKS)
-          .find({ status: { $in: ["pending", "completed"] } })
-          .sort({ unit: 1, dueAt: 1, createdAt: 1 })
-          .toArray()
-      )
-        .filter(isTodayWork)
-        .map(toWorkView);
-
+      const works = (await listTodayWorkRecords()).map(toWorkView);
       return { ok: true, works, summary: summarizeWorks(works, today) };
     },
 
@@ -1062,6 +1115,49 @@ export function createStoreWorkFlowApp(deps: {
 
       const createdCount = await generateRecurringForDateInternal(input.date);
       return { ok: true, createdCount };
+    },
+
+    async listUnitProgress(sessionId) {
+      const session = await getSession(sessionId);
+      if (!session) {
+        return { ok: false, error: "unauthenticated" };
+      }
+
+      const today = now();
+      const all = await listTodayWorkRecords();
+      const units = FIXED_UNITS.map((unit) => {
+        const works = all
+          .filter((work) => work.unit === unit)
+          .map(toWorkView);
+        return { unit, ...summarizeWorks(works, today) };
+      });
+
+      return {
+        ok: true,
+        units,
+        readOnlyNotice: CROSS_UNIT_READONLY_NOTICE,
+      };
+    },
+
+    async getUnitWorkReadonly(sessionId, input) {
+      const session = await getSession(sessionId);
+      if (!session) {
+        return { ok: false, error: "unauthenticated" };
+      }
+      if (!isFixedUnit(input.unit)) {
+        return { ok: false, error: "invalid_unit" };
+      }
+
+      const today = now();
+      const records = await listTodayWorkRecords(input.unit);
+      const works = records.map(toReadonlyWorkView);
+      return {
+        ok: true,
+        unit: input.unit,
+        works,
+        summary: summarizeWorks(records.map(toWorkView), today),
+        readOnlyNotice: CROSS_UNIT_READONLY_NOTICE,
+      };
     },
   };
 }

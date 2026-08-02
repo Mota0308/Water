@@ -35,6 +35,7 @@ export default async function HomePage() {
           </p>
         </div>
         <div className="header-actions">
+          <Link href="/progress">各單位進度</Link>
           <Link href="/password">修改密碼</Link>
           {session.role !== "personal" ? (
             <>
