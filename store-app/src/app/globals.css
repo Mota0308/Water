@@ -1,0 +1,137 @@
+:root {
+  --bg: #f3f0ea;
+  --panel: #fffdf8;
+  --ink: #1f1a17;
+  --muted: #6b625a;
+  --line: #d9d0c4;
+  --accent: #0f5c4c;
+  --danger: #9b2c2c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, #e7efe9 0%, transparent 40%),
+    linear-gradient(180deg, #f7f3ec 0%, var(--bg) 100%);
+  font-family: "Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.login-page,
+.home-page {
+  min-height: 100vh;
+  padding: 2rem 1.25rem;
+}
+
+.login-page {
+  display: grid;
+  place-items: center;
+}
+
+.login-panel,
+.home-page {
+  width: min(100%, 420px);
+}
+
+.home-page {
+  width: min(100%, 720px);
+  margin: 0 auto;
+}
+
+.login-panel,
+.home-header,
+.home-empty {
+  background: color-mix(in srgb, var(--panel) 92%, white);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 1.5rem;
+}
+
+.login-panel h1,
+.home-header h1 {
+  margin: 0 0 0.35rem;
+  font-size: 1.6rem;
+}
+
+.login-panel p,
+.home-header p,
+.home-empty p,
+.login-hint {
+  margin: 0;
+  color: var(--muted);
+}
+
+.login-form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.login-form label {
+  display: grid;
+  gap: 0.4rem;
+  font-size: 0.95rem;
+}
+
+.login-form input {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.75rem 0.85rem;
+  background: white;
+}
+
+.login-form button,
+.home-header button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.8rem 1.2rem;
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+}
+
+.login-form button:disabled,
+.home-header button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.form-error {
+  margin: 0;
+  color: var(--danger);
+}
+
+.login-hint {
+  margin-top: 1.25rem;
+  font-size: 0.9rem;
+}
+
+.home-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.home-empty {
+  min-height: 180px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+}

@@ -1,0 +1,19 @@
+# dependencies / build
+**/node_modules/
+**/.next/
+**/out/
+**/coverage/
+**/*.tsbuildinfo
+
+# env
+**/.env
+**/.env.local
+**/.env.*.local
+
+# local extract / binaries
+_docx_extract/
+*.zip
+
+# OS / editor
+.DS_Store
+Thumbs.db
