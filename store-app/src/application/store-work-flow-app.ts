@@ -17,6 +17,49 @@ export type FixedUnit = (typeof FIXED_UNITS)[number];
 export const STORE_UNITS = ["觀塘", "荔枝角", "灣仔", "屯門"] as const;
 export type StoreUnit = (typeof STORE_UNITS)[number];
 export type SettlementState = "awaiting_part2" | null;
+export type AttachmentRequirement = "none" | "optional" | "required";
+export type NoteRequirement = "optional" | "required";
+
+export type WorkAttachmentInput = {
+  fileName: string;
+  contentType: string;
+  dataBase64: string;
+};
+
+export type WorkAttachmentView = {
+  id: string;
+  workId: string;
+  fileName: string;
+  contentType: string;
+  uploadedByDisplayName: string;
+  uploadedAt: Date;
+};
+
+export type WorkChangeLogView = {
+  id: string;
+  workId: string;
+  field: string;
+  before: string;
+  after: string;
+  changedByDisplayName: string;
+  changedAt: Date;
+};
+
+export type StaffStatView = {
+  accountId: string;
+  displayName: string;
+  completedCount: number;
+  overdueCompletedCount: number;
+};
+
+const ALLOWED_ATTACHMENT_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+  "image/gif",
+  "application/pdf",
+]);
 
 export type Session = {
   sessionId: string;
@@ -67,6 +110,10 @@ export type WorkView = {
   dueAt: Date | null;
   templateId: string | null;
   settlementState: SettlementState;
+  attachmentRequirement: AttachmentRequirement;
+  noteRequirement: NoteRequirement;
+  completionNote: string | null;
+  sensitive: boolean;
   completedByAccountId: string | null;
   completedByDisplayName: string | null;
   completedAt: Date | null;
@@ -94,12 +141,13 @@ export type TodayWorkSummary = {
 export type WorkAuditView = {
   id: string;
   workId: string;
-  action: "complete" | "cancel_completion";
+  action: "complete" | "cancel_completion" | "reopen";
   actorAccountId: string;
   actorDisplayName: string;
   fromStatus: WorkStatus;
   toStatus: WorkStatus;
   at: Date;
+  reason?: string | null;
 };
 
 export type UnitProgressView = TodayWorkSummary & {
@@ -140,6 +188,7 @@ type SessionRecord = {
   _id: string;
   accountId: string;
   createdAt: Date;
+  lastSeenAt: Date;
 };
 
 type UnitChangeLogRecord = {
@@ -165,12 +214,38 @@ type WorkRecord = {
   dueAt: Date | null;
   templateId: string | null;
   settlementState: SettlementState;
+  attachmentRequirement: AttachmentRequirement;
+  noteRequirement: NoteRequirement;
+  completionNote: string | null;
+  sensitive: boolean;
   completedByAccountId: string | null;
   completedByDisplayName: string | null;
   completedAt: Date | null;
   createdByAccountId: string;
   createdAt: Date;
   updatedAt: Date;
+};
+
+type AttachmentRecord = {
+  _id: string;
+  workId: string;
+  fileName: string;
+  contentType: string;
+  dataBase64: string;
+  uploadedByAccountId: string;
+  uploadedByDisplayName: string;
+  uploadedAt: Date;
+};
+
+type WorkChangeLogRecord = {
+  _id: string;
+  workId: string;
+  field: string;
+  before: string;
+  after: string;
+  changedByAccountId: string;
+  changedByDisplayName: string;
+  changedAt: Date;
 };
 
 type RecurringTemplateRecord = {
@@ -190,12 +265,13 @@ type RecurringTemplateRecord = {
 type WorkAuditRecord = {
   _id: string;
   workId: string;
-  action: "complete" | "cancel_completion";
+  action: "complete" | "cancel_completion" | "reopen";
   actorAccountId: string;
   actorDisplayName: string;
   fromStatus: WorkStatus;
   toStatus: WorkStatus;
   at: Date;
+  reason?: string | null;
 };
 
 type AuthError = "unauthenticated" | "forbidden";
@@ -287,6 +363,9 @@ export type StoreWorkFlowApp = {
       priority: WorkPriority;
       startAt?: Date;
       dueAt?: Date;
+      attachmentRequirement?: AttachmentRequirement;
+      noteRequirement?: NoteRequirement;
+      sensitive?: boolean;
     },
   ): Promise<
     | { ok: true; works: WorkView[] }
@@ -300,7 +379,11 @@ export type StoreWorkFlowApp = {
   >;
   completeWork(
     sessionId: string,
-    input: { workId: string },
+    input: {
+      workId: string;
+      note?: string;
+      attachments?: WorkAttachmentInput[];
+    },
   ): Promise<
     | { ok: true }
     | {
@@ -310,8 +393,89 @@ export type StoreWorkFlowApp = {
           | "not_found"
           | "already_completed"
           | "fixed_unit_required"
-          | "reserved_for_part2";
+          | "reserved_for_part2"
+          | "attachment_required"
+          | "note_required"
+          | "invalid_attachment_type";
       }
+  >;
+  listWorkAttachments(
+    sessionId: string,
+    input: { workId: string },
+  ): Promise<
+    | { ok: true; attachments: WorkAttachmentView[] }
+    | { ok: false; error: AuthError | "not_found" }
+  >;
+  reopenWork(
+    actorSessionId: string,
+    input: { workId: string; reason: string },
+  ): Promise<
+    | { ok: true }
+    | { ok: false; error: AuthError | "not_found" | "not_completed" }
+  >;
+  updateWork(
+    actorSessionId: string,
+    input: {
+      workId: string;
+      title?: string;
+      content?: string;
+      priority?: WorkPriority;
+      attachmentRequirement?: AttachmentRequirement;
+      noteRequirement?: NoteRequirement;
+      sensitive?: boolean;
+    },
+  ): Promise<{ ok: true } | { ok: false; error: AuthError | "not_found" }>;
+  cancelAdhocWork(
+    actorSessionId: string,
+    input: { workId: string },
+  ): Promise<
+    | { ok: true }
+    | { ok: false; error: AuthError | "not_found" | "not_adhoc" }
+  >;
+  deactivateRecurringTemplate(
+    actorSessionId: string,
+    input: { templateId: string },
+  ): Promise<{ ok: true } | { ok: false; error: AuthError | "not_found" }>;
+  listWorkChangeLogs(
+    actorSessionId: string,
+    input: { workId: string },
+  ): Promise<
+    | { ok: true; logs: WorkChangeLogView[] }
+    | { ok: false; error: AuthError }
+  >;
+  searchWorkHistory(
+    actorSessionId: string,
+    input: {
+      unit?: FixedUnit;
+      status?: WorkStatus;
+      priority?: WorkPriority;
+      type?: WorkType;
+      accountId?: string;
+      from?: Date;
+      to?: Date;
+    },
+  ): Promise<
+    { ok: true; works: WorkView[] } | { ok: false; error: AuthError }
+  >;
+  getStaffStats(
+    actorSessionId: string,
+    input: { unit?: FixedUnit; from?: Date; to?: Date },
+  ): Promise<
+    { ok: true; stats: StaffStatView[] } | { ok: false; error: AuthError }
+  >;
+  exportWorkHistoryCsv(
+    actorSessionId: string,
+    input: {
+      unit?: FixedUnit;
+      status?: WorkStatus;
+      priority?: WorkPriority;
+      type?: WorkType;
+    },
+  ): Promise<{ ok: true; csv: string } | { ok: false; error: AuthError }>;
+  seedDemoRecurringTemplates(
+    actorSessionId: string,
+  ): Promise<
+    { ok: true; createdCount: number } | { ok: false; error: AuthError }
   >;
   cancelOwnCompletion(
     sessionId: string,
@@ -397,6 +561,8 @@ const UNIT_CHANGE_LOGS = "unit_change_logs";
 const WORKS = "work_instances";
 const WORK_AUDITS = "work_audits";
 const RECURRING_TEMPLATES = "recurring_templates";
+const WORK_ATTACHMENTS = "work_attachments";
+const WORK_CHANGE_LOGS = "work_change_logs";
 
 function isFixedUnit(value: string): value is FixedUnit {
   return (FIXED_UNITS as readonly string[]).includes(value);
@@ -429,10 +595,34 @@ function toWorkView(work: WorkRecord): WorkView {
     dueAt: work.dueAt,
     templateId: work.templateId,
     settlementState: work.settlementState ?? null,
+    attachmentRequirement: work.attachmentRequirement ?? "none",
+    noteRequirement: work.noteRequirement ?? "optional",
+    completionNote: work.completionNote ?? null,
+    sensitive: work.sensitive ?? false,
     completedByAccountId: work.completedByAccountId,
     completedByDisplayName: work.completedByDisplayName,
     completedAt: work.completedAt,
   };
+}
+
+function sortTodayWorks(works: WorkView[], asOf: Date): WorkView[] {
+  const rank = (work: WorkView): number => {
+    if (work.status === "completed") return 90;
+    const overdue =
+      work.dueAt !== null && work.dueAt.getTime() < asOf.getTime();
+    if (overdue) return 0;
+    if (work.priority === "urgent") return 1;
+    if (work.priority === "important") return 2;
+    if (work.dueAt) return 3;
+    if (work.type === "adhoc") return 4;
+    if (work.type === "recurring") return 5;
+    return 6;
+  };
+  return [...works].sort((a, b) => {
+    const diff = rank(a) - rank(b);
+    if (diff !== 0) return diff;
+    return a.title.localeCompare(b.title, "zh-Hant");
+  });
 }
 
 function toTemplateView(template: RecurringTemplateRecord): RecurringTemplateView {
@@ -488,9 +678,11 @@ function summarizeWorks(
 export function createStoreWorkFlowApp(deps: {
   db: Db;
   now?: () => Date;
+  idleTimeoutMs?: number;
 }): StoreWorkFlowApp {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
+  const idleTimeoutMs = deps.idleTimeoutMs ?? 30 * 60 * 1000;
 
   async function getSession(sessionId: string): Promise<Session | null> {
     const session = await db
@@ -500,12 +692,23 @@ export function createStoreWorkFlowApp(deps: {
       return null;
     }
 
+    const lastSeen = session.lastSeenAt ?? session.createdAt;
+    if (now().getTime() - lastSeen.getTime() > idleTimeoutMs) {
+      await db.collection<SessionRecord>(SESSIONS).deleteOne({ _id: sessionId });
+      return null;
+    }
+
     const account = await db
       .collection<AccountRecord>(ACCOUNTS)
       .findOne({ _id: session.accountId });
     if (!account || account.status !== "active") {
       return null;
     }
+
+    await db.collection<SessionRecord>(SESSIONS).updateOne(
+      { _id: sessionId },
+      { $set: { lastSeenAt: now() } },
+    );
 
     return {
       sessionId: session._id,
@@ -542,11 +745,46 @@ export function createStoreWorkFlowApp(deps: {
   async function appendWorkAudit(entry: Omit<WorkAuditRecord, "_id">) {
     await db.collection<WorkAuditRecord>(WORK_AUDITS).insertOne({
       _id: randomUUID(),
+      reason: null,
       ...entry,
     });
   }
 
-  async function listTodayWorkRecords(unit?: FixedUnit): Promise<WorkRecord[]> {
+  async function searchWorkHistoryInternal(input: {
+    unit?: FixedUnit;
+    status?: WorkStatus;
+    priority?: WorkPriority;
+    type?: WorkType;
+    accountId?: string;
+    from?: Date;
+    to?: Date;
+  }): Promise<WorkView[]> {
+    const filter: Record<string, unknown> = {
+      status: { $ne: "cancelled" },
+    };
+    if (input.unit) filter.unit = input.unit;
+    if (input.status) filter.status = input.status;
+    if (input.priority) filter.priority = input.priority;
+    if (input.type) filter.type = input.type;
+    if (input.accountId) filter.completedByAccountId = input.accountId;
+    if (input.from || input.to) {
+      filter.createdAt = {
+        ...(input.from ? { $gte: input.from } : {}),
+        ...(input.to ? { $lte: input.to } : {}),
+      };
+    }
+    const works = await db
+      .collection<WorkRecord>(WORKS)
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .toArray();
+    return works.map(toWorkView);
+  }
+
+  async function listTodayWorkRecords(options?: {
+    unit?: FixedUnit;
+    hideSensitiveFor?: Session | null;
+  }): Promise<WorkRecord[]> {
     const today = now();
     await generateRecurringForDateInternal(today);
     const todayKey = hongKongDateKey(today);
@@ -554,8 +792,8 @@ export function createStoreWorkFlowApp(deps: {
       status: { $in: ["pending", "completed"] },
       type: { $in: ["adhoc", "recurring", "daily_settlement"] },
     };
-    if (unit) {
-      filter.unit = unit;
+    if (options?.unit) {
+      filter.unit = options.unit;
     }
 
     return (
@@ -565,9 +803,16 @@ export function createStoreWorkFlowApp(deps: {
         .sort({ dueAt: 1, createdAt: 1 })
         .toArray()
     ).filter((work) => {
-      if (work.status === "pending") return true;
-      if (work.status === "completed" && work.completedAt) {
-        return hongKongDateKey(work.completedAt) === todayKey;
+      if (work.status === "cancelled") return false;
+      if (work.status === "pending" || (work.status === "completed" && work.completedAt && hongKongDateKey(work.completedAt) === todayKey)) {
+        if (
+          work.sensitive &&
+          options?.hideSensitiveFor?.role === "personal" &&
+          options.hideSensitiveFor.fixedUnit !== work.unit
+        ) {
+          return false;
+        }
+        return true;
       }
       return false;
     });
@@ -622,6 +867,10 @@ export function createStoreWorkFlowApp(deps: {
           dueAt: dueAtOnHongKongDate(date),
           templateId: template._id,
           settlementState: null,
+          attachmentRequirement: "none",
+          noteRequirement: "optional",
+          completionNote: null,
+          sensitive: false,
           completedByAccountId: null,
           completedByDisplayName: null,
           completedAt: null,
@@ -683,10 +932,12 @@ export function createStoreWorkFlowApp(deps: {
       }
 
       const sessionId = randomUUID();
+      const createdAt = now();
       const session: SessionRecord = {
         _id: sessionId,
         accountId: account._id,
-        createdAt: new Date(),
+        createdAt,
+        lastSeenAt: createdAt,
       };
       await db.collection<SessionRecord>(SESSIONS).insertOne(session);
       await db.collection<AccountRecord>(ACCOUNTS).updateOne(
@@ -937,6 +1188,10 @@ export function createStoreWorkFlowApp(deps: {
         dueAt: input.dueAt ?? null,
         templateId: null,
         settlementState: null,
+        attachmentRequirement: input.attachmentRequirement ?? "none",
+        noteRequirement: input.noteRequirement ?? "optional",
+        completionNote: null,
+        sensitive: input.sensitive ?? false,
         completedByAccountId: null,
         completedByDisplayName: null,
         completedAt: null,
@@ -965,13 +1220,22 @@ export function createStoreWorkFlowApp(deps: {
           return { ok: false, error: "fixed_unit_required" };
         }
 
-        const works = (await listTodayWorkRecords(session.fixedUnit)).map(
-          toWorkView,
+        const works = sortTodayWorks(
+          (
+            await listTodayWorkRecords({
+              unit: session.fixedUnit,
+              hideSensitiveFor: null,
+            })
+          ).map(toWorkView),
+          today,
         );
         return { ok: true, works, summary: summarizeWorks(works, today) };
       }
 
-      const works = (await listTodayWorkRecords()).map(toWorkView);
+      const works = sortTodayWorks(
+        (await listTodayWorkRecords()).map(toWorkView),
+        today,
+      );
       return { ok: true, works, summary: summarizeWorks(works, today) };
     },
 
@@ -1000,7 +1264,41 @@ export function createStoreWorkFlowApp(deps: {
         return { ok: false, error: "already_completed" };
       }
 
+      const attachments = input.attachments ?? [];
+      const requirement = work.attachmentRequirement ?? "none";
+      if (requirement === "required" && attachments.length === 0) {
+        return { ok: false, error: "attachment_required" };
+      }
+      if (
+        attachments.some(
+          (file) => !ALLOWED_ATTACHMENT_TYPES.has(file.contentType),
+        )
+      ) {
+        return { ok: false, error: "invalid_attachment_type" };
+      }
+
+      const noteRequirement = work.noteRequirement ?? "optional";
+      const note = input.note?.trim() ?? "";
+      if (noteRequirement === "required" && !note) {
+        return { ok: false, error: "note_required" };
+      }
+
       const completedAt = now();
+      if (attachments.length) {
+        await db.collection<AttachmentRecord>(WORK_ATTACHMENTS).insertMany(
+          attachments.map((file) => ({
+            _id: randomUUID(),
+            workId: work._id,
+            fileName: file.fileName,
+            contentType: file.contentType,
+            dataBase64: file.dataBase64,
+            uploadedByAccountId: session.accountId,
+            uploadedByDisplayName: session.displayName,
+            uploadedAt: completedAt,
+          })),
+        );
+      }
+
       await db.collection<WorkRecord>(WORKS).updateOne(
         { _id: work._id },
         {
@@ -1009,6 +1307,7 @@ export function createStoreWorkFlowApp(deps: {
             completedByAccountId: session.accountId,
             completedByDisplayName: session.displayName,
             completedAt,
+            completionNote: note || null,
             updatedAt: completedAt,
           },
         },
@@ -1169,6 +1468,10 @@ export function createStoreWorkFlowApp(deps: {
         dueAt: dueAtOnHongKongDate(now()),
         templateId: null,
         settlementState: "awaiting_part2",
+        attachmentRequirement: "none",
+        noteRequirement: "optional",
+        completionNote: null,
+        sensitive: false,
         completedByAccountId: null,
         completedByDisplayName: null,
         completedAt: null,
@@ -1188,7 +1491,9 @@ export function createStoreWorkFlowApp(deps: {
       }
 
       const today = now();
-      const all = await listTodayWorkRecords();
+      const all = await listTodayWorkRecords({
+        hideSensitiveFor: session.role === "personal" ? session : null,
+      });
       const units = FIXED_UNITS.map((unit) => {
         const works = all
           .filter((work) => work.unit === unit)
@@ -1213,7 +1518,10 @@ export function createStoreWorkFlowApp(deps: {
       }
 
       const today = now();
-      const records = await listTodayWorkRecords(input.unit);
+      const records = await listTodayWorkRecords({
+        unit: input.unit,
+        hideSensitiveFor: session.role === "personal" ? session : null,
+      });
       const works = records.map(toReadonlyWorkView);
       return {
         ok: true,
@@ -1222,6 +1530,343 @@ export function createStoreWorkFlowApp(deps: {
         summary: summarizeWorks(records.map(toWorkView), today),
         readOnlyNotice: CROSS_UNIT_READONLY_NOTICE,
       };
+    },
+
+    async listWorkAttachments(sessionId, input) {
+      const session = await getSession(sessionId);
+      if (!session) {
+        return { ok: false, error: "unauthenticated" };
+      }
+      const work = await db
+        .collection<WorkRecord>(WORKS)
+        .findOne({ _id: input.workId });
+      if (!work) {
+        return { ok: false, error: "not_found" };
+      }
+      const canView =
+        session.role === "manager" ||
+        session.role === "system_admin" ||
+        (session.role === "personal" && session.fixedUnit === work.unit);
+      if (!canView) {
+        return { ok: false, error: "forbidden" };
+      }
+
+      const attachments = await db
+        .collection<AttachmentRecord>(WORK_ATTACHMENTS)
+        .find({ workId: input.workId })
+        .sort({ uploadedAt: 1 })
+        .toArray();
+
+      return {
+        ok: true,
+        attachments: attachments.map((file) => ({
+          id: file._id,
+          workId: file.workId,
+          fileName: file.fileName,
+          contentType: file.contentType,
+          uploadedByDisplayName: file.uploadedByDisplayName,
+          uploadedAt: file.uploadedAt,
+        })),
+      };
+    },
+
+    async reopenWork(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) return auth;
+      const work = await db
+        .collection<WorkRecord>(WORKS)
+        .findOne({ _id: input.workId });
+      if (!work || work.status === "cancelled") {
+        return { ok: false, error: "not_found" };
+      }
+      if (work.status !== "completed") {
+        return { ok: false, error: "not_completed" };
+      }
+      const at = now();
+      await db.collection<WorkRecord>(WORKS).updateOne(
+        { _id: work._id },
+        {
+          $set: {
+            status: "pending",
+            completedByAccountId: null,
+            completedByDisplayName: null,
+            completedAt: null,
+            completionNote: null,
+            updatedAt: at,
+          },
+        },
+      );
+      await appendWorkAudit({
+        workId: work._id,
+        action: "reopen",
+        actorAccountId: auth.session.accountId,
+        actorDisplayName: auth.session.displayName,
+        fromStatus: "completed",
+        toStatus: "pending",
+        at,
+        reason: input.reason.trim(),
+      });
+      return { ok: true };
+    },
+
+    async updateWork(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) return auth;
+      const work = await db
+        .collection<WorkRecord>(WORKS)
+        .findOne({ _id: input.workId });
+      if (!work || work.status === "cancelled") {
+        return { ok: false, error: "not_found" };
+      }
+
+      const updates: Partial<WorkRecord> = { updatedAt: now() };
+      const logs: WorkChangeLogRecord[] = [];
+      const track = (field: string, before: string, after: string) => {
+        if (before === after) return;
+        logs.push({
+          _id: randomUUID(),
+          workId: work._id,
+          field,
+          before,
+          after,
+          changedByAccountId: auth.session.accountId,
+          changedByDisplayName: auth.session.displayName,
+          changedAt: now(),
+        });
+      };
+
+      if (input.title !== undefined) {
+        track("title", work.title, input.title.trim());
+        updates.title = input.title.trim();
+      }
+      if (input.content !== undefined) {
+        track("content", work.content, input.content.trim());
+        updates.content = input.content.trim();
+      }
+      if (input.priority !== undefined) {
+        track("priority", work.priority, input.priority);
+        updates.priority = input.priority;
+      }
+      if (input.attachmentRequirement !== undefined) {
+        track(
+          "attachmentRequirement",
+          work.attachmentRequirement ?? "none",
+          input.attachmentRequirement,
+        );
+        updates.attachmentRequirement = input.attachmentRequirement;
+      }
+      if (input.noteRequirement !== undefined) {
+        track(
+          "noteRequirement",
+          work.noteRequirement ?? "optional",
+          input.noteRequirement,
+        );
+        updates.noteRequirement = input.noteRequirement;
+      }
+      if (input.sensitive !== undefined) {
+        track("sensitive", String(work.sensitive ?? false), String(input.sensitive));
+        updates.sensitive = input.sensitive;
+      }
+
+      await db.collection<WorkRecord>(WORKS).updateOne(
+        { _id: work._id },
+        { $set: updates },
+      );
+      if (logs.length) {
+        await db.collection<WorkChangeLogRecord>(WORK_CHANGE_LOGS).insertMany(logs);
+      }
+      return { ok: true };
+    },
+
+    async cancelAdhocWork(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) return auth;
+      const work = await db
+        .collection<WorkRecord>(WORKS)
+        .findOne({ _id: input.workId });
+      if (!work) return { ok: false, error: "not_found" };
+      if (work.type !== "adhoc") return { ok: false, error: "not_adhoc" };
+      await db.collection<WorkRecord>(WORKS).updateOne(
+        { _id: work._id },
+        { $set: { status: "cancelled", updatedAt: now() } },
+      );
+      return { ok: true };
+    },
+
+    async deactivateRecurringTemplate(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) return auth;
+      const result = await db
+        .collection<RecurringTemplateRecord>(RECURRING_TEMPLATES)
+        .updateOne(
+          { _id: input.templateId },
+          { $set: { active: false, updatedAt: now() } },
+        );
+      if (result.matchedCount === 0) return { ok: false, error: "not_found" };
+      return { ok: true };
+    },
+
+    async listWorkChangeLogs(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) return auth;
+      const logs = await db
+        .collection<WorkChangeLogRecord>(WORK_CHANGE_LOGS)
+        .find({ workId: input.workId })
+        .sort({ changedAt: 1 })
+        .toArray();
+      return {
+        ok: true,
+        logs: logs.map((log) => ({
+          id: log._id,
+          workId: log.workId,
+          field: log.field,
+          before: log.before,
+          after: log.after,
+          changedByDisplayName: log.changedByDisplayName,
+          changedAt: log.changedAt,
+        })),
+      };
+    },
+
+    async searchWorkHistory(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) return auth;
+      return { ok: true, works: await searchWorkHistoryInternal(input) };
+    },
+
+    async getStaffStats(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) return auth;
+      const filter: Record<string, unknown> = {
+        status: "completed",
+        completedByAccountId: { $ne: null },
+      };
+      if (input.unit) filter.unit = input.unit;
+      if (input.from || input.to) {
+        filter.completedAt = {
+          ...(input.from ? { $gte: input.from } : {}),
+          ...(input.to ? { $lte: input.to } : {}),
+        };
+      }
+      const works = await db.collection<WorkRecord>(WORKS).find(filter).toArray();
+      const map = new Map<string, StaffStatView>();
+      for (const work of works) {
+        if (!work.completedByAccountId) continue;
+        const current = map.get(work.completedByAccountId) ?? {
+          accountId: work.completedByAccountId,
+          displayName: work.completedByDisplayName ?? "未知",
+          completedCount: 0,
+          overdueCompletedCount: 0,
+        };
+        current.completedCount += 1;
+        if (
+          work.dueAt &&
+          work.completedAt &&
+          work.completedAt.getTime() > work.dueAt.getTime()
+        ) {
+          current.overdueCompletedCount += 1;
+        }
+        map.set(work.completedByAccountId, current);
+      }
+      return { ok: true, stats: [...map.values()] };
+    },
+
+    async exportWorkHistoryCsv(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) return auth;
+      const works = await searchWorkHistoryInternal(input);
+      const header = [
+        "title",
+        "unit",
+        "type",
+        "status",
+        "priority",
+        "completedBy",
+        "completedAt",
+      ];
+      const rows = works.map((work) =>
+        [
+          work.title,
+          work.unit,
+          work.type,
+          work.status,
+          work.priority,
+          work.completedByDisplayName ?? "",
+          work.completedAt?.toISOString() ?? "",
+        ]
+          .map((value) => `"${String(value).replaceAll('"', '""')}"`)
+          .join(","),
+      );
+      return { ok: true, csv: [header.join(","), ...rows].join("\n") };
+    },
+
+    async seedDemoRecurringTemplates(actorSessionId) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) return auth;
+
+      const demos: Array<{
+        title: string;
+        content: string;
+        units: FixedUnit[];
+      }> = [
+        {
+          title: "每日開舖檢查",
+          content: "檢查門鎖、燈光與店面安全",
+          units: [...STORE_UNITS],
+        },
+        {
+          title: "清潔指定位置",
+          content: "清潔門市指定區域",
+          units: [...STORE_UNITS],
+        },
+        {
+          title: "檢查貨品存量",
+          content: "檢查門市貨品存量",
+          units: [...STORE_UNITS],
+        },
+        {
+          title: "倉庫環境檢查",
+          content: "檢查國內倉庫環境與安全",
+          units: ["國內倉"],
+        },
+        {
+          title: "貨物收貨",
+          content: "處理國內倉收貨流程",
+          units: ["國內倉"],
+        },
+        {
+          title: "倉庫清潔",
+          content: "清潔國內倉指定區域",
+          units: ["國內倉"],
+        },
+      ];
+
+      let createdCount = 0;
+      for (const demo of demos) {
+        const existing = await db
+          .collection<RecurringTemplateRecord>(RECURRING_TEMPLATES)
+          .findOne({ title: demo.title, active: true });
+        if (existing) continue;
+
+        const template: RecurringTemplateRecord = {
+          _id: randomUUID(),
+          title: demo.title,
+          content: demo.content,
+          units: demo.units,
+          priority: "normal",
+          recurrence: "daily",
+          sortOrder: createdCount + 1,
+          active: true,
+          createdByAccountId: auth.session.accountId,
+          createdAt: now(),
+          updatedAt: now(),
+        };
+        await db
+          .collection<RecurringTemplateRecord>(RECURRING_TEMPLATES)
+          .insertOne(template);
+        createdCount += 1;
+      }
+      return { ok: true, createdCount };
     },
   };
 }

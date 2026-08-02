@@ -4,7 +4,11 @@ import { MongoClient, type Db } from "mongodb";
 import { createStoreWorkFlowApp } from "./store-work-flow-app";
 
 async function boot(db: Db, now: () => Date) {
-  const app = createStoreWorkFlowApp({ db, now });
+  const app = createStoreWorkFlowApp({
+    db,
+    now,
+    idleTimeoutMs: 365 * 24 * 60 * 60 * 1000,
+  });
   await app.seedSystemAdmin({
     loginName: "admin",
     password: "Secret123!",

@@ -41,6 +41,7 @@ export default async function HomePage() {
             <>
               <Link href="/work/new">新增突發工作</Link>
               <Link href="/work/recurring">新增恆常工作</Link>
+              <Link href="/history">歷史與統計</Link>
             </>
           ) : null}
           {session.role === "system_admin" ? (

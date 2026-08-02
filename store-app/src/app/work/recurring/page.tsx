@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { FIXED_UNITS } from "@/application/store-work-flow-app";
+import { seedDemoAction } from "@/app/actions/demo";
 import { CreateRecurringForm } from "@/app/work/recurring/create-recurring-form";
 import { getStoreWorkFlowApp } from "@/infrastructure/app";
 import { readSessionId } from "@/infrastructure/session-cookie";
@@ -21,6 +22,11 @@ export default async function RecurringWorkPage() {
         </div>
         <Link href="/">返回今日工作</Link>
       </header>
+      <section className="card">
+        <form action={seedDemoAction}>
+          <button type="submit">載入示範恆常工作種子</button>
+        </form>
+      </section>
       <section className="card">
         <CreateRecurringForm units={[...FIXED_UNITS]} />
       </section>
