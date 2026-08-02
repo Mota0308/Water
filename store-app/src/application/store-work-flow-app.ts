@@ -170,6 +170,7 @@ type WorkRecord = {
   completedAt: Date | null;
   createdByAccountId: string;
   createdAt: Date;
+  updatedAt: Date;
 };
 
 type RecurringTemplateRecord = {
@@ -583,7 +584,7 @@ export function createStoreWorkFlowApp(deps: {
       dueAt: work.dueAt,
       completedByDisplayName: work.completedByDisplayName,
       completedAt: work.completedAt,
-      lastUpdatedAt: work.completedAt ?? work.createdAt,
+      lastUpdatedAt: work.updatedAt ?? work.completedAt ?? work.createdAt,
     };
   }
 
@@ -626,6 +627,7 @@ export function createStoreWorkFlowApp(deps: {
           completedAt: null,
           createdByAccountId: template.createdByAccountId,
           createdAt: now(),
+          updatedAt: now(),
         };
         await db.collection<WorkRecord>(WORKS).insertOne(work);
         createdCount += 1;
@@ -940,6 +942,7 @@ export function createStoreWorkFlowApp(deps: {
         completedAt: null,
         createdByAccountId: auth.session.accountId,
         createdAt: now(),
+        updatedAt: now(),
       }));
 
       if (works.length) {
@@ -997,6 +1000,7 @@ export function createStoreWorkFlowApp(deps: {
         return { ok: false, error: "already_completed" };
       }
 
+      const completedAt = now();
       await db.collection<WorkRecord>(WORKS).updateOne(
         { _id: work._id },
         {
@@ -1004,7 +1008,8 @@ export function createStoreWorkFlowApp(deps: {
             status: "completed",
             completedByAccountId: session.accountId,
             completedByDisplayName: session.displayName,
-            completedAt: new Date(),
+            completedAt,
+            updatedAt: completedAt,
           },
         },
       );
@@ -1016,7 +1021,7 @@ export function createStoreWorkFlowApp(deps: {
         actorDisplayName: session.displayName,
         fromStatus: "pending",
         toStatus: "completed",
-        at: new Date(),
+        at: completedAt,
       });
 
       return { ok: true };
@@ -1050,6 +1055,7 @@ export function createStoreWorkFlowApp(deps: {
         return { ok: false, error: "not_completer" };
       }
 
+      const cancelledAt = now();
       await db.collection<WorkRecord>(WORKS).updateOne(
         { _id: work._id },
         {
@@ -1058,6 +1064,7 @@ export function createStoreWorkFlowApp(deps: {
             completedByAccountId: null,
             completedByDisplayName: null,
             completedAt: null,
+            updatedAt: cancelledAt,
           },
         },
       );
@@ -1069,7 +1076,7 @@ export function createStoreWorkFlowApp(deps: {
         actorDisplayName: session.displayName,
         fromStatus: "completed",
         toStatus: "pending",
-        at: new Date(),
+        at: cancelledAt,
       });
 
       return { ok: true };
@@ -1167,6 +1174,7 @@ export function createStoreWorkFlowApp(deps: {
         completedAt: null,
         createdByAccountId: auth.session.accountId,
         createdAt: now(),
+        updatedAt: now(),
       }));
 
       await db.collection<WorkRecord>(WORKS).insertMany(works);

@@ -128,6 +128,51 @@ describe("門市工作流程應用服務 — 跨單位進度", () => {
     }
   });
 
+  it("取消剔選後跨單位最後更新時間會刷新", async () => {
+    const { app, managerSessionId } = await boot(db);
+    const created = await app.createAdhocWork(managerSessionId, {
+      title: "觀塘工作",
+      content: "內容",
+      units: ["觀塘"],
+      priority: "normal",
+    });
+    if (!created.ok) throw new Error("create failed");
+
+    const tmLogin = await app.login({
+      loginName: "tm.a",
+      password: "Staff123!",
+    });
+    if (!tmLogin.ok) throw new Error("tm login failed");
+
+    const before = await app.getUnitWorkReadonly(tmLogin.sessionId, {
+      unit: "觀塘",
+    });
+    if (!before.ok) throw new Error("before failed");
+    const beforeUpdated = before.works[0]!.lastUpdatedAt.getTime();
+
+    const ktLogin = await app.login({
+      loginName: "kt.a",
+      password: "Staff123!",
+    });
+    if (!ktLogin.ok) throw new Error("kt login failed");
+
+    await app.completeWork(ktLogin.sessionId, {
+      workId: created.works[0]!.id,
+    });
+    await app.cancelOwnCompletion(ktLogin.sessionId, {
+      workId: created.works[0]!.id,
+    });
+
+    const after = await app.getUnitWorkReadonly(tmLogin.sessionId, {
+      unit: "觀塘",
+    });
+    expect(after.ok).toBe(true);
+    if (!after.ok) return;
+    expect(after.works[0]!.lastUpdatedAt.getTime()).toBeGreaterThan(
+      beforeUpdated,
+    );
+  });
+
   it("跨單位 API 不可完成或取消其他單位工作", async () => {
     const { app, managerSessionId } = await boot(db);
     const created = await app.createAdhocWork(managerSessionId, {

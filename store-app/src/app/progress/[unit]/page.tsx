@@ -56,9 +56,11 @@ export default async function UnitProgressPage({
               <p className="meta">
                 {work.status === "completed"
                   ? `已完成 · ${work.completedByDisplayName} · ${work.completedAt?.toLocaleString("zh-HK")}`
-                  : work.dueAt
-                    ? `未完成 · 期限 ${work.dueAt.toLocaleString("zh-HK")}`
-                    : "未完成"}
+                  : work.dueAt && work.dueAt.getTime() < Date.now()
+                    ? `已逾期 · 期限 ${work.dueAt.toLocaleString("zh-HK")}`
+                    : work.dueAt
+                      ? `未完成 · 期限 ${work.dueAt.toLocaleString("zh-HK")}`
+                      : "未完成"}
               </p>
               <p className="meta">
                 最後更新 {work.lastUpdatedAt.toLocaleString("zh-HK")}

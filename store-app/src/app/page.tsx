@@ -77,9 +77,11 @@ export default async function HomePage() {
                     ? "每日結算（未連接日結模組）"
                     : work.status === "completed"
                       ? `已完成（${work.completedByDisplayName}）`
-                      : work.dueAt
-                        ? `期限 ${work.dueAt.toLocaleString("zh-HK")}`
-                        : "未完成"}
+                      : work.dueAt && work.dueAt.getTime() < Date.now()
+                        ? `已逾期 · 期限 ${work.dueAt.toLocaleString("zh-HK")}`
+                        : work.dueAt
+                          ? `期限 ${work.dueAt.toLocaleString("zh-HK")}`
+                          : "未完成"}
                 </p>
               </div>
               {session.role === "personal" &&
