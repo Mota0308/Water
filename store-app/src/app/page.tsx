@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { logoutAction } from "@/app/actions/auth";
 import { getStoreWorkFlowApp } from "@/infrastructure/app";
@@ -21,14 +22,25 @@ export default async function HomePage() {
           <h1>今日工作</h1>
           <p>
             {session.displayName} · {roleLabel(session.role)}
+            {session.fixedUnit ? ` · ${session.fixedUnit}` : ""}
           </p>
         </div>
-        <form action={logoutAction}>
-          <button type="submit">登出</button>
-        </form>
+        <div className="header-actions">
+          <Link href="/password">修改密碼</Link>
+          {session.role === "system_admin" ? (
+            <Link href="/accounts">賬號管理</Link>
+          ) : null}
+          <form action={logoutAction}>
+            <button type="submit">登出</button>
+          </form>
+        </div>
       </header>
       <section className="home-empty">
-        <p>已成功登入。後續票據會在此顯示所屬單位的今日工作清單。</p>
+        <p>
+          {session.role === "personal"
+            ? `你已進入固定單位「${session.fixedUnit}」範圍。後續票據會在此顯示今日工作清單。`
+            : "已成功登入。後續票據會在此顯示管理工作與進度。"}
+        </p>
       </section>
     </main>
   );

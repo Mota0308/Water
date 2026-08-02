@@ -135,3 +135,114 @@ input {
   place-items: center;
   text-align: center;
 }
+
+.page {
+  width: min(100%, 920px);
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3rem;
+}
+
+.page-header,
+.card,
+.account-item {
+  background: color-mix(in srgb, var(--panel) 92%, white);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 1.25rem 1.5rem;
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.page-header h1,
+.card h2 {
+  margin: 0 0 0.35rem;
+}
+
+.page-header p,
+.account-item p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.form-grid,
+.account-actions,
+.inline-form,
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-top: 1rem;
+}
+
+.form-grid label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.form-grid input,
+.form-grid select,
+.inline-form input,
+.inline-form select,
+.account-actions input,
+.account-actions select {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+  background: white;
+}
+
+.form-grid button,
+.account-actions button,
+.header-actions a,
+.page-header a {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.7rem 1.1rem;
+  background: var(--accent);
+  color: white;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.header-actions {
+  align-items: center;
+}
+
+.header-actions a {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.account-list {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+
+.account-item {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.form-success {
+  margin: 0.75rem 0 0;
+  color: var(--accent);
+}

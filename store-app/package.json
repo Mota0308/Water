@@ -9,7 +9,7 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed": "tsx scripts/seed-system-admin.ts",
+    "seed": "tsx --env-file=.env.local scripts/seed-system-admin.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
