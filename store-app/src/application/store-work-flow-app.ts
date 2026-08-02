@@ -14,6 +14,10 @@ export const FIXED_UNITS = [
 
 export type FixedUnit = (typeof FIXED_UNITS)[number];
 
+export const STORE_UNITS = ["觀塘", "荔枝角", "灣仔", "屯門"] as const;
+export type StoreUnit = (typeof STORE_UNITS)[number];
+export type SettlementState = "awaiting_part2" | null;
+
 export type Session = {
   sessionId: string;
   accountId: string;
@@ -62,6 +66,7 @@ export type WorkView = {
   startAt: Date | null;
   dueAt: Date | null;
   templateId: string | null;
+  settlementState: SettlementState;
   completedByAccountId: string | null;
   completedByDisplayName: string | null;
   completedAt: Date | null;
@@ -159,6 +164,7 @@ type WorkRecord = {
   startAt: Date | null;
   dueAt: Date | null;
   templateId: string | null;
+  settlementState: SettlementState;
   completedByAccountId: string | null;
   completedByDisplayName: string | null;
   completedAt: Date | null;
@@ -302,7 +308,8 @@ export type StoreWorkFlowApp = {
           | AuthError
           | "not_found"
           | "already_completed"
-          | "fixed_unit_required";
+          | "fixed_unit_required"
+          | "reserved_for_part2";
       }
   >;
   cancelOwnCompletion(
@@ -317,7 +324,8 @@ export type StoreWorkFlowApp = {
           | "not_found"
           | "not_completer"
           | "not_completed"
-          | "fixed_unit_required";
+          | "fixed_unit_required"
+          | "reserved_for_part2";
       }
   >;
   listWorkAudit(
@@ -346,6 +354,16 @@ export type StoreWorkFlowApp = {
     input: { date: Date },
   ): Promise<
     { ok: true; createdCount: number } | { ok: false; error: AuthError }
+  >;
+  createDailySettlementWork(
+    actorSessionId: string,
+    input: {
+      title: string;
+      content: string;
+      priority: WorkPriority;
+    },
+  ): Promise<
+    { ok: true; works: WorkView[] } | { ok: false; error: AuthError }
   >;
   listUnitProgress(
     sessionId: string,
@@ -409,6 +427,7 @@ function toWorkView(work: WorkRecord): WorkView {
     startAt: work.startAt,
     dueAt: work.dueAt,
     templateId: work.templateId,
+    settlementState: work.settlementState ?? null,
     completedByAccountId: work.completedByAccountId,
     completedByDisplayName: work.completedByDisplayName,
     completedAt: work.completedAt,
@@ -601,6 +620,7 @@ export function createStoreWorkFlowApp(deps: {
           startAt: date,
           dueAt: dueAtOnHongKongDate(date),
           templateId: template._id,
+          settlementState: null,
           completedByAccountId: null,
           completedByDisplayName: null,
           completedAt: null,
@@ -914,6 +934,7 @@ export function createStoreWorkFlowApp(deps: {
         startAt: input.startAt ?? null,
         dueAt: input.dueAt ?? null,
         templateId: null,
+        settlementState: null,
         completedByAccountId: null,
         completedByDisplayName: null,
         completedAt: null,
@@ -969,6 +990,9 @@ export function createStoreWorkFlowApp(deps: {
       if (session.role === "personal" && work.unit !== session.fixedUnit) {
         return { ok: false, error: "forbidden" };
       }
+      if (work.type === "daily_settlement") {
+        return { ok: false, error: "reserved_for_part2" };
+      }
       if (work.status === "completed") {
         return { ok: false, error: "already_completed" };
       }
@@ -1015,6 +1039,9 @@ export function createStoreWorkFlowApp(deps: {
       }
       if (session.role === "personal" && work.unit !== session.fixedUnit) {
         return { ok: false, error: "forbidden" };
+      }
+      if (work.type === "daily_settlement") {
+        return { ok: false, error: "reserved_for_part2" };
       }
       if (work.status !== "completed") {
         return { ok: false, error: "not_completed" };
@@ -1115,6 +1142,35 @@ export function createStoreWorkFlowApp(deps: {
 
       const createdCount = await generateRecurringForDateInternal(input.date);
       return { ok: true, createdCount };
+    },
+
+    async createDailySettlementWork(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) {
+        return auth;
+      }
+
+      const works: WorkRecord[] = STORE_UNITS.map((unit) => ({
+        _id: randomUUID(),
+        type: "daily_settlement",
+        title: input.title.trim(),
+        content: input.content.trim(),
+        unit,
+        priority: input.priority,
+        status: "pending",
+        startAt: now(),
+        dueAt: dueAtOnHongKongDate(now()),
+        templateId: null,
+        settlementState: "awaiting_part2",
+        completedByAccountId: null,
+        completedByDisplayName: null,
+        completedAt: null,
+        createdByAccountId: auth.session.accountId,
+        createdAt: now(),
+      }));
+
+      await db.collection<WorkRecord>(WORKS).insertMany(works);
+      return { ok: true, works: works.map(toWorkView) };
     },
 
     async listUnitProgress(sessionId) {

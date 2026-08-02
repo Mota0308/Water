@@ -49,6 +49,30 @@ export async function createAdhocWorkAction(
   return { success: `已建立 ${result.works.length} 項突發工作` };
 }
 
+export async function createDailySettlementAction(
+  _prev: WorkActionMessage,
+  formData: FormData,
+): Promise<WorkActionMessage> {
+  const sessionId = await readSessionId();
+  if (!sessionId) {
+    return { error: "請重新登入" };
+  }
+
+  const app = await getStoreWorkFlowApp();
+  const result = await app.createDailySettlementWork(sessionId, {
+    title: String(formData.get("title") ?? "每日結算工作").trim(),
+    content: String(formData.get("content") ?? "等待第二部分日結模組連接").trim(),
+    priority: String(formData.get("priority") ?? "important") as WorkPriority,
+  });
+
+  if (!result.ok) {
+    return { error: "建立每日結算工作失敗" };
+  }
+
+  revalidatePath("/");
+  return { success: `已為四間門市建立每日結算預留工作（${result.works.length}）` };
+}
+
 export async function createRecurringAction(
   _prev: WorkActionMessage,
   formData: FormData,

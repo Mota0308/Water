@@ -73,14 +73,17 @@ export default async function HomePage() {
                 <p>{work.content}</p>
                 <p className="meta">
                   {work.unit} · {priorityLabel(work.priority)} ·{" "}
-                  {work.status === "completed"
-                    ? `已完成（${work.completedByDisplayName}）`
-                    : work.dueAt
-                      ? `期限 ${work.dueAt.toLocaleString("zh-HK")}`
-                      : "未完成"}
+                  {work.type === "daily_settlement"
+                    ? "每日結算（未連接日結模組）"
+                    : work.status === "completed"
+                      ? `已完成（${work.completedByDisplayName}）`
+                      : work.dueAt
+                        ? `期限 ${work.dueAt.toLocaleString("zh-HK")}`
+                        : "未完成"}
                 </p>
               </div>
-              {session.role === "personal" ? (
+              {session.role === "personal" &&
+              work.type !== "daily_settlement" ? (
                 <div className="work-actions">
                   {work.status === "pending" ? (
                     <form action={completeWorkAction}>
