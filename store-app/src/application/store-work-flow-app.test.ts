@@ -105,4 +105,37 @@ describe("門市工作流程應用服務 — 登入與會話", () => {
       error: "unauthenticated",
     });
   });
+
+  it("登出後或未知 sessionId 時 requireSession 拒絕存取", async () => {
+    const app = createStoreWorkFlowApp({ db });
+
+    await app.seedSystemAdmin({
+      loginName: "admin",
+      password: "Secret123!",
+      displayName: "系統管理員",
+    });
+
+    const login = await app.login({
+      loginName: "admin",
+      password: "Secret123!",
+    });
+
+    if (!login.ok) {
+      throw new Error("expected login to succeed");
+    }
+
+    await app.logout(login.sessionId);
+
+    const afterLogout = await app.requireSession(login.sessionId);
+    expect(afterLogout).toEqual({
+      ok: false,
+      error: "unauthenticated",
+    });
+
+    const unknown = await app.requireSession("not-a-real-session");
+    expect(unknown).toEqual({
+      ok: false,
+      error: "unauthenticated",
+    });
+  });
 });
