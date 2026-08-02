@@ -37,7 +37,10 @@ export default async function HomePage() {
         <div className="header-actions">
           <Link href="/password">修改密碼</Link>
           {session.role !== "personal" ? (
-            <Link href="/work/new">新增突發工作</Link>
+            <>
+              <Link href="/work/new">新增突發工作</Link>
+              <Link href="/work/recurring">新增恆常工作</Link>
+            </>
           ) : null}
           {session.role === "system_admin" ? (
             <Link href="/accounts">賬號管理</Link>

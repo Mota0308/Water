@@ -49,6 +49,7 @@ export type UnitChangeLogView = {
 export type WorkPriority = "normal" | "important" | "urgent";
 export type WorkStatus = "pending" | "completed" | "cancelled";
 export type WorkType = "adhoc" | "recurring" | "daily_settlement";
+export type Recurrence = "daily" | "weekdays";
 
 export type WorkView = {
   id: string;
@@ -60,9 +61,21 @@ export type WorkView = {
   status: WorkStatus;
   startAt: Date | null;
   dueAt: Date | null;
+  templateId: string | null;
   completedByAccountId: string | null;
   completedByDisplayName: string | null;
   completedAt: Date | null;
+};
+
+export type RecurringTemplateView = {
+  id: string;
+  title: string;
+  content: string;
+  units: FixedUnit[];
+  priority: WorkPriority;
+  recurrence: Recurrence;
+  sortOrder: number;
+  active: boolean;
 };
 
 export type TodayWorkSummary = {
@@ -125,11 +138,26 @@ type WorkRecord = {
   status: WorkStatus;
   startAt: Date | null;
   dueAt: Date | null;
+  templateId: string | null;
   completedByAccountId: string | null;
   completedByDisplayName: string | null;
   completedAt: Date | null;
   createdByAccountId: string;
   createdAt: Date;
+};
+
+type RecurringTemplateRecord = {
+  _id: string;
+  title: string;
+  content: string;
+  units: FixedUnit[];
+  priority: WorkPriority;
+  recurrence: Recurrence;
+  sortOrder: number;
+  active: boolean;
+  createdByAccountId: string;
+  createdAt: Date;
+  updatedAt: Date;
 };
 
 type WorkAuditRecord = {
@@ -279,6 +307,26 @@ export type StoreWorkFlowApp = {
     | { ok: true; entries: WorkAuditView[] }
     | { ok: false; error: AuthError }
   >;
+  createRecurringTemplate(
+    actorSessionId: string,
+    input: {
+      title: string;
+      content: string;
+      units: FixedUnit[];
+      priority: WorkPriority;
+      recurrence: Recurrence;
+      sortOrder?: number;
+    },
+  ): Promise<
+    | { ok: true; template: RecurringTemplateView }
+    | { ok: false; error: AuthError | "invalid_unit" | "units_required" }
+  >;
+  generateRecurringForDate(
+    actorSessionId: string,
+    input: { date: Date },
+  ): Promise<
+    { ok: true; createdCount: number } | { ok: false; error: AuthError }
+  >;
 };
 
 const ACCOUNTS = "accounts";
@@ -286,6 +334,7 @@ const SESSIONS = "sessions";
 const UNIT_CHANGE_LOGS = "unit_change_logs";
 const WORKS = "work_instances";
 const WORK_AUDITS = "work_audits";
+const RECURRING_TEMPLATES = "recurring_templates";
 
 function isFixedUnit(value: string): value is FixedUnit {
   return (FIXED_UNITS as readonly string[]).includes(value);
@@ -316,29 +365,69 @@ function toWorkView(work: WorkRecord): WorkView {
     status: work.status,
     startAt: work.startAt,
     dueAt: work.dueAt,
+    templateId: work.templateId,
     completedByAccountId: work.completedByAccountId,
     completedByDisplayName: work.completedByDisplayName,
     completedAt: work.completedAt,
   };
 }
 
-function summarizeWorks(works: WorkView[]): TodayWorkSummary {
+function toTemplateView(template: RecurringTemplateRecord): RecurringTemplateView {
+  return {
+    id: template._id,
+    title: template.title,
+    content: template.content,
+    units: template.units,
+    priority: template.priority,
+    recurrence: template.recurrence,
+    sortOrder: template.sortOrder,
+    active: template.active,
+  };
+}
+
+function hongKongDateKey(date: Date): string {
+  return date.toLocaleString("sv-SE", { timeZone: "Asia/Hong_Kong" }).slice(0, 10);
+}
+
+function dueAtOnHongKongDate(date: Date): Date {
+  const key = hongKongDateKey(date);
+  return new Date(`${key}T18:00:00+08:00`);
+}
+
+function recurrenceMatches(recurrence: Recurrence, date: Date): boolean {
+  if (recurrence === "daily") {
+    return true;
+  }
+  const weekday = new Date(
+    date.toLocaleString("en-US", { timeZone: "Asia/Hong_Kong" }),
+  ).getDay();
+  return weekday >= 1 && weekday <= 5;
+}
+
+function summarizeWorks(
+  works: WorkView[],
+  asOf: Date = new Date(),
+): TodayWorkSummary {
   const total = works.length;
   const completed = works.filter((work) => work.status === "completed").length;
   const pending = works.filter((work) => work.status === "pending").length;
-  const now = Date.now();
+  const asOfMs = asOf.getTime();
   const overdue = works.filter(
     (work) =>
       work.status === "pending" &&
       work.dueAt !== null &&
-      work.dueAt.getTime() < now,
+      work.dueAt.getTime() < asOfMs,
   ).length;
   const percent = total === 0 ? 0 : Math.round((completed / total) * 100);
   return { total, completed, pending, overdue, percent };
 }
 
-export function createStoreWorkFlowApp(deps: { db: Db }): StoreWorkFlowApp {
+export function createStoreWorkFlowApp(deps: {
+  db: Db;
+  now?: () => Date;
+}): StoreWorkFlowApp {
   const { db } = deps;
+  const now = deps.now ?? (() => new Date());
 
   async function getSession(sessionId: string): Promise<Session | null> {
     const session = await db
@@ -392,6 +481,53 @@ export function createStoreWorkFlowApp(deps: { db: Db }): StoreWorkFlowApp {
       _id: randomUUID(),
       ...entry,
     });
+  }
+
+  async function generateRecurringForDateInternal(date: Date): Promise<number> {
+    const templates = await db
+      .collection<RecurringTemplateRecord>(RECURRING_TEMPLATES)
+      .find({ active: true })
+      .toArray();
+
+    let createdCount = 0;
+    for (const template of templates) {
+      if (!recurrenceMatches(template.recurrence, date)) {
+        continue;
+      }
+
+      for (const unit of template.units) {
+        const open = await db.collection<WorkRecord>(WORKS).findOne({
+          templateId: template._id,
+          unit,
+          status: "pending",
+        });
+        if (open) {
+          continue;
+        }
+
+        const work: WorkRecord = {
+          _id: randomUUID(),
+          type: "recurring",
+          title: template.title,
+          content: template.content,
+          unit,
+          priority: template.priority,
+          status: "pending",
+          startAt: date,
+          dueAt: dueAtOnHongKongDate(date),
+          templateId: template._id,
+          completedByAccountId: null,
+          completedByDisplayName: null,
+          completedAt: null,
+          createdByAccountId: template.createdByAccountId,
+          createdAt: now(),
+        };
+        await db.collection<WorkRecord>(WORKS).insertOne(work);
+        createdCount += 1;
+      }
+    }
+
+    return createdCount;
   }
 
   return {
@@ -692,11 +828,12 @@ export function createStoreWorkFlowApp(deps: { db: Db }): StoreWorkFlowApp {
         status: "pending",
         startAt: input.startAt ?? null,
         dueAt: input.dueAt ?? null,
+        templateId: null,
         completedByAccountId: null,
         completedByDisplayName: null,
         completedAt: null,
         createdByAccountId: auth.session.accountId,
-        createdAt: new Date(),
+        createdAt: now(),
       }));
 
       if (works.length) {
@@ -711,6 +848,21 @@ export function createStoreWorkFlowApp(deps: { db: Db }): StoreWorkFlowApp {
       if (!session) {
         return { ok: false, error: "unauthenticated" };
       }
+
+      const today = now();
+      await generateRecurringForDateInternal(today);
+      const todayKey = hongKongDateKey(today);
+
+      function isTodayWork(work: WorkRecord): boolean {
+        if (work.status === "pending") {
+          return true;
+        }
+        if (work.status === "completed" && work.completedAt) {
+          return hongKongDateKey(work.completedAt) === todayKey;
+        }
+        return false;
+      }
+
       if (session.role === "personal") {
         if (!session.fixedUnit) {
           return { ok: false, error: "fixed_unit_required" };
@@ -726,9 +878,11 @@ export function createStoreWorkFlowApp(deps: { db: Db }): StoreWorkFlowApp {
             })
             .sort({ dueAt: 1, createdAt: 1 })
             .toArray()
-        ).map(toWorkView);
+        )
+          .filter(isTodayWork)
+          .map(toWorkView);
 
-        return { ok: true, works, summary: summarizeWorks(works) };
+        return { ok: true, works, summary: summarizeWorks(works, today) };
       }
 
       const works = (
@@ -737,9 +891,11 @@ export function createStoreWorkFlowApp(deps: { db: Db }): StoreWorkFlowApp {
           .find({ status: { $in: ["pending", "completed"] } })
           .sort({ unit: 1, dueAt: 1, createdAt: 1 })
           .toArray()
-      ).map(toWorkView);
+      )
+        .filter(isTodayWork)
+        .map(toWorkView);
 
-      return { ok: true, works, summary: summarizeWorks(works) };
+      return { ok: true, works, summary: summarizeWorks(works, today) };
     },
 
     async completeWork(sessionId, input) {
@@ -864,6 +1020,48 @@ export function createStoreWorkFlowApp(deps: { db: Db }): StoreWorkFlowApp {
           at: entry.at,
         })),
       };
+    },
+
+    async createRecurringTemplate(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) {
+        return auth;
+      }
+      if (!input.units.length) {
+        return { ok: false, error: "units_required" };
+      }
+      if (input.units.some((unit) => !isFixedUnit(unit))) {
+        return { ok: false, error: "invalid_unit" };
+      }
+
+      const template: RecurringTemplateRecord = {
+        _id: randomUUID(),
+        title: input.title.trim(),
+        content: input.content.trim(),
+        units: [...new Set(input.units)],
+        priority: input.priority,
+        recurrence: input.recurrence,
+        sortOrder: input.sortOrder ?? 0,
+        active: true,
+        createdByAccountId: auth.session.accountId,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      await db
+        .collection<RecurringTemplateRecord>(RECURRING_TEMPLATES)
+        .insertOne(template);
+
+      return { ok: true, template: toTemplateView(template) };
+    },
+
+    async generateRecurringForDate(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) {
+        return auth;
+      }
+
+      const createdCount = await generateRecurringForDateInternal(input.date);
+      return { ok: true, createdCount };
     },
   };
 }
