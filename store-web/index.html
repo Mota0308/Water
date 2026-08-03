@@ -1,0 +1,914 @@
+<!DOCTYPE html><html lang="zh-HK"><head><meta name="x-poe-datastore-behavior" content="local_only"><meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://code.jquery.com https://unpkg.com https://d3js.org https://threejs.org https://cdn.plot.ly https://stackpath.bootstrapcdn.com https://maps.googleapis.com https://cdn.tailwindcss.com https://ajax.googleapis.com https://kit.fontawesome.com https://cdn.datatables.net https://maxcdn.bootstrapcdn.com https://code.highcharts.com https://tako-static-assets-production.s3.amazonaws.com https://www.youtube.com https://fonts.googleapis.com https://fonts.gstatic.com https://pfst.cf2.poecdn.net https://puc.poecdn.net https://i.imgur.com https://wikimedia.org https://*.icons8.com https://*.giphy.com https://picsum.photos https://images.unsplash.com; frame-src 'self' https://www.youtube.com https://trytako.com; child-src 'self'; manifest-src 'self'; worker-src 'self'; upgrade-insecure-requests; block-all-mixed-content;">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>店鋪員工系統（靜態示範）</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:"Microsoft JhengHei","PingFang TC",sans-serif; }
+  body { background:#f0f2f5; color:#333; font-size:15px; }
+  .hidden { display:none !important; }
+  .container { max-width:1000px; margin:0 auto; padding:12px; }
+
+  .topbar { background:#37474f; color:#fff; padding:10px 16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
+  .topbar .brand { font-weight:bold; font-size:15px; }
+  .topbar .userinfo { font-size:13px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .topbar button { background:#fff; color:#37474f; border:none; padding:5px 12px; border-radius:6px; cursor:pointer; font-size:13px; }
+
+  .module-nav { display:flex; gap:6px; background:#eceff1; padding:8px 12px; overflow-x:auto; border-bottom:1px solid #ddd; }
+  .module-nav button { border:none; background:#fff; padding:8px 14px; border-radius:20px; cursor:pointer; white-space:nowrap; font-size:14px; font-weight:600; color:#37474f; }
+  .module-nav button.active { background:#37474f; color:#fff; }
+  .nav { display:flex; gap:6px; background:#fff; padding:8px 12px; overflow-x:auto; border-bottom:1px solid #ddd; }
+  .nav button { border:none; background:#eef2f7; padding:8px 14px; border-radius:20px; cursor:pointer; white-space:nowrap; font-size:14px; }
+  .nav button.active { background:#37474f; color:#fff; }
+
+  .card { background:#fff; border-radius:10px; padding:16px; margin-bottom:14px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .card h2 { font-size:17px; margin-bottom:12px; color:#37474f; }
+  .card h3 { font-size:15px; margin:12px 0 8px; color:#455a64; }
+
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(100px,1fr)); gap:10px; }
+  .stat { background:#f7f9fc; border-radius:8px; padding:12px; text-align:center; }
+  .stat .num { font-size:24px; font-weight:bold; }
+  .stat .lbl { font-size:12px; color:#777; margin-top:2px; }
+  .num.green{color:#2e7d32}.num.red{color:#c62828}.num.orange{color:#ef6c00}.num.blue{color:#1565c0}.num.purple{color:#7b1fa2}
+
+  .pbar { background:#e5e9f0; border-radius:10px; height:12px; overflow:hidden; margin-top:6px; }
+  .pbar > div { height:100%; background:#2e7d32; border-radius:10px; min-width:2px; transition:width .3s; }
+
+  .tag { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:bold; white-space:nowrap; }
+  .tag.s-notstart{background:#eceff1;color:#666} .tag.s-pending{background:#e3f2fd;color:#1565c0}
+  .tag.s-doing{background:#e1f5fe;color:#0277bd} .tag.s-wait{background:#fff8e1;color:#8d6e00}
+  .tag.s-fix{background:#fff3e0;color:#ef6c00} .tag.s-return{background:#ffebee;color:#c62828}
+  .tag.s-done{background:#e8f5e9;color:#2e7d32} .tag.s-overdue{background:#ffebee;color:#c62828}
+  .tag.s-skip{background:#f3e5f5;color:#7b1fa2} .tag.s-na{background:#f5f5f5;color:#aaa}
+  .tag.t-dev{background:#e8eaf6;color:#3949ab} .tag.t-rep{background:#e0f2f1;color:#00796b}
+  .tag.dept{background:#f0f4f9;color:#546e7a}
+
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { padding:9px 8px; border-bottom:1px solid #eee; text-align:left; vertical-align:middle; }
+  th { background:#f7f9fc; color:#555; font-size:12px; }
+  .table-wrap { overflow-x:auto; }
+  tr.clickable { cursor:pointer; }
+  tr.clickable:hover { background:#f5f8fc; }
+
+  label { display:block; font-size:13px; color:#555; margin:10px 0 4px; }
+  input[type=text],input[type=password],input[type=date],select,textarea {
+    width:100%; padding:9px 10px; border:1px solid #ccd4de; border-radius:6px; font-size:14px; }
+  textarea { resize:vertical; min-height:70px; }
+  .btn { background:#37474f; color:#fff; border:none; padding:10px 20px; border-radius:6px; cursor:pointer; font-size:14px; margin-top:12px; }
+  .btn.sm { padding:5px 12px; font-size:12px; margin-top:0; }
+  .btn.green{background:#2e7d32} .btn.warn{background:#ef6c00} .btn.red{background:#c62828}
+  .btn.gray{background:#78909c} .btn.purple{background:#7b1fa2}
+
+  .filters { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  .filters select, .filters input { width:auto; min-width:120px; font-size:13px; padding:7px 8px; }
+
+  /* 項目圖示縮圖 */
+  .thumb { width:44px; height:44px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:22px; background:#eef2f7; }
+
+  /* 階段流程 */
+  .stage { border:1px solid #e5e9f0; border-radius:10px; margin-bottom:10px; overflow:hidden; }
+  .stage-head { display:flex; align-items:center; gap:10px; padding:12px; cursor:pointer; flex-wrap:wrap; }
+  .stage-head:hover { background:#f7f9fc; }
+  .stage-num { width:28px; height:28px; min-width:28px; border-radius:50%; background:#eceff1; color:#666; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:13px; }
+  .stage-num.done { background:#2e7d32; color:#fff; }
+  .stage-num.current { background:#1565c0; color:#fff; }
+  .stage-name { font-weight:bold; flex:1; min-width:120px; }
+  .stage-body { padding:0 14px 14px 52px; font-size:13px; }
+  .stage-body .row { margin-bottom:5px; color:#555; }
+  .stage.current-stage { border-color:#1565c0; box-shadow:0 0 0 1px #1565c0 inset; }
+  .actions-row { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+
+  /* 留言板 */
+  .msg { border:1px solid #e5e9f0; border-radius:10px; padding:12px; margin-bottom:10px; background:#fff; }
+  .msg .mhead { display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-size:13px; }
+  .msg .mname { font-weight:bold; color:#37474f; }
+  .msg .mtime { color:#999; font-size:12px; }
+  .msg .mbody { margin-top:6px; font-size:14px; white-space:pre-wrap; }
+  .msg .mbody .mention { color:#1565c0; font-weight:bold; }
+  .msg .mfile { margin-top:6px; font-size:12px; color:#7b1fa2; }
+  .msg .reply { margin-top:8px; margin-left:16px; border-left:3px solid #e5e9f0; padding-left:10px; }
+  .msg .removed { color:#aaa; font-style:italic; }
+
+  /* 分頁 */
+  .tabs { display:flex; gap:4px; border-bottom:2px solid #e5e9f0; margin-bottom:14px; overflow-x:auto; }
+  .tabs button { border:none; background:none; padding:9px 14px; cursor:pointer; font-size:14px; color:#666; white-space:nowrap; border-bottom:3px solid transparent; }
+  .tabs button.active { color:#37474f; font-weight:bold; border-bottom-color:#37474f; }
+
+  /* 登入 */
+  .login-wrap { max-width:400px; margin:40px auto; padding:0 16px; }
+  .login-card { background:#fff; border-radius:12px; padding:28px 24px; box-shadow:0 2px 10px rgba(0,0,0,.1); }
+  .login-card h1 { font-size:18px; color:#37474f; text-align:center; margin-bottom:4px; }
+  .login-card .sub { text-align:center; color:#888; font-size:12px; margin-bottom:16px; }
+  .login-err { color:#c62828; font-size:13px; margin-top:8px; display:none; }
+  .demo-accounts { margin-top:16px; font-size:12px; color:#666; background:#f7f9fc; border-radius:8px; padding:12px; }
+  .demo-accounts b { color:#37474f; }
+  .demo-accounts div { padding:2px 0; }
+
+  .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; z-index:99; padding:16px; }
+  .modal { background:#fff; border-radius:12px; padding:22px; max-width:420px; width:100%; max-height:85vh; overflow-y:auto; }
+  .modal h3 { margin-bottom:10px; color:#37474f; }
+  .modal .actions { display:flex; gap:10px; justify-content:flex-end; margin-top:16px; }
+
+  .file-item { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid #e5e9f0; border-radius:8px; margin-bottom:6px; font-size:13px; flex-wrap:wrap; }
+  .file-item .fname { font-weight:bold; }
+  .file-item .fmeta { color:#888; font-size:12px; }
+  .latest-badge { background:#2e7d32; color:#fff; font-size:10px; padding:1px 6px; border-radius:8px; }
+
+  .info-banner { background:#e3f2fd; border:1px solid #90caf9; color:#0d47a1; padding:10px 14px; border-radius:8px; margin-bottom:12px; font-size:13px; }
+  @media (max-width:600px){ body{font-size:14px} .stat .num{font-size:20px} .stage-body{padding-left:14px} }
+</style>
+</head>
+<body>
+
+<!-- ═══════════ 登入頁 ═══════════ -->
+<div id="page-login" class="login-wrap">
+  <div class="login-card">
+    <h1>🏭 店鋪員工系統</h1>
+    <div class="sub">每日工作流程 · 開發及生產 · 補貨</div>
+    <label>登入名稱</label>
+    <input type="text" id="login-user" placeholder="請輸入登入名稱">
+    <label>密碼</label>
+    <input type="password" id="login-pw" placeholder="請輸入密碼">
+    <div class="login-err" id="login-err"></div>
+    <button class="btn" style="width:100%" onclick="doLogin()">登入</button>
+    <div class="demo-accounts">
+      <b>示範賬號：</b>
+      <div>系統管理員：admin / admin</div>
+      <div>一般管理層：manager / Manager123!</div>
+      <div>觀塘個人：kt.staff / Staff123!</div>
+      <div>屯門個人：tm.staff / Staff123!</div>
+      <div>經手人 Ann：ann / 1234（觀塘）</div>
+      <div>經手人 Coey：coey / 1234（荔枝角）</div>
+      <div>經手人 郭sir：kwok / 1234（灣仔）</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ 主系統 ═══════════ -->
+<div id="app" class="hidden">
+  <div class="topbar">
+    <div class="brand">🏭 店鋪員工系統</div>
+    <div class="userinfo"><span id="top-user"></span><button onclick="logout()">登出</button></div>
+  </div>
+  <div class="module-nav" id="module-nav"></div>
+  <div class="nav" id="nav"></div>
+  <div class="container" id="main"></div>
+</div>
+
+<div id="modal-bg" class="modal-bg hidden"><div class="modal" id="modal-content"></div></div>
+
+<script>
+/* ═══════════ 基礎資料 ═══════════ */
+const DEV_STAGES = ['企劃選材','技術規格單','打版','樣本修改與確認','量產準備','倉存與物流','陳列銷售'];
+const REP_STAGES = ['銷售分析','打版','樣本修改與確認','量產準備','倉存與物流','陳列銷售'];
+const CATEGORIES = ['成人保暖衣','兒童保暖衣','成人抓毛','兒童抓毛','成人膠衣','兒童膠衣','成人泳裝','兒童泳裝','防曬用品','游水用品','防水袋','其他'];
+
+let users = [
+  {id:'adm', login:'admin', pw:'admin', name:'系統管理員', dept:'管理層', role:'system_admin', unit:null, active:true},
+  {id:'mgr', login:'manager', pw:'Manager123!', name:'一般管理層', dept:'管理層', role:'manager', unit:null, active:true},
+  {id:'kt', login:'kt.staff', pw:'Staff123!', name:'觀塘同事', dept:'觀塘', role:'personal', unit:'觀塘', active:true},
+  {id:'tm', login:'tm.staff', pw:'Staff123!', name:'屯門同事', dept:'屯門', role:'personal', unit:'屯門', active:true},
+  {id:'kwok', login:'kwok', pw:'1234', name:'郭sir', dept:'企劃／管理', role:'personal', unit:'灣仔', active:true},
+  {id:'ann',  login:'ann',  pw:'1234', name:'Ann',  dept:'生產部', role:'personal', unit:'觀塘', active:true},
+  {id:'coey', login:'coey', pw:'1234', name:'Coey', dept:'銷售／生產', role:'personal', unit:'荔枝角', active:true},
+];
+function isAdmin(){ return currentUser && currentUser.role==='system_admin'; }
+function isManager(){ return currentUser && currentUser.role==='manager'; }
+function isPersonal(){ return currentUser && currentUser.role==='personal'; }
+function canWriteProduction(){ return isAdmin(); }
+function roleLabel(u){
+  if(u.role==='system_admin') return '系統管理員';
+  if(u.role==='manager') return '一般管理層';
+  return (u.unit||u.dept||'個人');
+}
+const userName = id => users.find(u=>u.id===id)?.name || '—';
+const userDept = id => users.find(u=>u.id===id)?.dept || '';
+
+/* 狀態定義 */
+const ST = {
+  notstart:'未開始', pending:'待處理', doing:'進行中', wait:'待確認',
+  fix:'需要修改', done:'已完成', skip:'直接下一階段', na:'不適用'
+};
+function stTag(s){
+  const map = {'未開始':'s-notstart','待處理':'s-pending','進行中':'s-doing','待確認':'s-wait',
+    '需要修改':'s-fix','已退回':'s-return','已完成':'s-done','直接下一階段':'s-skip','不適用':'s-na','逾期':'s-overdue'};
+  return `<span class="tag ${map[s]||'s-notstart'}">${s}</span>`;
+}
+
+/* ═══════════ 示範項目資料 ═══════════ */
+function mkStage(name, handler, status, opts={}){
+  return {name, handler, status, deadline:opts.deadline||'', completedAt:opts.completedAt||null,
+    content:opts.content||'', files:opts.files||[], skipReason:opts.skipReason||'', returnReason:opts.returnReason||''};
+}
+let projects = [
+  {
+    id:'P001', type:'dev', code:'WS-999', name:'成人日本光皮長短', cat:'成人保暖衣',
+    icon:'🧥', owner:'coey', createdBy:'adm', created:'2026年7月20日', due:'2026-10-15',
+    desc:'• 高端款式選用日本YAMAMOTO\n• 設計以簡約為主\n• 大貨可以印刷YAMAMOTO字樣\n• 工廠持有YAMAMOTO授權證書',
+    status:'進行中',
+    stages:[
+      mkStage('企劃選材','kwok','已完成',{completedAt:'2026年7月24日', content:'方向：高端成人保暖衣，選用日本YAMAMOTO物料，簡約設計。', deadline:'2026-07-25'}),
+      mkStage('技術規格單','ann','已完成',{completedAt:'2026年7月30日', deadline:'2026-08-01',
+        files:[{name:'技術規格單V1.xlsx', by:'ann', time:'2026年7月28日 11:20', ver:'V1', latest:false},
+               {name:'技術規格單V2.xlsx', by:'ann', time:'2026年7月30日 15:05', ver:'V2', latest:true}]}),
+      mkStage('打版','ann','已完成',{completedAt:'2026年8月1日', content:'已交工廠打版，樣板已寄出。', deadline:'2026-08-02'}),
+      mkStage('樣本修改與確認','coey','待確認',{deadline:'2026-08-05', content:'樣板V1已收到，尺寸大致OK，後頸洗水標位置需再確認。',
+        files:[{name:'樣板V1相片.jpg', by:'coey', time:'2026年8月2日 16:40', ver:'V1', latest:true}]}),
+      mkStage('量產準備','ann','未開始',{deadline:'2026-08-20'}),
+      mkStage('倉存與物流','ann','未開始',{deadline:'2026-09-15'}),
+      mkStage('陳列銷售','coey','未開始',{deadline:'2026-10-15'}),
+    ],
+    comments:[
+      {by:'ann', time:'2026年8月3日 14:30', stage:'技術規格單', text:'第一版技術規格單已上載，請確認後頸洗水標位置。', file:null, removed:false, replies:[
+        {by:'kwok', time:'2026年8月3日 15:10', text:'@Ann 洗水標建議改到後頸內側，跟返上季做法。'}
+      ]},
+      {by:'coey', time:'2026年8月2日 16:45', stage:'樣本修改與確認', text:'樣板V1已收到並上載相片，整體OK，等管理層確認。', file:'樣板V1相片.jpg', removed:false, replies:[]},
+    ],
+    logs:[
+      {time:'2026年7月20日 10:00', user:'管理層', action:'建立項目', detail:'開發及生產｜WS-999'},
+      {time:'2026年7月20日 10:05', user:'管理層', action:'分配經手人', detail:'全部階段已分配'},
+      {time:'2026年7月24日 17:00', user:'郭sir', action:'完成階段', detail:'企劃選材'},
+      {time:'2026年7月30日 15:05', user:'Ann', action:'上載文件', detail:'技術規格單V2.xlsx'},
+      {time:'2026年8月2日 16:40', user:'Coey', action:'上載文件', detail:'樣板V1相片.jpg'},
+      {time:'2026年8月2日 16:50', user:'Coey', action:'提交確認', detail:'樣本修改與確認 → 待確認'},
+    ]
+  },
+  {
+    id:'P002', type:'rep', code:'WS-888', name:'1mm兒童抓毛上衣', cat:'兒童抓毛',
+    icon:'👕', owner:'coey', createdBy:'adm', created:'2026年7月28日', due:'2026-09-30',
+    desc:'補貨修改要求：\n• 每碼胸及腰全圍各收窄1cm\n• 洗水標位置更改到後頸\n• 其餘沒有修改',
+    status:'進行中',
+    stages:[
+      mkStage('銷售分析','coey','已完成',{completedAt:'2026年7月30日', content:'上季銷售理想，建議補貨600件，加大碼比例。', deadline:'2026-07-31',
+        files:[{name:'銷售分析報表.xlsx', by:'coey', time:'2026年7月30日 12:00', ver:'V1', latest:true}]}),
+      mkStage('打版','ann','進行中',{deadline:'2026-08-08', content:'因有尺寸修改，需要重新打版。'}),
+      mkStage('樣本修改與確認','coey','未開始',{deadline:'2026-08-15'}),
+      mkStage('量產準備','ann','未開始',{deadline:'2026-08-25'}),
+      mkStage('倉存與物流','ann','未開始',{deadline:'2026-09-20'}),
+      mkStage('陳列銷售','coey','未開始',{deadline:'2026-09-30'}),
+    ],
+    comments:[
+      {by:'coey', time:'2026年7月30日 12:05', stage:'銷售分析', text:'銷售分析已完成，建議補貨600件。@Ann 麻煩安排打版，注意每碼胸腰各收窄1cm。', file:'銷售分析報表.xlsx', removed:false, replies:[]},
+    ],
+    logs:[
+      {time:'2026年7月28日 09:30', user:'管理層', action:'建立項目', detail:'補貨｜WS-888'},
+      {time:'2026年7月30日 12:10', user:'Coey', action:'完成階段', detail:'銷售分析'},
+      {time:'2026年8月1日 10:00', user:'Ann', action:'開始處理', detail:'打版 → 進行中'},
+    ]
+  },
+  {
+    id:'P003', type:'dev', code:'WS-777', name:'兒童防曬套裝', cat:'防曬用品',
+    icon:'🧴', owner:'kwok', createdBy:'adm', created:'2026年8月1日', due:'2026-11-30',
+    desc:'• 新開發兒童防曬系列\n• 目標客戶：3-12歲兒童\n• 顏色以粉色系為主',
+    status:'進行中',
+    stages:[
+      mkStage('企劃選材','kwok','進行中',{deadline:'2026-08-10', content:'初步方向已定，選材中。'}),
+      mkStage('技術規格單','ann','未開始',{deadline:'2026-08-20'}),
+      mkStage('打版','ann','未開始',{deadline:'2026-09-05'}),
+      mkStage('樣本修改與確認','coey','未開始',{deadline:'2026-09-20'}),
+      mkStage('量產準備','ann','未開始',{deadline:'2026-10-10'}),
+      mkStage('倉存與物流','ann','未開始',{deadline:'2026-11-10'}),
+      mkStage('陳列銷售','coey','未開始',{deadline:'2026-11-30'}),
+    ],
+    comments:[], 
+    logs:[{time:'2026年8月1日 11:00', user:'管理層', action:'建立項目', detail:'開發及生產｜WS-777'}]
+  },
+];
+let projSeq = 4;
+let sysLogs = [];
+
+let currentUser = null, currentModule = 'production', currentView = 'home', currentProject = null, currentTab = 'overview', commentFilter = '全部';
+let listType = 'dev', fCat='全部', fStatus='全部', fKw='';
+
+/* ═══════════ 工具 ═══════════ */
+function nowStr(){ const d=new Date(); return d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日 '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+function todayStr(){ const d=new Date(); return d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日'; }
+function addSysLog(action, detail){ sysLogs.unshift({time:nowStr(), user:currentUser.name, action, detail}); }
+function addProjLog(p, action, detail){ p.logs.unshift({time:nowStr(), user:currentUser.name, action, detail}); addSysLog(action, p.code+'｜'+detail); }
+
+function stageDone(s){ return s.status==='已完成' || s.status==='直接下一階段' || s.status==='不適用'; }
+function projProgress(p){
+  const applicable = p.stages.filter(s=>s.status!=='不適用');
+  const done = applicable.filter(s=>s.status==='已完成'||s.status==='直接下一階段').length;
+  return applicable.length ? Math.round(done/applicable.length*100) : 0;
+}
+function currentStage(p){
+  const s = p.stages.find(x=>!stageDone(x));
+  return s ? s.name : '全部完成';
+}
+function projStatus(p){
+  if(p.status==='已取消'||p.status==='暫停') return p.status;
+  if(p.stages.every(stageDone)) return '已完成';
+  if(p.stages.some(s=>s.status==='待確認')) return '待確認';
+  if(p.stages.some(s=>s.status==='需要修改')) return '需要修改';
+  return '進行中';
+}
+function typeTag(t){ return t==='dev'?'<span class="tag t-dev">開發及生產</span>':'<span class="tag t-rep">補貨</span>'; }
+function canOperateStage(p, s){
+  if(isAdmin()) return true;
+  if(isManager()) return false;
+  return isPersonal() && s.handler===currentUser.id;
+}
+function fmtMention(text){
+  return text.replace(/@([^\s@，,。]+)/g,'<span class="mention">@$1</span>');
+}
+
+/* ═══════════ 登入/登出 ═══════════ */
+function doLogin(){
+  const u = document.getElementById('login-user').value.trim();
+  const p = document.getElementById('login-pw').value;
+  const user = users.find(x=>x.login===u && x.pw===p);
+  const err = document.getElementById('login-err');
+  if(!user){ err.textContent='登入名稱或密碼錯誤，請重試或聯絡管理層。'; err.style.display='block'; return; }
+  err.style.display='none'; currentUser = user;
+  document.getElementById('page-login').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  document.getElementById('top-user').textContent = user.role==='system_admin' ? '👑 '+user.name+'（系統管理員）' : (user.role==='manager' ? '🧭 '+user.name+'（一般管理層）' : '👤 '+user.name+'｜'+roleLabel(user));
+  currentModule = 'daily'; currentView='dailyToday'; currentProject=null;
+  ensureDailySeed(); generateRecurringForToday();
+  addSysLog('登入系統','');
+  render();
+}
+function logout(){ addSysLog('登出系統',''); currentUser=null; document.getElementById('app').classList.add('hidden'); document.getElementById('page-login').classList.remove('hidden'); document.getElementById('login-pw').value=''; }
+
+/* ═══════════ 導航及渲染 ═══════════ */
+function setModule(m){
+  currentModule = m; currentProject=null;
+  if(m==='daily'){ currentView='dailyToday'; ensureDailySeed(); generateRecurringForToday(); }
+  else if(m==='production'){ currentView='home'; listType='dev'; }
+  else { currentView='home'; listType='rep'; }
+  fCat='全部'; fStatus='全部'; fKw='';
+  render();
+}
+function render(){
+  const modNav = document.getElementById('module-nav');
+  const modules = [['daily','📅 每日工作流程'],['production','📐 開發及生產'],['replenishment','🔄 補貨']];
+  modNav.innerHTML = modules.map(([k,l])=>`<button class="${currentModule===k?'active':''}" onclick="setModule('${k}')">${l}</button>`).join('');
+  const nav = document.getElementById('nav');
+  let items = [];
+  if(currentModule==='daily'){
+    items = [['dailyToday','今日工作'],['dailyProgress','各單位進度']];
+    if(isAdmin()||isManager()) items.push(['dailyNew','新增突發'],['dailyRecurring','恆常模板']);
+  } else if(currentModule==='production'){
+    items = [['home','首頁'],['devList','項目列表'],['myTasks','我的工作']];
+    if(isAdmin()) items.push(['addProject','建立項目'],['sysLogs','操作記錄']);
+  } else {
+    items = [['home','首頁'],['repList','項目列表'],['myTasks','我的工作']];
+    if(isAdmin()) items.push(['addProject','建立項目'],['sysLogs','操作記錄']);
+  }
+  const subActive = (k)=> currentView===k || (currentView==='project' && ((k==='devList'&&currentModule==='production')||(k==='repList'&&currentModule==='replenishment')));
+  nav.innerHTML = items.map(([k,l])=>`<button class="${subActive(k)?'active':''}" onclick="go('${k}')">${l}</button>`).join('');
+  const views = {
+    home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : vHomeFiltered('dev'),
+    devList:()=>vList('dev'), repList:()=>vList('rep'), myTasks:vMyTasks, addProject:vAddProject, sysLogs:vSysLogs, project:vProject,
+    dailyToday:()=>vDailyToday(currentUser), dailyProgress:()=>vDailyProgress(currentUser),
+    dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser)
+  };
+  document.getElementById('main').innerHTML = (views[currentView]||views.home)();
+}
+function go(v){
+  currentView=v; currentProject=null;
+  if(v==='devList'){ listType='dev'; currentModule='production'; }
+  if(v==='repList'){ listType='rep'; currentModule='replenishment'; }
+  fCat='全部'; fStatus='全部'; fKw='';
+  render();
+}
+function vHomeFiltered(type){
+  const scoped = projects.filter(p=>p.type===type);
+  const waitConfirm = scoped.filter(p=>p.stages.some(s=>s.status==='待確認')).length;
+  const needFix = scoped.filter(p=>p.stages.some(s=>s.status==='需要修改')).length;
+  const myTasks = getMyTasks().filter(t=>{ const p=projects.find(x=>x.id===t.pid); return p && p.type===type; });
+  const allComments = scoped.flatMap(p=>p.comments.filter(c=>!c.removed).map(c=>({...c, pname:p.name, pid:p.id}))).slice(0,3);
+  const title = type==='dev' ? '開發及生產首頁' : '補貨首頁';
+  return `<div class="card">
+    <h2>🏭 ${title}｜${todayStr()}</h2>
+    <div class="stats">
+      <div class="stat"><div class="num blue">${scoped.length}</div><div class="lbl">項目總數</div></div>
+      <div class="stat"><div class="num orange">${waitConfirm}</div><div class="lbl">待確認</div></div>
+      <div class="stat"><div class="num red">${needFix}</div><div class="lbl">需要修改</div></div>
+      <div class="stat"><div class="num green">${myTasks.length}</div><div class="lbl">我的待辦</div></div>
+    </div>
+  </div>
+  ${!isAdmin() ? `<div class="card"><h2>📌 我的待辦工作（${myTasks.length}）</h2>
+    ${myTasks.length? `<div class="table-wrap"><table><tr><th>項目</th><th>產品編號</th><th>工作階段</th><th>期限</th><th>狀態</th></tr>
+    ${myTasks.map(t=>`<tr class="clickable" onclick="openProject('${t.pid}','flow')"><td>${t.pname}</td><td>${t.code}</td><td>${t.stage}</td><td>${t.deadline||'—'}</td><td>${stTag(t.status)}</td></tr>`).join('')}
+    </table></div>` : '<p style="color:#888">暫時沒有待辦工作。</p>'}
+  </div>`:''}
+  <div class="card"><h2>💬 最新留言</h2>
+    ${allComments.length? allComments.map(c=>`<div class="msg" style="cursor:pointer" onclick="openProject('${c.pid}','chat')">
+      <div class="mhead"><span class="mname">${userName(c.by)}</span><span class="tag dept">${userDept(c.by)}</span>
+      <span class="mtime">${c.time}</span><span class="tag s-pending">${c.pname}</span></div>
+      <div class="mbody">${fmtMention(c.text)}</div></div>`).join('') : '<p style="color:#888">暫無留言。</p>'}
+  </div>
+  <div class="card"><h2>📂 項目列表</h2>${projTable(scoped)}</div>`;
+}
+function openProject(pid, tab){ const p=projects.find(x=>x.id===pid); if(p) currentModule = p.type==='rep'?'replenishment':'production'; currentProject=pid; currentView='project'; currentTab=tab||'overview'; commentFilter='全部'; render(); }
+function setTab(t){ currentTab=t; render(); }
+
+/* ═══════════ 首頁 ═══════════ */
+function vHome(){
+  const dev = projects.filter(p=>p.type==='dev'), rep = projects.filter(p=>p.type==='rep');
+  const waitConfirm = projects.filter(p=>p.stages.some(s=>s.status==='待確認')).length;
+  const needFix = projects.filter(p=>p.stages.some(s=>s.status==='需要修改')).length;
+  const myTasks = getMyTasks();
+  const allComments = projects.flatMap(p=>p.comments.filter(c=>!c.removed).map(c=>({...c, pname:p.name, pid:p.id}))).slice(0,3);
+  return `<div class="card">
+    <h2>🏭 生產部首頁｜${todayStr()}</h2>
+    <div class="stats">
+      <div class="stat"><div class="num blue">${dev.length}</div><div class="lbl">開發及生產項目</div></div>
+      <div class="stat"><div class="num purple">${rep.length}</div><div class="lbl">補貨項目</div></div>
+      <div class="stat"><div class="num orange">${waitConfirm}</div><div class="lbl">待確認</div></div>
+      <div class="stat"><div class="num red">${needFix}</div><div class="lbl">需要修改</div></div>
+    </div>
+  </div>
+  ${!isAdmin() ? `<div class="card"><h2>📌 我的待辦工作（${myTasks.length}）</h2>
+    ${myTasks.length? `<div class="table-wrap"><table><tr><th>項目</th><th>產品編號</th><th>工作階段</th><th>期限</th><th>狀態</th></tr>
+    ${myTasks.map(t=>`<tr class="clickable" onclick="openProject('${t.pid}','flow')"><td>${t.pname}</td><td>${t.code}</td><td>${t.stage}</td><td>${t.deadline||'—'}</td><td>${stTag(t.status)}</td></tr>`).join('')}
+    </table></div>` : '<p style="color:#888">暫時沒有待辦工作。</p>'}
+  </div>`:''}
+  <div class="card"><h2>💬 最新留言</h2>
+    ${allComments.length? allComments.map(c=>`<div class="msg" style="cursor:pointer" onclick="openProject('${c.pid}','chat')">
+      <div class="mhead"><span class="mname">${userName(c.by)}</span><span class="tag dept">${userDept(c.by)}</span>
+      <span class="mtime">${c.time}</span><span class="tag s-pending">${c.pname}</span></div>
+      <div class="mbody">${fmtMention(c.text)}</div></div>`).join('') : '<p style="color:#888">暫無留言。</p>'}
+  </div>
+  <div class="card"><h2>📂 全部項目</h2>${projTable(projects)}</div>`;
+}
+function getMyTasks(){
+  const out = [];
+  projects.forEach(p=>{
+    if(p.status==='已取消') return;
+    p.stages.forEach(s=>{
+      if(s.handler===currentUser.id && !stageDone(s) && ['進行中','待處理','需要修改','待確認','未開始'].includes(s.status)){
+        // 只顯示已經輪到或進行中嘅階段
+        const idx = p.stages.indexOf(s);
+        const prevDone = idx===0 || p.stages.slice(0,idx).every(stageDone);
+        if(prevDone || s.status!=='未開始') out.push({pid:p.id, pname:p.name, code:p.code, stage:s.name, deadline:s.deadline, status:s.status});
+      }
+    });
+  });
+  return out;
+}
+
+/* ═══════════ 項目列表 ═══════════ */
+function projTable(list){
+  if(!list.length) return '<p style="color:#888">沒有符合條件的項目。</p>';
+  return `<div class="table-wrap"><table>
+    <tr><th>建立日期</th><th>圖片</th><th>產品編號</th><th>項目簡介</th><th>類別</th><th>類型</th><th>目前階段</th><th>狀態</th><th>完成進度</th></tr>
+    ${list.map(p=>{const pct=projProgress(p);return `<tr class="clickable" onclick="openProject('${p.id}')">
+      <td style="font-size:12px">${p.created}</td><td><div class="thumb">${p.icon}</div></td>
+      <td><b>${p.code}</b></td><td>${p.name}</td><td>${p.cat}</td><td>${typeTag(p.type)}</td>
+      <td>${currentStage(p)}</td><td>${stTag(projStatus(p))}</td>
+      <td style="min-width:100px"><div class="pbar"><div style="width:${pct}%"></div></div><div style="font-size:11px;text-align:right;color:#2e7d32">${pct}%</div></td>
+    </tr>`;}).join('')}</table></div>`;
+}
+function vList(type){
+  listType = type;
+  let list = projects.filter(p=>p.type===type);
+  if(fCat!=='全部') list = list.filter(p=>p.cat===fCat);
+  if(fStatus!=='全部') list = list.filter(p=>projStatus(p)===fStatus);
+  if(fKw) list = list.filter(p=>(p.code+p.name+p.desc+p.cat).toLowerCase().includes(fKw.toLowerCase()));
+  return `<div class="card">
+    <h2>${type==='dev'?'📐 開發及生產項目':'🔄 補貨項目'}（${list.length}）</h2>
+    <div class="filters">
+      <select onchange="fCat=this.value;render()"><option ${fCat==='全部'?'selected':''}>全部</option>${CATEGORIES.map(c=>`<option ${fCat===c?'selected':''}>${c}</option>`).join('')}</select>
+      <select onchange="fStatus=this.value;render()">${['全部','進行中','待確認','需要修改','已完成'].map(s=>`<option ${fStatus===s?'selected':''}>${s}</option>`).join('')}</select>
+      <input type="text" placeholder="搜尋編號／名稱／內容" value="${fKw}" onchange="fKw=this.value;render()">
+      ${isAdmin()?`<button class="btn sm" onclick="go('addProject')">＋ 建立新項目</button><button class="btn gray sm" onclick="alert2('示範版：正式版可匯出 Excel / CSV / PDF。')">匯出資料</button>`:''}
+    </div>
+    ${projTable(list)}
+  </div>`;
+}
+
+/* ═══════════ 我的工作 ═══════════ */
+function vMyTasks(){
+  if(isAdmin()){
+    // 管理層：顯示待確認及未分配
+    const waits = [];
+    projects.forEach(p=>p.stages.forEach(s=>{ if(s.status==='待確認') waits.push({p,s}); }));
+    return `<div class="card"><h2>✅ 等待管理層確認（${waits.length}）</h2>
+      ${waits.length?`<div class="table-wrap"><table><tr><th>項目</th><th>階段</th><th>經手人</th><th>操作</th></tr>
+      ${waits.map(({p,s})=>`<tr><td>${p.code} ${p.name}</td><td>${s.name}</td><td>${userName(s.handler)}</td>
+        <td><button class="btn sm" onclick="openProject('${p.id}','flow')">處理</button></td></tr>`).join('')}</table></div>`:'<p style="color:#888">沒有等待確認的階段。</p>'}
+    </div>
+    <div class="card"><h2>👥 各經手人待辦工作</h2>
+      <div class="table-wrap"><table><tr><th>經手人</th><th>部門</th><th>待辦階段數</th></tr>
+      ${users.filter(u=>u.role==='personal').map(u=>{
+        let n=0; projects.forEach(p=>p.stages.forEach(s=>{ if(s.handler===u.id&&!stageDone(s)) n++; }));
+        return `<tr><td>${u.name}</td><td>${u.dept}</td><td><b>${n}</b></td></tr>`;}).join('')}
+      </table></div></div>`;
+  }
+  const tasks = getMyTasks();
+  const doneList = [];
+  projects.forEach(p=>p.stages.forEach(s=>{ if(s.handler===currentUser.id&&s.status==='已完成') doneList.push({p,s}); }));
+  return `<div class="card"><h2>📌 我的待辦工作（${tasks.length}）</h2>
+    ${tasks.length?`<div class="table-wrap"><table><tr><th>項目</th><th>產品編號</th><th>工作階段</th><th>完成期限</th><th>狀態</th><th>操作</th></tr>
+    ${tasks.map(t=>`<tr><td>${t.pname}</td><td>${t.code}</td><td>${t.stage}</td><td>${t.deadline||'—'}</td><td>${stTag(t.status)}</td>
+      <td><button class="btn sm" onclick="openProject('${t.pid}','flow')">查看／處理</button></td></tr>`).join('')}</table></div>`:'<p style="color:#888">暫時沒有待辦工作。</p>'}
+  </div>
+  <div class="card"><h2>✔️ 我已完成的階段（${doneList.length}）</h2>
+    ${doneList.length?`<div class="table-wrap"><table><tr><th>項目</th><th>階段</th><th>完成日期</th></tr>
+    ${doneList.map(({p,s})=>`<tr class="clickable" onclick="openProject('${p.id}','flow')"><td>${p.code} ${p.name}</td><td>${s.name}</td><td>${s.completedAt||'—'}</td></tr>`).join('')}</table></div>`:'<p style="color:#888">暫無記錄。</p>'}
+  </div>`;
+}
+
+/* ═══════════ 項目詳情 ═══════════ */
+function vProject(){
+  const p = projects.find(x=>x.id===currentProject);
+  if(!p) return vHome();
+  const pct = projProgress(p);
+  const tabs = [['overview','項目概覽'],['flow','工作流程'],['files','文件及圖片'],['chat','項目對話'],['logs','操作記錄']];
+  return `<div class="card">
+    <button class="btn gray sm" onclick="go('${p.type==='dev'?'devList':'repList'}')">← 返回列表</button>
+    <div style="display:flex;gap:14px;align-items:center;margin-top:12px;flex-wrap:wrap">
+      <div class="thumb" style="width:64px;height:64px;font-size:32px">${p.icon}</div>
+      <div style="flex:1;min-width:200px">
+        <h2 style="margin-bottom:4px">${p.code}｜${p.name}</h2>
+        <div style="font-size:13px;color:#777">${typeTag(p.type)} <span class="tag dept">${p.cat}</span> ${stTag(projStatus(p))}
+          <span style="margin-left:6px">負責人：${userName(p.owner)}</span></div>
+      </div>
+      <div style="min-width:140px;text-align:right">
+        <div style="font-size:22px;font-weight:bold;color:#2e7d32">${pct}%</div>
+        <div class="pbar"><div style="width:${pct}%"></div></div>
+        <div style="font-size:11px;color:#888;margin-top:2px">目前階段：${currentStage(p)}</div>
+      </div>
+    </div>
+    <div class="tabs" style="margin-top:14px">
+      ${tabs.map(([k,l])=>`<button class="${currentTab===k?'active':''}" onclick="setTab('${k}')">${l}${k==='chat'?`（${p.comments.filter(c=>!c.removed).length}）`:''}</button>`).join('')}
+    </div>
+    ${{overview:tabOverview, flow:tabFlow, files:tabFiles, chat:tabChat, logs:tabLogs}[currentTab](p)}
+  </div>`;
+}
+
+function tabOverview(p){
+  return `<div class="table-wrap"><table>
+    <tr><th style="width:130px">項目編號</th><td>${p.id}</td></tr>
+    <tr><th>建立工作日期</th><td>${p.created}</td></tr>
+    <tr><th>項目類型</th><td>${typeTag(p.type)}</td></tr>
+    <tr><th>產品編號</th><td><b>${p.code}</b></td></tr>
+    <tr><th>項目簡介</th><td>${p.name}</td></tr>
+    <tr><th>產品類別</th><td>${p.cat}</td></tr>
+    <tr><th>項目負責人</th><td>${userName(p.owner)}（${userDept(p.owner)}）</td></tr>
+    <tr><th>項目建立人</th><td>${userName(p.createdBy)}</td></tr>
+    <tr><th>預計完成日期</th><td>${p.due}</td></tr>
+    <tr><th>目前階段</th><td>${currentStage(p)}</td></tr>
+    <tr><th>整體狀態</th><td>${stTag(projStatus(p))}</td></tr>
+    <tr><th>項目詳細</th><td style="white-space:pre-wrap">${p.desc}</td></tr>
+  </table></div>
+  ${isAdmin()?`<div class="actions-row">
+    <button class="btn warn sm" onclick="alert2('示範版：正式版可編輯項目資料，並保留修改前後版本。')">編輯項目資料</button>
+    <button class="btn red sm" onclick="alert2('示範版：正式版可暫停、取消或封存項目，並記錄原因。')">暫停／取消項目</button>
+  </div>`:''}`;
+}
+
+/* ── 工作流程分頁 ── */
+function tabFlow(p){
+  const curName = currentStage(p);
+  return p.stages.map((s,i)=>{
+    const done = stageDone(s);
+    const isCur = s.name===curName && !done;
+    const mine = canOperateStage(p,s);
+    let numCls = done?'done':isCur?'current':'';
+    let actions = '';
+    if(!isAdmin() && s.handler===currentUser.id){
+      if(['未開始','待處理'].includes(s.status)) actions += `<button class="btn sm" onclick="stageAction('${p.id}',${i},'start')">開始處理</button>`;
+      if(['進行中','需要修改'].includes(s.status)) actions += `<button class="btn green sm" onclick="stageAction('${p.id}',${i},'submit')">提交確認</button>`;
+      if(!done) actions += `<button class="btn purple sm" onclick="askUpload('${p.id}',${i})">上載文件／圖片</button>
+        <button class="btn gray sm" onclick="askContent('${p.id}',${i})">填寫工作內容</button>`;
+    }
+    if(isAdmin()){
+      if(s.status==='待確認') actions += `<button class="btn green sm" onclick="stageAction('${p.id}',${i},'confirm')">✓ 確認完成</button>
+        <button class="btn red sm" onclick="askReturn('${p.id}',${i})">退回修改</button>`;
+      if(!done && s.status!=='待確認') actions += `<button class="btn purple sm" onclick="askSkip('${p.id}',${i})">跳過（直接下一階段）</button>`;
+      actions += `<button class="btn gray sm" onclick="askReassign('${p.id}',${i})">重新分配經手人</button>`;
+      if(s.status==='已完成') actions += `<button class="btn warn sm" onclick="stageAction('${p.id}',${i},'reopen')">重新開啟</button>`;
+    }
+    return `<div class="stage ${isCur?'current-stage':''}">
+      <div class="stage-head" onclick="this.nextElementSibling.classList.toggle('hidden')">
+        <div class="stage-num ${numCls}">${done?'✓':i+1}</div>
+        <div class="stage-name">${s.name}</div>
+        <span class="tag dept">👤 ${userName(s.handler)}</span>
+        ${s.deadline?`<span style="font-size:12px;color:#888">⏰ ${s.deadline}</span>`:''}
+        ${stTag(s.status)}
+      </div>
+      <div class="stage-body ${isCur||s.status==='待確認'?'':'hidden'}">
+        ${s.content?`<div class="row">📋 工作內容：<span style="white-space:pre-wrap">${s.content}</span></div>`:''}
+        ${s.completedAt?`<div class="row">✅ 完成日期：${s.completedAt}</div>`:''}
+        ${s.skipReason?`<div class="row">⏭ 跳過原因：${s.skipReason}</div>`:''}
+        ${s.returnReason?`<div class="row" style="color:#c62828">↩️ 退回原因：${s.returnReason}</div>`:''}
+        ${s.files.length?`<div class="row">📎 文件：${s.files.map(f=>f.name+(f.latest?' ✅':'')).join('、')}</div>`:''}
+        ${!mine&&!isAdmin()?'<div class="row" style="color:#8d6e00">🔒 此階段由 '+userName(s.handler)+' 負責，你只可查看。</div>':''}
+        <div class="actions-row">${actions}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function stageAction(pid, idx, act){
+  if(isManager()){ alert2('一般管理層只可監督查看，不可推進階段。'); return; }
+  if(['confirm','reopen'].includes(act) && !isAdmin()){ alert2('只有系統管理員可以確認或重開。'); return; }
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(act==='start'){ s.status='進行中'; addProjLog(p,'開始處理', s.name+' → 進行中'); }
+  if(act==='submit'){ s.status='待確認'; s.returnReason=''; addProjLog(p,'提交確認', s.name+' → 待確認'); }
+  if(act==='confirm'){ s.status='已完成'; s.completedAt=todayStr(); addProjLog(p,'確認完成', s.name+'｜經手人：'+userName(s.handler)); }
+  if(act==='reopen'){ s.status='進行中'; s.completedAt=null; addProjLog(p,'重新開啟階段', s.name); }
+  render();
+}
+function askReturn(pid, idx){
+  if(!isAdmin()){ alert2('只有系統管理員可以退回修改。'); return; }
+  showModal(`<h3>退回修改</h3><label>退回原因（必填）</label><input type="text" id="m-reason" placeholder="請輸入退回原因">
+    <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
+    <button class="btn red sm" onclick="doReturn('${pid}',${idx})">確認退回</button></div>`);
+}
+function doReturn(pid, idx){
+  const r = document.getElementById('m-reason').value.trim();
+  if(!r){ alert2('請填寫退回原因。'); return; }
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  s.status='需要修改'; s.returnReason=r;
+  addProjLog(p,'退回修改', s.name+'｜原因：'+r);
+  closeModal(); render();
+}
+function askSkip(pid, idx){
+  if(!isAdmin()){ alert2('只有系統管理員可以跳過階段。'); return; }
+  showModal(`<h3>跳過此階段（直接下一階段）</h3>
+    <p style="font-size:13px;color:#888">例如：沿用上一批最終確認樣板，產品規格沒有修改。</p>
+    <label>跳過原因（必填）</label><input type="text" id="m-reason" placeholder="請輸入原因">
+    <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
+    <button class="btn purple sm" onclick="doSkip('${pid}',${idx})">確認跳過</button></div>`);
+}
+function doSkip(pid, idx){
+  const r = document.getElementById('m-reason').value.trim();
+  if(!r){ alert2('請填寫跳過原因。'); return; }
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  s.status='直接下一階段'; s.skipReason=r; s.completedAt=todayStr();
+  addProjLog(p,'跳過階段', s.name+'｜原因：'+r);
+  closeModal(); render();
+}
+function askReassign(pid, idx){
+  if(!isAdmin()){ alert2('只有系統管理員可以重新分配經手人。'); return; }
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  showModal(`<h3>重新分配經手人</h3>
+    <p style="font-size:13px">階段：<b>${s.name}</b>｜現時經手人：<b>${userName(s.handler)}</b></p>
+    <label>新經手人</label><select id="m-handler">${users.filter(u=>u.role==='personal').map(u=>`<option value="${u.id}" ${u.id===s.handler?'selected':''}>${u.name}（${u.dept}）</option>`).join('')}</select>
+    <label>更改原因（必填）</label><input type="text" id="m-reason" placeholder="請輸入原因">
+    <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
+    <button class="btn sm" onclick="doReassign('${pid}',${idx})">確認更改</button></div>`);
+}
+function doReassign(pid, idx){
+  const r = document.getElementById('m-reason').value.trim();
+  const nh = document.getElementById('m-handler').value;
+  if(!r){ alert2('請填寫更改原因。'); return; }
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  addProjLog(p,'更改經手人', s.name+'：'+userName(s.handler)+' → '+userName(nh)+'｜原因：'+r+'（系統已通知原有及新經手人）');
+  s.handler = nh;
+  closeModal(); render();
+}
+function askContent(pid, idx){
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  showModal(`<h3>填寫工作內容</h3><p style="font-size:13px">階段：<b>${s.name}</b></p>
+    <label>工作內容</label><textarea id="m-content">${s.content||''}</textarea>
+    <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
+    <button class="btn sm" onclick="doContent('${pid}',${idx})">儲存</button></div>`);
+}
+function doContent(pid, idx){
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  s.content = document.getElementById('m-content').value.trim();
+  addProjLog(p,'更新工作內容', s.name);
+  closeModal(); render();
+}
+function askUpload(pid, idx){
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  showModal(`<h3>上載文件／圖片</h3><p style="font-size:13px">階段：<b>${s.name}</b>｜支援 JPG、PNG、PDF、Word、Excel、ZIP 等</p>
+    <label>選擇檔案（示範版只記錄檔案名稱）</label><input type="file" id="m-file">
+    <label>或輸入檔案名稱</label><input type="text" id="m-fname" placeholder="例如：技術規格單V3.xlsx">
+    <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
+    <button class="btn purple sm" onclick="doUpload('${pid}',${idx})">上載</button></div>`);
+}
+function doUpload(pid, idx){
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  const fi = document.getElementById('m-file');
+  let name = fi.files && fi.files[0] ? fi.files[0].name : document.getElementById('m-fname').value.trim();
+  if(!name){ alert2('請選擇檔案或輸入檔案名稱。'); return; }
+  s.files.forEach(f=>f.latest=false);
+  const ver = 'V'+(s.files.length+1);
+  s.files.push({name, by:currentUser.id, time:nowStr(), ver, latest:true});
+  addProjLog(p,'上載文件', s.name+'｜'+name+'（'+ver+'）');
+  closeModal(); render();
+}
+
+/* ── 文件分頁 ── */
+function tabFiles(p){
+  const all = [];
+  p.stages.forEach(s=>s.files.forEach(f=>all.push({...f, stage:s.name})));
+  return `<div class="info-banner">📁 同一份文件可有多個版本，舊版本會保留，系統標示最新版本。</div>
+    ${all.length? all.map(f=>`<div class="file-item">
+      <span>📎</span><span class="fname">${f.name}</span>
+      <span class="tag s-pending">${f.stage}</span><span class="tag dept">${f.ver}</span>
+      ${f.latest?'<span class="latest-badge">最新版本</span>':''}
+      <span class="fmeta">上載人：${userName(f.by)}｜${f.time}</span>
+      <button class="btn gray sm" onclick="alert2('示範版：正式版可預覽及下載文件。')">下載</button>
+    </div>`).join('') : '<p style="color:#888">此項目暫無文件。</p>'}`;
+}
+
+/* ── 留言板分頁 ── */
+function tabChat(p){
+  const stageOpts = ['整體項目', ...p.stages.map(s=>s.name)];
+  let comments = p.comments;
+  if(commentFilter!=='全部') comments = comments.filter(c=>c.stage===commentFilter);
+  return `<div class="info-banner">💬 此留言板只顯示「${p.code} ${p.name}」的相關溝通。留言不代表工作完成，經手人仍需在工作流程更新狀態。支援 @同事 提及功能。</div>
+    <div class="filters"><span style="font-size:13px;color:#888;align-self:center">按階段篩選：</span>
+      <select onchange="commentFilter=this.value;render()">
+        <option ${commentFilter==='全部'?'selected':''}>全部</option>
+        ${stageOpts.map(s=>`<option ${commentFilter===s?'selected':''}>${s}</option>`).join('')}
+      </select></div>
+    ${comments.length? comments.map((c,i)=>{
+      const realIdx = p.comments.indexOf(c);
+      return `<div class="msg">
+      ${c.removed? '<div class="removed">此留言已由管理層移除。（原始記錄保留供管理層查閱）</div>' : `
+      <div class="mhead"><span class="mname">${userName(c.by)}</span><span class="tag dept">${userDept(c.by)}</span>
+        <span class="mtime">${c.time}</span><span class="tag s-pending">${c.stage}</span></div>
+      <div class="mbody">${fmtMention(c.text)}</div>
+      ${c.file?`<div class="mfile">📎 附件：${c.file}</div>`:''}
+      ${c.replies.map(r=>`<div class="reply"><div class="mhead"><span class="mname">${userName(r.by)}</span>
+        <span class="mtime">${r.time}</span></div><div class="mbody">${fmtMention(r.text)}</div></div>`).join('')}
+      <div class="actions-row">
+        <button class="btn gray sm" onclick="askReply('${p.id}',${realIdx})">回覆</button>
+        ${isAdmin()?`<button class="btn red sm" onclick="removeComment('${p.id}',${realIdx})">移除留言</button>`:''}
+      </div>`}
+    </div>`;}).join('') : '<p style="color:#888;margin-bottom:12px">暫無留言。</p>'}
+    <div class="card" style="background:#f7f9fc;margin-top:14px">
+      <h3>✏️ 發表新留言</h3>
+      <label>相關工作階段</label>
+      <select id="c-stage">${stageOpts.map(s=>`<option>${s}</option>`).join('')}</select>
+      <label>留言內容（可用 @姓名 提及同事，例如 @Ann）</label>
+      <textarea id="c-text" placeholder="輸入留言內容…"></textarea>
+      <label>附件名稱（選填，示範用）</label>
+      <input type="text" id="c-file" placeholder="例如：樣板V2相片.jpg">
+      <button class="btn" onclick="postComment('${p.id}')">發表留言</button>
+    </div>`;
+}
+function postComment(pid){
+  const p = projects.find(x=>x.id===pid);
+  const text = document.getElementById('c-text').value.trim();
+  if(!text){ alert2('請輸入留言內容。'); return; }
+  const stage = document.getElementById('c-stage').value;
+  const file = document.getElementById('c-file').value.trim() || null;
+  p.comments.unshift({by:currentUser.id, time:nowStr(), stage, text, file, removed:false, replies:[]});
+  addProjLog(p,'發表留言', stage+'｜'+text.slice(0,30)+(text.length>30?'…':''));
+  const mentions = text.match(/@([^\s@，,。]+)/g);
+  if(mentions) addProjLog(p,'留言提及通知', mentions.join('、')+' 將收到系統通知');
+  render();
+}
+function askReply(pid, idx){
+  showModal(`<h3>回覆留言</h3><label>回覆內容</label><textarea id="m-reply"></textarea>
+    <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
+    <button class="btn sm" onclick="doReply('${pid}',${idx})">回覆</button></div>`);
+}
+function doReply(pid, idx){
+  const text = document.getElementById('m-reply').value.trim();
+  if(!text){ alert2('請輸入回覆內容。'); return; }
+  const p = projects.find(x=>x.id===pid);
+  p.comments[idx].replies.push({by:currentUser.id, time:nowStr(), text});
+  addProjLog(p,'回覆留言', text.slice(0,30));
+  closeModal(); render();
+}
+function removeComment(pid, idx){
+  const p = projects.find(x=>x.id===pid);
+  p.comments[idx].removed = true;
+  addProjLog(p,'移除留言', '留言人：'+userName(p.comments[idx].by)+'（原始記錄保留）');
+  render();
+}
+
+/* ── 操作記錄分頁 ── */
+function tabLogs(p){
+  return `<div class="table-wrap"><table><tr><th>時間</th><th>操作人員</th><th>操作</th><th>詳情</th></tr>
+    ${p.logs.map(l=>`<tr><td style="font-size:11px;white-space:nowrap">${l.time}</td><td>${l.user}</td><td><b>${l.action}</b></td><td style="font-size:12px">${l.detail}</td></tr>`).join('')}
+  </table></div>`;
+}
+
+/* ═══════════ 建立項目（管理層） ═══════════ */
+function vAddProject(){
+  const staffOpts = users.filter(u=>u.role==='personal').map(u=>`<option value="${u.id}">${u.name}（${u.dept}）</option>`).join('');
+  return `<div class="card"><h2>➕ 建立新項目</h2>
+    <label>項目類型</label>
+    <select id="np-type" onchange="renderNpStages()">
+      <option value="dev">開發及生產（7個階段）</option>
+      <option value="rep">補貨（6個階段）</option>
+    </select>
+    <label>產品編號</label><input type="text" id="np-code" placeholder="例如：WS-666">
+    <label>項目簡介</label><input type="text" id="np-name" placeholder="例如：成人抓毛套裝">
+    <label>產品類別</label><select id="np-cat">${CATEGORIES.map(c=>`<option>${c}</option>`).join('')}</select>
+    <label>項目詳細內容（支援分行）</label><textarea id="np-desc" placeholder="• 要求一&#10;• 要求二"></textarea>
+    <label>項目負責人</label><select id="np-owner">${staffOpts}</select>
+    <label>預計完成日期</label><input type="date" id="np-due">
+    <h3 style="margin-top:16px">各階段經手人分配（可暫時保留未分配）</h3>
+    <div id="np-stages"></div>
+    <button class="btn" onclick="createProject()">建立項目</button>
+  </div>`;
+}
+function renderNpStages(){
+  const type = document.getElementById('np-type').value;
+  const stages = type==='dev'?DEV_STAGES:REP_STAGES;
+  const staffOpts = users.filter(u=>u.role==='personal').map(u=>`<option value="${u.id}">${u.name}（${u.dept}）</option>`).join('');
+  document.getElementById('np-stages').innerHTML = stages.map((s,i)=>`
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+      <span style="min-width:140px;font-size:13px"><b>${i+1}. ${s}</b></span>
+      <select class="np-handler" style="width:auto;font-size:13px;padding:6px">${staffOpts}</select>
+    </div>`).join('');
+}
+function createProject(){
+  if(!isAdmin()){ alert2('只有系統管理員可以建立項目。'); return; }
+  const type = document.getElementById('np-type').value;
+  const code = document.getElementById('np-code').value.trim();
+  const name = document.getElementById('np-name').value.trim();
+  if(!code||!name){ alert2('請輸入產品編號及項目簡介。'); return; }
+  const cat = document.getElementById('np-cat').value;
+  const desc = document.getElementById('np-desc').value.trim();
+  const owner = document.getElementById('np-owner').value;
+  const due = document.getElementById('np-due').value || '—';
+  const stages = (type==='dev'?DEV_STAGES:REP_STAGES);
+  const handlers = [...document.querySelectorAll('.np-handler')].map(s=>s.value);
+  const p = {
+    id:'P'+String(projSeq++).padStart(3,'0'), type, code, name, cat, icon:type==='dev'?'🆕':'🔄',
+    owner, createdBy:currentUser.id, created:todayStr(), due, desc, status:'進行中',
+    stages: stages.map((s,i)=>mkStage(s, handlers[i], i===0?'待處理':'未開始')),
+    comments:[], logs:[]
+  };
+  projects.unshift(p);
+  addProjLog(p,'建立項目',(type==='dev'?'開發及生產':'補貨')+'｜'+code+'｜'+name);
+  addProjLog(p,'分配經手人','全部階段已分配（相關經手人將收到系統通知）');
+  showModal(`<h3>✅ 已建立項目</h3><p>「${code}｜${name}」已建立，共 ${stages.length} 個階段，經手人已收到通知。</p>
+    <div class="actions"><button class="btn sm" onclick="closeModal();openProject('${p.id}','flow')">查看項目</button></div>`);
+}
+
+/* ═══════════ 系統操作記錄 ═══════════ */
+function vSysLogs(){
+  const all = [...sysLogs, ...projects.flatMap(p=>p.logs.map(l=>({...l, detail:p.code+'｜'+(l.detail||'')})))];
+  return `<div class="card"><h2>📜 系統操作記錄（全部項目）</h2>
+    <div class="table-wrap"><table><tr><th>時間</th><th>操作人員</th><th>操作</th><th>詳情</th></tr>
+    ${all.map(l=>`<tr><td style="font-size:11px;white-space:nowrap">${l.time}</td><td>${l.user}</td><td><b>${l.action}</b></td><td style="font-size:12px">${l.detail}</td></tr>`).join('')}
+    </table></div></div>`;
+}
+
+﻿var DAILY_KEY='store-web-daily-v1',FIXED_UNITS=['觀塘','荔枝角','灣仔','屯門'],STORE_UNITS=['觀塘','荔枝角','灣仔','屯門','國內倉'],dailyView='today',dailyUnitFilter='全部',dailyStateCache=null;
+function dailyTodayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function dailyNowStr(){return typeof nowStr!=='undefined'&&nowStr?nowStr:new Date().toLocaleString('zh-HK')}
+function dailyUserId(user){user=user||(typeof currentUser!=='undefined'?currentUser:null);return user&&(user.accountId||user.id||user.username||user.name)?String(user.accountId||user.id||user.username||user.name):'system'}
+function dailyIsAdmin(user){return !!(user&&user.role==='system_admin')}function dailyIsManager(user){return !!(user&&user.role==='manager')}function dailyCanManage(user){return dailyIsAdmin(user)||dailyIsManager(user)}
+function dailyId(prefix){return prefix+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7)}
+function dailyBaseState(){return {works:[],recurringTemplates:[],settlements:{}}}
+function dailyNormalizeState(raw){var s=raw&&typeof raw==='object'?raw:dailyBaseState();s.works=Array.isArray(s.works)?s.works:[];s.recurringTemplates=Array.isArray(s.recurringTemplates)?s.recurringTemplates:[];s.settlements=s.settlements&&typeof s.settlements==='object'?s.settlements:{};return s}
+function saveDailyState(nextState){dailyStateCache=dailyNormalizeState(nextState||dailyStateCache||dailyBaseState());try{if(typeof localStorage!=='undefined')localStorage.setItem(DAILY_KEY,JSON.stringify(dailyStateCache))}catch(e){}return dailyStateCache}
+function dailySeedWork(unit,title,kind,note){return {id:dailyId(kind==='settlement'?'set':'wrk'),title:title,unit:unit,kind:kind,status:'open',dueDate:dailyTodayStr(),note:note||'',completedAt:null,createdBy:'system',handlerAccountId:null}}
+function dailyEnsureSettlements(s){var today=dailyTodayStr();FIXED_UNITS.forEach(function(unit){if(!s.settlements[unit]||s.settlements[unit].date!==today)s.settlements[unit]={date:today,state:'open'};else if(!s.settlements[unit].state)s.settlements[unit].state='open';var w=s.works.find(function(x){return x.kind==='settlement'&&x.unit===unit&&x.dueDate===today});if(!w)s.works.push({id:'settle_'+unit+'_'+today,title:unit+' 今日結算',unit:unit,kind:'settlement',status:s.settlements[unit].state==='closed'?'done':'open',dueDate:today,note:'',completedAt:s.settlements[unit].state==='closed'?dailyNowStr():null,createdBy:'system',handlerAccountId:null});else{w.status=s.settlements[unit].state==='closed'?'done':'open';w.completedAt=s.settlements[unit].state==='closed'?(w.completedAt||dailyNowStr()):null}})}
+function generateRecurringForToday(){var s=loadDailyState(),today=dailyTodayStr();s.recurringTemplates.forEach(function(t){if(!t||!t.active)return;(t.units||[]).forEach(function(unit){if(!unit)return;var exists=s.works.some(function(w){return w.kind==='recurring'&&w.title===t.title&&w.unit===unit&&w.dueDate===today});if(!exists)s.works.push({id:'rec_'+t.id+'_'+unit+'_'+today,title:t.title,unit:unit,kind:'recurring',status:'open',dueDate:today,note:'',completedAt:null,createdBy:'system',handlerAccountId:null})})});saveDailyState(s);return s}
+function ensureDailySeed(){var s=loadDailyState(),today=dailyTodayStr(),changed=false;if(!s.works.length){s.works.push(dailySeedWork('觀塘','整理今日到貨箱單','adhoc','示範：確認收貨與上架時序。'),dailySeedWork('屯門','更新門市陳列清單','adhoc','示範：檢查缺貨與陳列位置。'));changed=true;}if(!s.recurringTemplates.length){s.recurringTemplates.push({id:dailyId('tpl'),title:'門市巡檢',units:FIXED_UNITS.slice(),active:true},{id:dailyId('tpl'),title:'倉存點算',units:['國內倉'],active:true});changed=true;}dailyEnsureSettlements(s);if(changed)saveDailyState(s);generateRecurringForToday();return loadDailyState()}
+function loadDailyState(){if(dailyStateCache)return dailyStateCache;try{var raw=typeof localStorage!=='undefined'?localStorage.getItem(DAILY_KEY):null;dailyStateCache=raw?dailyNormalizeState(JSON.parse(raw)):dailyBaseState()}catch(e){dailyStateCache=dailyBaseState()}return dailyStateCache}
+function isDailyTodayWork(w){return !!w&&w.dueDate===dailyTodayStr()}
+function getTodayWorksForUser(user){var s=loadDailyState(),mine=dailyUserId(user),list=s.works.filter(isDailyTodayWork);if(dailyCanManage(user)){if(dailyUnitFilter!=='全部')list=list.filter(function(w){return w.unit===dailyUnitFilter});return list.sort(function(a,b){return a.unit.localeCompare(b.unit,'zh-Hant')||a.title.localeCompare(b.title,'zh-Hant')})}return list.filter(function(w){return w.unit===(user&&(user.fixedUnit||user.unit))||w.handlerAccountId===mine}).sort(function(a,b){return a.unit.localeCompare(b.unit,'zh-Hant')||a.title.localeCompare(b.title,'zh-Hant')})}
+function completeDailyWork(id,user){var s=loadDailyState(),w=s.works.find(function(x){return x.id===id});if(!w)return false;if(w.status==='done')return true;w.status='done';w.completedAt=dailyNowStr();if(w.kind==='settlement')s.settlements[w.unit]={date:dailyTodayStr(),state:'closed'};saveDailyState(s);return true}
+function createAdhocWork(data,user){var s=loadDailyState();if(!dailyCanManage(user))return false;var title=(data&&data.title?String(data.title):'').trim(),units=(data&&Array.isArray(data.units)?data.units:[]).filter(function(u,i,a){return u&&STORE_UNITS.indexOf(u)>=0&&a.indexOf(u)===i});if(!title||!units.length)return false;var map=data&&data.handlerByUnit&&typeof data.handlerByUnit==='object'?data.handlerByUnit:{};units.forEach(function(unit){s.works.push({id:dailyId('adhoc'),title:title,unit:unit,kind:'adhoc',status:'open',dueDate:dailyTodayStr(),note:'',completedAt:null,createdBy:dailyUserId(user),handlerAccountId:map[unit]?String(map[unit]).trim():null})});saveDailyState(s);return true}
+function createRecurringTemplate(data,user){var s=loadDailyState();if(!dailyCanManage(user))return false;var title=(data&&data.title?String(data.title):'').trim(),units=(data&&Array.isArray(data.units)?data.units:[]).filter(function(u,i,a){return u&&STORE_UNITS.indexOf(u)>=0&&a.indexOf(u)===i});if(!title||!units.length)return false;s.recurringTemplates.push({id:dailyId('tpl'),title:title,units:units,active:true});saveDailyState(s);generateRecurringForToday();return true}
+function getUnitProgress(){var s=loadDailyState(),out={};STORE_UNITS.forEach(function(unit){var items=s.works.filter(function(w){return w.unit===unit&&isDailyTodayWork(w)}),done=items.filter(function(w){return w.status==='done'}).length;out[unit]={unit:unit,total:items.length,done:done,open:items.length-done}});return out}
+function closeSettlement(unit,user){if(!dailyCanManage(user)||FIXED_UNITS.indexOf(unit)<0)return false;var s=loadDailyState();s.settlements[unit]={date:dailyTodayStr(),state:'closed'};s.works.forEach(function(w){if(w.kind==='settlement'&&w.unit===unit&&w.dueDate===dailyTodayStr()){w.status='done';w.completedAt=w.completedAt||dailyNowStr()}});saveDailyState(s);return true}
+function reopenSettlement(unit,user){if(!dailyIsAdmin(user)||FIXED_UNITS.indexOf(unit)<0)return false;var s=loadDailyState();s.settlements[unit]={date:dailyTodayStr(),state:'open'};s.works.forEach(function(w){if(w.kind==='settlement'&&w.unit===unit&&w.dueDate===dailyTodayStr()){w.status='open';w.completedAt=null}});saveDailyState(s);return true}
+function goDailyView(v){
+  currentModule='daily';
+  const map={today:'dailyToday',progress:'dailyProgress',new:'dailyNew',recurring:'dailyRecurring'};
+  currentView=map[v]||'dailyToday';
+  dailyView=v||'today';
+  if(typeof render==='function')render();
+}
+function goDailyViewToday(){goDailyView('today')}
+function goDailyViewProgress(){goDailyView('progress')}
+function goDailyViewNew(){goDailyView('new')}
+function goDailyViewRecurring(){goDailyView('recurring')}
+function setDailyUnitFilter(unit){dailyUnitFilter=unit||'全部';if(typeof render==='function')render()}
+function dailyStatusTag(w){var label=w.status==='done'?'已完成':'進行中',cls=w.status==='done'?'s-done':'s-pending';if(w.kind==='settlement')label=w.status==='done'?'已結算':'待結算';return '<span class="tag '+cls+'">'+label+'</span>'}
+function dailyKindTag(w){var m={adhoc:['t-dev','臨時'],recurring:['t-rep','例行'],settlement:['dept','結算']}[w.kind]||['s-na',w.kind||'其他'];return '<span class="tag '+m[0]+'">'+m[1]+'</span>'}
+function dailyWorkRows(list,user){if(!list.length)return '<div class="card">🌙 今日沒有工作。</div>';return '<div class="table-wrap"><table><thead><tr><th>工作</th><th>單位</th><th>類型</th><th>狀態</th><th>經手人</th><th>操作</th></tr></thead><tbody>'+list.map(function(w){var action='';if(w.status!=='done'){if(w.kind==='settlement'){action=dailyCanManage(user)?'<button class="btn sm warn" onclick="dailyCloseSettlement(\''+w.unit+'\')">✅ 結算</button>':'<span style="color:#888;font-size:12px">待管理層結算</span>';}else{action='<button class="btn sm green" onclick="dailyComplete(\''+w.id+'\')">完成</button>';}}else if(w.kind==='settlement'&&dailyIsAdmin(user))action='<button class="btn sm gray" onclick="dailyReopenSettlement(\''+w.unit+'\')">↩️ 重開</button>';return '<tr><td><b>'+w.title+'</b><div style="font-size:12px;color:#777;margin-top:2px">'+(w.note||'')+'</div></td><td>'+w.unit+'</td><td>'+dailyKindTag(w)+'</td><td>'+dailyStatusTag(w)+'</td><td>'+(w.handlerAccountId||'－')+'</td><td>'+action+'</td></tr>'}).join('')+'</tbody></table></div>'}
+function dailyComplete(id){completeDailyWork(id,typeof currentUser!=='undefined'?currentUser:null);if(typeof render==='function')render()}
+function dailyCloseSettlement(unit){closeSettlement(unit,typeof currentUser!=='undefined'?currentUser:null);if(typeof render==='function')render()}
+function dailyReopenSettlement(unit){reopenSettlement(unit,typeof currentUser!=='undefined'?currentUser:null);if(typeof render==='function')render()}
+function dailyCreateAdhoc(){var user=typeof currentUser!=='undefined'?currentUser:null;if(!dailyCanManage(user))return alert2('只有主管或管理員可以建立臨時工作。');var unitOptions=STORE_UNITS.map(function(u){return '<option value="'+u+'">'+u+'</option>'}).join('');showModal('<h3>🛠️ 建立臨時工作</h3><label>標題</label><input id="d-adhoc-title" type="text" placeholder="例：補貨確認"><div class="filters"><select id="d-adhoc-unit">'+unitOptions+'</select><input id="d-adhoc-handler" type="text" placeholder="經手人帳號（可留空）"></div><div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitAdhoc()">建立</button></div>')}
+function dailySubmitAdhoc(){var title=(document.getElementById('d-adhoc-title').value||'').trim(),unit=document.getElementById('d-adhoc-unit').value,handler=(document.getElementById('d-adhoc-handler').value||'').trim();if(!title)return alert2('請輸入工作標題。');var map={};if(handler)map[unit]=handler;createAdhocWork({title:title,units:[unit],handlerByUnit:map},typeof currentUser!=='undefined'?currentUser:null);closeModal();if(typeof render==='function')render()}
+function dailyCreateRecurring(){var user=typeof currentUser!=='undefined'?currentUser:null;if(!dailyCanManage(user))return alert2('只有主管或管理員可以建立例行模板。');var unitOptions=STORE_UNITS.map(function(u){return '<label style="display:inline-flex;align-items:center;gap:4px;margin-right:10px"><input type="checkbox" value="'+u+'" checked> '+u+'</label>'}).join('');showModal('<h3>🔁 建立例行模板</h3><label>標題</label><input id="d-rec-title" type="text" placeholder="例：門市巡檢"><label style="margin-top:10px;display:block">適用單位</label><div class="card" style="padding:10px">'+unitOptions+'</div><div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitRecurring()">建立</button></div>')}
+function dailySubmitRecurring(){var title=(document.getElementById('d-rec-title').value||'').trim(),units=Array.prototype.slice.call(document.querySelectorAll('#modal-content input[type="checkbox"]:checked')).map(function(x){return x.value});if(!title||!units.length)return alert2('請輸入標題並選擇至少一個單位。');createRecurringTemplate({title:title,units:units},typeof currentUser!=='undefined'?currentUser:null);closeModal();if(typeof render==='function')render()}
+function vDailyToday(user){var s=loadDailyState(),list=getTodayWorksForUser(user),done=list.filter(function(w){return w.status==='done'}).length,open=list.length-done,filterSelect='<select onchange="setDailyUnitFilter(this.value)">'+['全部'].concat(STORE_UNITS).map(function(u){return '<option value="'+u+'"'+(dailyUnitFilter===u?' selected':'')+'>'+u+'</option>'}).join('')+'</select>';return '<div class="card"><h2>🗓️ 今日工作</h2><div class="stats"><div class="stat"><div class="num">'+list.length+'</div><div class="lbl">總數</div></div><div class="stat"><div class="num">'+done+'</div><div class="lbl">已完成</div></div><div class="stat"><div class="num">'+open+'</div><div class="lbl">待辦</div></div><div class="stat"><div class="num">'+s.recurringTemplates.filter(function(x){return x.active}).length+'</div><div class="lbl">例行模板</div></div></div><div class="filters" style="margin-top:12px">'+filterSelect+'<button class="btn sm" onclick="goDailyViewProgress()">📊 進度</button><button class="btn sm gray" onclick="goDailyViewRecurring()">🔁 例行</button><button class="btn sm purple" onclick="goDailyViewNew()">➕ 新增</button></div>'+dailyWorkRows(list,user)+'</div>'}
+function vDailyProgress(user){var progress=getUnitProgress(),s=loadDailyState(),cards=STORE_UNITS.map(function(unit){var p=progress[unit]||{unit:unit,total:0,done:0,open:0},settle=s.settlements[unit]||{state:'open'},settleTag=settle.state==='closed'?'<span class="tag s-done">已結算</span>':'<span class="tag s-wait">未結算</span>',action='';if(FIXED_UNITS.indexOf(unit)>=0)action=settle.state==='closed'?(dailyIsAdmin(user)?'<button class="btn sm gray" onclick="dailyReopenSettlement(\''+unit+'\')">↩️ 重開</button>':''):(dailyCanManage(user)?'<button class="btn sm warn" onclick="dailyCloseSettlement(\''+unit+'\')">✅ 結算</button>':'');return '<div class="card"><h3>'+unit+' '+settleTag+'</h3><div class="stats"><div class="stat"><div class="num">'+p.total+'</div><div class="lbl">總工作</div></div><div class="stat"><div class="num">'+p.done+'</div><div class="lbl">已完成</div></div><div class="stat"><div class="num">'+p.open+'</div><div class="lbl">待辦</div></div></div><div style="margin-top:10px">'+action+'</div></div>'}).join(''),total=STORE_UNITS.reduce(function(a,u){a.total+=progress[u].total;a.done+=progress[u].done;a.open+=progress[u].open;return a},{total:0,done:0,open:0});return '<div class="card"><h2>📊 單位進度</h2><div class="stats"><div class="stat"><div class="num">'+total.total+'</div><div class="lbl">總工作</div></div><div class="stat"><div class="num">'+total.done+'</div><div class="lbl">已完成</div></div><div class="stat"><div class="num">'+total.open+'</div><div class="lbl">待辦</div></div><div class="stat"><div class="num">'+FIXED_UNITS.length+'</div><div class="lbl">門市單位</div></div></div><div class="filters" style="margin-top:12px"><button class="btn sm" onclick="goDailyViewToday()">🗓️ 今日</button><button class="btn sm gray" onclick="goDailyViewRecurring()">🔁 例行</button><button class="btn sm purple" onclick="goDailyViewNew()">➕ 新增</button></div></div>'+cards}
+function vDailyNew(user){if(!dailyCanManage(user))return '<div class="card"><h2>➕ 新增工作</h2><p>你只能查看及完成自己單位的工作。</p></div>';return '<div class="card"><h2>➕ 新增工作</h2><div class="stats"><div class="stat"><div class="num">1</div><div class="lbl">臨時工作</div></div><div class="stat"><div class="num">1</div><div class="lbl">例行模板</div></div></div><div class="filters" style="margin-top:12px"><button class="btn" onclick="dailyCreateAdhoc()">🛠️ 建立臨時工作</button><button class="btn gray" onclick="dailyCreateRecurring()">🔁 建立例行模板</button></div><p style="margin-top:10px;color:#666;font-size:13px">提示：臨時工作會預設為今日，例行模板會即時生成今日例項。</p></div>'}
+function vDailyRecurring(user){var s=loadDailyState(),list=s.recurringTemplates,rows=list.length?'<div class="table-wrap"><table><thead><tr><th>模板</th><th>單位</th><th>狀態</th></tr></thead><tbody>'+list.map(function(t){return '<tr><td><b>'+t.title+'</b></td><td>'+(t.units||[]).join('、')+'</td><td>'+(t.active?'<span class="tag s-done">啟用</span>':'<span class="tag s-na">停用</span>')+'</td></tr>'}).join('')+'</tbody></table></div>':'<p>暫時沒有例行模板。</p>';return '<div class="card"><h2>🔁 例行工作</h2><div class="stats"><div class="stat"><div class="num">'+list.filter(function(x){return x.active}).length+'</div><div class="lbl">啟用模板</div></div><div class="stat"><div class="num">'+s.works.filter(function(w){return w.kind==='recurring'&&isDailyTodayWork(w)}).length+'</div><div class="lbl">今日例項</div></div></div><div class="filters" style="margin-top:12px"><button class="btn sm" onclick="goDailyViewToday()">🗓️ 今日</button><button class="btn sm gray" onclick="goDailyViewProgress()">📊 進度</button><button class="btn sm purple" onclick="goDailyViewNew()">➕ 新增</button>'+(dailyCanManage(user)?'<button class="btn sm" onclick="dailyCreateRecurring()">🔁 新模板</button>':'')+'</div>'+rows+'</div>'}
+
+
+/* ═══════════ Modal ═══════════ */
+function showModal(html){ document.getElementById('modal-content').innerHTML=html; document.getElementById('modal-bg').classList.remove('hidden'); }
+function closeModal(){ document.getElementById('modal-bg').classList.add('hidden'); }
+function alert2(msg){ showModal(`<h3>提示</h3><p style="font-size:14px">${msg}</p><div class="actions"><button class="btn sm" onclick="closeModal()">確定</button></div>`); }
+document.getElementById('modal-bg').addEventListener('click', e=>{ if(e.target.id==='modal-bg') closeModal(); });
+document.getElementById('login-pw').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+// 建立項目頁初始化階段列表
+const _go = go;
+go = function(v){ _go(v); if(v==='addProject') setTimeout(renderNpStages, 0); };
+</script>
+
+
+</body></html>
