@@ -18,10 +18,12 @@ import {
 } from "@/application/production-module-paths";
 import type { AppModule } from "@/application/app-module";
 import { CreateProjectForm } from "@/components/production/create-project-form";
+import { ProductionDetailTabs } from "@/components/production/detail-tabs";
 import { ProjectAdminPanel } from "@/components/production/project-admin-panel";
 import { ProjectComments } from "@/components/production/project-comments";
 import { ProjectFiles } from "@/components/production/project-files";
 import { StagePanel } from "@/components/production/stage-panel";
+import { StageStatusTag } from "@/components/production/status-tag";
 import { AppShell } from "@/components/app-shell";
 
 type ProdModule = Extract<AppModule, "production" | "replenishment">;
@@ -275,10 +277,20 @@ export function ProductionListView({
                         <Link href={`${base}/projects/${project.id}`}>
                           {project.name}
                         </Link>
+                        {" "}
+                        <span
+                          className={
+                            project.type === "dev" ? "tag t-dev" : "tag t-rep"
+                          }
+                        >
+                          {project.type === "dev" ? "開發" : "補貨"}
+                        </span>
                       </td>
                       <td>{project.category}</td>
                       <td>{project.currentStageName ?? "—"}</td>
-                      <td>{cur?.status ?? project.status}</td>
+                      <td>
+                        <StageStatusTag status={cur?.status ?? project.status} />
+                      </td>
                       <td>{project.progressPercent}%</td>
                     </tr>
                   );
@@ -392,14 +404,88 @@ export function ProductionDetailView({
     (session.role === "personal" &&
       project.stages.some((s) => s.handlerAccountId === session.accountId));
 
+  const flowSection = (
+    <section className="personal-card">
+      <h2 className="personal-card-title">階段流程</h2>
+      <ul className="prod-stage-list">
+        {project.stages.map((stage) => {
+          const isCurrent = stage.index === current;
+          const canUpdate =
+            unlocked &&
+            session.role === "personal" &&
+            isCurrent &&
+            stage.handlerAccountId === session.accountId &&
+            (stage.status === "待處理" ||
+              stage.status === "進行中" ||
+              stage.status === "需要修改");
+          return (
+            <StagePanel
+              key={stage.index}
+              projectId={project.id}
+              type={project.type}
+              stage={stage}
+              isCurrent={isCurrent}
+              canUpdate={canUpdate}
+              isAdmin={isAdmin && unlocked}
+              handlers={handlers}
+            />
+          );
+        })}
+      </ul>
+    </section>
+  );
+
+  const tabSections = [
+    { id: "flow", label: "流程", content: flowSection },
+    {
+      id: "comments",
+      label: "留言",
+      content: (
+        <ProjectComments
+          projectId={project.id}
+          type={project.type}
+          comments={comments}
+          isAdmin={isAdmin}
+        />
+      ),
+    },
+    {
+      id: "files",
+      label: "檔案",
+      content: (
+        <ProjectFiles
+          projectId={project.id}
+          type={project.type}
+          files={files}
+          canUpload={canUpload}
+        />
+      ),
+    },
+    ...(isAdmin
+      ? [
+          {
+            id: "admin",
+            label: "管理",
+            content: (
+              <ProjectAdminPanel project={project} type={project.type} />
+            ),
+          },
+        ]
+      : []),
+  ];
+
   return (
     <AppShell session={session} module={module} active="prod-detail">
       <section className="personal-card">
         <h1 className="personal-card-title">
-          {project.code}｜{project.name}
+          {project.code}｜{project.name}{" "}
+          <span className={project.type === "dev" ? "tag t-dev" : "tag t-rep"}>
+            {project.type === "dev" ? "開發" : "補貨"}
+          </span>{" "}
+          <StageStatusTag status={project.status} />
         </h1>
         <p className="meta">
-          {title}｜{project.category}｜{project.status}
+          {title}｜{project.category}
           {project.statusReason ? `（${project.statusReason}）` : ""}
           {project.dueDate ? `｜期限 ${project.dueDate}` : ""}
           ｜進度 {project.progressPercent}%
@@ -421,51 +507,7 @@ export function ProductionDetailView({
         </div>
       </section>
 
-      {isAdmin ? (
-        <ProjectAdminPanel project={project} type={project.type} />
-      ) : null}
-
-      <section className="personal-card">
-        <h2 className="personal-card-title">階段流程</h2>
-        <ul className="prod-stage-list">
-          {project.stages.map((stage) => {
-            const isCurrent = stage.index === current;
-            const canUpdate =
-              unlocked &&
-              session.role === "personal" &&
-              isCurrent &&
-              stage.handlerAccountId === session.accountId &&
-              (stage.status === "待處理" ||
-                stage.status === "進行中" ||
-                stage.status === "需要修改");
-            return (
-              <StagePanel
-                key={stage.index}
-                projectId={project.id}
-                type={project.type}
-                stage={stage}
-                isCurrent={isCurrent}
-                canUpdate={canUpdate}
-                isAdmin={isAdmin && unlocked}
-                handlers={handlers}
-              />
-            );
-          })}
-        </ul>
-      </section>
-
-      <ProjectComments
-        projectId={project.id}
-        type={project.type}
-        comments={comments}
-        isAdmin={isAdmin}
-      />
-      <ProjectFiles
-        projectId={project.id}
-        type={project.type}
-        files={files}
-        canUpload={canUpload}
-      />
+      <ProductionDetailTabs sections={tabSections} />
     </AppShell>
   );
 }

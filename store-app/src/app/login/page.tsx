@@ -20,9 +20,9 @@ export default async function LoginPage() {
           <span className="personal-brand-icon" aria-hidden>
             ▦
           </span>
-          <h1>每日工作流程管理系統</h1>
+          <h1>店鋪員工系統</h1>
         </div>
-        <p>公司內部使用 · 請以賬號登入</p>
+        <p>每日工作流程 · 開發及生產 · 補貨</p>
         <LoginForm />
         <p className="login-hint">忘記密碼請聯絡系統管理員重設。</p>
       </section>

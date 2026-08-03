@@ -13,6 +13,10 @@ import {
   updateProductionStageAction,
   type ProductionActionMessage,
 } from "@/app/actions/production";
+import {
+  StageStatusTag,
+  stageNumClass,
+} from "@/components/production/status-tag";
 
 const empty: ProductionActionMessage = {};
 
@@ -71,11 +75,13 @@ export function StagePanel({
   return (
     <li className={`prod-stage${isCurrent ? " is-current" : ""}`}>
       <div className="prod-stage-head">
-        <strong>
-          {stage.index + 1}. {stage.name}
-        </strong>
-        <span className={`pill status-open`}>{stage.status}</span>
+        <span className={stageNumClass(stage.status, isCurrent)}>
+          {stage.index + 1}
+        </span>
+        <strong className="stage-name">{stage.name}</strong>
+        <StageStatusTag status={stage.status} />
       </div>
+      <div className="prod-stage-body">
       <p className="meta">
         經手人：
         <HandlerLabel stage={stage} />
@@ -216,6 +222,7 @@ export function StagePanel({
           {message}
         </p>
       ) : null}
+      </div>
     </li>
   );
 }

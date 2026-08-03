@@ -8,23 +8,25 @@ const MODULES: { id: AppModule; label: string }[] = [
   { id: "replenishment", label: "補貨" },
 ];
 
+/** @deprecated Use ModuleTopNav — kept for any stray imports */
 export function ModuleSidebar({ active }: { active: AppModule }) {
+  return <ModuleTopNav active={active} />;
+}
+
+export function ModuleTopNav({ active }: { active: AppModule }) {
   return (
-    <aside className="module-sidebar" aria-label="系統模組">
-      <div className="module-sidebar-brand">模組</div>
-      <nav className="module-sidebar-nav">
-        {MODULES.map((mod) => (
-          <Link
-            key={mod.id}
-            href={moduleHomePath(mod.id)}
-            className={
-              active === mod.id ? "module-nav-item is-active" : "module-nav-item"
-            }
-          >
-            {mod.label}
-          </Link>
-        ))}
-      </nav>
-    </aside>
+    <nav className="module-top-nav" aria-label="系統模組">
+      {MODULES.map((mod) => (
+        <Link
+          key={mod.id}
+          href={moduleHomePath(mod.id)}
+          className={
+            active === mod.id ? "module-top-item is-active" : "module-top-item"
+          }
+        >
+          {mod.label}
+        </Link>
+      ))}
+    </nav>
   );
 }
