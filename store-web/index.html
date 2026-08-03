@@ -139,6 +139,7 @@
       <div>經手人 Ann：ann / 1234（觀塘）</div>
       <div>經手人 Coey：coey / 1234（荔枝角）</div>
       <div>經手人 郭sir：kwok / 1234（灣仔）</div>
+      <div>國內倉個人：wh.staff / Staff123!</div>
     </div>
   </div>
 </div>
@@ -170,6 +171,7 @@ let users = [
   {id:'kwok', login:'kwok', pw:'1234', name:'郭sir', dept:'企劃／管理', role:'personal', unit:'灣仔', active:true},
   {id:'ann',  login:'ann',  pw:'1234', name:'Ann',  dept:'生產部', role:'personal', unit:'觀塘', active:true},
   {id:'coey', login:'coey', pw:'1234', name:'Coey', dept:'銷售／生產', role:'personal', unit:'荔枝角', active:true},
+  {id:'wh', login:'wh.staff', pw:'Staff123!', name:'國內倉同事', dept:'國內倉', role:'personal', unit:'國內倉', active:true},
 ];
 function isAdmin(){ return currentUser && currentUser.role==='system_admin'; }
 function isManager(){ return currentUser && currentUser.role==='manager'; }
@@ -346,7 +348,7 @@ function render(){
   const nav = document.getElementById('nav');
   let items = [];
   if(currentModule==='daily'){
-    items = [['dailyToday','今日工作'],['dailyProgress','各單位進度']];
+    items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyRecords','我的記錄']];
     if(isAdmin()||isManager()) items.push(['dailyNew','新增突發'],['dailyRecurring','恆常模板']);
   } else if(currentModule==='production'){
     items = [['home','首頁'],['devList','項目列表'],['myTasks','我的工作']];
@@ -361,6 +363,7 @@ function render(){
     home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : vHomeFiltered('dev'),
     devList:()=>vList('dev'), repList:()=>vList('rep'), myTasks:vMyTasks, addProject:vAddProject, sysLogs:vSysLogs, project:vProject,
     dailyToday:()=>vDailyToday(currentUser), dailyProgress:()=>vDailyProgress(currentUser),
+    dailyUnit:()=>vDailyUnit(currentUser), dailyRecords:()=>vDailyRecords(currentUser),
     dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser)
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
@@ -849,54 +852,563 @@ function vSysLogs(){
     </table></div></div>`;
 }
 
-﻿var DAILY_KEY='store-web-daily-v1',FIXED_UNITS=['觀塘','荔枝角','灣仔','屯門'],STORE_UNITS=['觀塘','荔枝角','灣仔','屯門','國內倉'],dailyView='today',dailyUnitFilter='全部',dailyStateCache=null;
-function dailyTodayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
-function dailyNowStr(){return typeof nowStr!=='undefined'&&nowStr?nowStr:new Date().toLocaleString('zh-HK')}
-function dailyUserId(user){user=user||(typeof currentUser!=='undefined'?currentUser:null);return user&&(user.accountId||user.id||user.username||user.name)?String(user.accountId||user.id||user.username||user.name):'system'}
-function dailyIsAdmin(user){return !!(user&&user.role==='system_admin')}function dailyIsManager(user){return !!(user&&user.role==='manager')}function dailyCanManage(user){return dailyIsAdmin(user)||dailyIsManager(user)}
-function dailyId(prefix){return prefix+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7)}
-function dailyBaseState(){return {works:[],recurringTemplates:[],settlements:{}}}
-function dailyNormalizeState(raw){var s=raw&&typeof raw==='object'?raw:dailyBaseState();s.works=Array.isArray(s.works)?s.works:[];s.recurringTemplates=Array.isArray(s.recurringTemplates)?s.recurringTemplates:[];s.settlements=s.settlements&&typeof s.settlements==='object'?s.settlements:{};return s}
-function saveDailyState(nextState){dailyStateCache=dailyNormalizeState(nextState||dailyStateCache||dailyBaseState());try{if(typeof localStorage!=='undefined')localStorage.setItem(DAILY_KEY,JSON.stringify(dailyStateCache))}catch(e){}return dailyStateCache}
-function dailySeedWork(unit,title,kind,note){return {id:dailyId(kind==='settlement'?'set':'wrk'),title:title,unit:unit,kind:kind,status:'open',dueDate:dailyTodayStr(),note:note||'',completedAt:null,createdBy:'system',handlerAccountId:null}}
-function dailyEnsureSettlements(s){var today=dailyTodayStr();FIXED_UNITS.forEach(function(unit){if(!s.settlements[unit]||s.settlements[unit].date!==today)s.settlements[unit]={date:today,state:'open'};else if(!s.settlements[unit].state)s.settlements[unit].state='open';var w=s.works.find(function(x){return x.kind==='settlement'&&x.unit===unit&&x.dueDate===today});if(!w)s.works.push({id:'settle_'+unit+'_'+today,title:unit+' 今日結算',unit:unit,kind:'settlement',status:s.settlements[unit].state==='closed'?'done':'open',dueDate:today,note:'',completedAt:s.settlements[unit].state==='closed'?dailyNowStr():null,createdBy:'system',handlerAccountId:null});else{w.status=s.settlements[unit].state==='closed'?'done':'open';w.completedAt=s.settlements[unit].state==='closed'?(w.completedAt||dailyNowStr()):null}})}
-function generateRecurringForToday(){var s=loadDailyState(),today=dailyTodayStr();s.recurringTemplates.forEach(function(t){if(!t||!t.active)return;(t.units||[]).forEach(function(unit){if(!unit)return;var exists=s.works.some(function(w){return w.kind==='recurring'&&w.title===t.title&&w.unit===unit&&w.dueDate===today});if(!exists)s.works.push({id:'rec_'+t.id+'_'+unit+'_'+today,title:t.title,unit:unit,kind:'recurring',status:'open',dueDate:today,note:'',completedAt:null,createdBy:'system',handlerAccountId:null})})});saveDailyState(s);return s}
-function ensureDailySeed(){var s=loadDailyState(),today=dailyTodayStr(),changed=false;if(!s.works.length){s.works.push(dailySeedWork('觀塘','整理今日到貨箱單','adhoc','示範：確認收貨與上架時序。'),dailySeedWork('屯門','更新門市陳列清單','adhoc','示範：檢查缺貨與陳列位置。'));changed=true;}if(!s.recurringTemplates.length){s.recurringTemplates.push({id:dailyId('tpl'),title:'門市巡檢',units:FIXED_UNITS.slice(),active:true},{id:dailyId('tpl'),title:'倉存點算',units:['國內倉'],active:true});changed=true;}dailyEnsureSettlements(s);if(changed)saveDailyState(s);generateRecurringForToday();return loadDailyState()}
-function loadDailyState(){if(dailyStateCache)return dailyStateCache;try{var raw=typeof localStorage!=='undefined'?localStorage.getItem(DAILY_KEY):null;dailyStateCache=raw?dailyNormalizeState(JSON.parse(raw)):dailyBaseState()}catch(e){dailyStateCache=dailyBaseState()}return dailyStateCache}
-function isDailyTodayWork(w){return !!w&&w.dueDate===dailyTodayStr()}
-function getTodayWorksForUser(user){var s=loadDailyState(),mine=dailyUserId(user),list=s.works.filter(isDailyTodayWork);if(dailyCanManage(user)){if(dailyUnitFilter!=='全部')list=list.filter(function(w){return w.unit===dailyUnitFilter});return list.sort(function(a,b){return a.unit.localeCompare(b.unit,'zh-Hant')||a.title.localeCompare(b.title,'zh-Hant')})}return list.filter(function(w){return w.unit===(user&&(user.fixedUnit||user.unit))||w.handlerAccountId===mine}).sort(function(a,b){return a.unit.localeCompare(b.unit,'zh-Hant')||a.title.localeCompare(b.title,'zh-Hant')})}
-function completeDailyWork(id,user){var s=loadDailyState(),w=s.works.find(function(x){return x.id===id});if(!w)return false;if(w.status==='done')return true;w.status='done';w.completedAt=dailyNowStr();if(w.kind==='settlement')s.settlements[w.unit]={date:dailyTodayStr(),state:'closed'};saveDailyState(s);return true}
-function createAdhocWork(data,user){var s=loadDailyState();if(!dailyCanManage(user))return false;var title=(data&&data.title?String(data.title):'').trim(),units=(data&&Array.isArray(data.units)?data.units:[]).filter(function(u,i,a){return u&&STORE_UNITS.indexOf(u)>=0&&a.indexOf(u)===i});if(!title||!units.length)return false;var map=data&&data.handlerByUnit&&typeof data.handlerByUnit==='object'?data.handlerByUnit:{};units.forEach(function(unit){s.works.push({id:dailyId('adhoc'),title:title,unit:unit,kind:'adhoc',status:'open',dueDate:dailyTodayStr(),note:'',completedAt:null,createdBy:dailyUserId(user),handlerAccountId:map[unit]?String(map[unit]).trim():null})});saveDailyState(s);return true}
-function createRecurringTemplate(data,user){var s=loadDailyState();if(!dailyCanManage(user))return false;var title=(data&&data.title?String(data.title):'').trim(),units=(data&&Array.isArray(data.units)?data.units:[]).filter(function(u,i,a){return u&&STORE_UNITS.indexOf(u)>=0&&a.indexOf(u)===i});if(!title||!units.length)return false;s.recurringTemplates.push({id:dailyId('tpl'),title:title,units:units,active:true});saveDailyState(s);generateRecurringForToday();return true}
-function getUnitProgress(){var s=loadDailyState(),out={};STORE_UNITS.forEach(function(unit){var items=s.works.filter(function(w){return w.unit===unit&&isDailyTodayWork(w)}),done=items.filter(function(w){return w.status==='done'}).length;out[unit]={unit:unit,total:items.length,done:done,open:items.length-done}});return out}
-function closeSettlement(unit,user){if(!dailyCanManage(user)||FIXED_UNITS.indexOf(unit)<0)return false;var s=loadDailyState();s.settlements[unit]={date:dailyTodayStr(),state:'closed'};s.works.forEach(function(w){if(w.kind==='settlement'&&w.unit===unit&&w.dueDate===dailyTodayStr()){w.status='done';w.completedAt=w.completedAt||dailyNowStr()}});saveDailyState(s);return true}
-function reopenSettlement(unit,user){if(!dailyIsAdmin(user)||FIXED_UNITS.indexOf(unit)<0)return false;var s=loadDailyState();s.settlements[unit]={date:dailyTodayStr(),state:'open'};s.works.forEach(function(w){if(w.kind==='settlement'&&w.unit===unit&&w.dueDate===dailyTodayStr()){w.status='open';w.completedAt=null}});saveDailyState(s);return true}
+/* ═══════════ Part 1 每日工作流程（localStorage v2） ═══════════ */
+var DAILY_KEY='store-web-daily-v2';
+var FIXED_UNITS=['觀塘','荔枝角','灣仔','屯門'];
+var STORE_UNITS=['觀塘','荔枝角','灣仔','屯門','國內倉'];
+var PRIORITIES=['高','中','低'];
+var dailyUnitFilter='全部';
+var dailyProgressUnit=null;
+var dailyRecordsFilter='全部';
+var dailyStateCache=null;
+
+function dailyTodayStr(){
+  var d=new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function dailyNowStr(){ return typeof nowStr==='function'?nowStr():new Date().toLocaleString('zh-HK'); }
+function dailyUserId(user){ user=user||currentUser; return user?String(user.id):'system'; }
+function dailyUserName(user){ user=user||currentUser; return user?user.name:'系統'; }
+function dailyUserUnit(user){ user=user||currentUser; return user?(user.unit||user.fixedUnit||null):null; }
+function dailyCanManage(user){ user=user||currentUser; return !!(user&&(user.role==='system_admin'||user.role==='manager')); }
+function dailyId(prefix){ return prefix+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7); }
+function dailyEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];}); }
+function dailyBaseState(){ return {version:2,works:[],recurringTemplates:[]}; }
+function dailyNormalizeState(raw){
+  var s=raw&&typeof raw==='object'?raw:dailyBaseState();
+  s.version=2;
+  s.works=Array.isArray(s.works)?s.works:[];
+  s.recurringTemplates=Array.isArray(s.recurringTemplates)?s.recurringTemplates:[];
+  return s;
+}
+function saveDailyState(next){
+  dailyStateCache=dailyNormalizeState(next||dailyStateCache||dailyBaseState());
+  try{ localStorage.setItem(DAILY_KEY,JSON.stringify(dailyStateCache)); }catch(e){}
+  return dailyStateCache;
+}
+function loadDailyState(){
+  if(dailyStateCache) return dailyStateCache;
+  try{
+    var raw=localStorage.getItem(DAILY_KEY);
+    dailyStateCache=raw?dailyNormalizeState(JSON.parse(raw)):dailyBaseState();
+  }catch(e){ dailyStateCache=dailyBaseState(); }
+  return dailyStateCache;
+}
+function mkWork(o){
+  return {
+    id:o.id||dailyId(o.kind||'wrk'),
+    title:o.title||'',
+    content:o.content||'',
+    unit:o.unit,
+    kind:o.kind||'adhoc',
+    status:o.status||'open',
+    dueDate:o.dueDate||dailyTodayStr(),
+    priority:o.priority||'中',
+    templateId:o.templateId||null,
+    completedAt:o.completedAt||null,
+    completedBy:o.completedBy||null,
+    completedByName:o.completedByName||null,
+    createdBy:o.createdBy||'system',
+    updatedAt:o.updatedAt||dailyNowStr()
+  };
+}
+function isStoreUnit(unit){ return FIXED_UNITS.indexOf(unit)>=0; }
+function isActiveWork(w){ return w&&w.status!=='cancelled'; }
+function isDailyTodayWork(w){ return isActiveWork(w)&&w.dueDate===dailyTodayStr(); }
+function isOverdue(w){
+  if(!isActiveWork(w)||w.status==='done') return false;
+  if(!w.dueDate) return false;
+  return w.dueDate<dailyTodayStr();
+}
+function workCountsForUnit(unit){
+  var items=loadDailyState().works.filter(function(w){ return isDailyTodayWork(w)&&w.unit===unit; });
+  if(unit==='國內倉') items=items.filter(function(w){ return w.kind!=='settlement'; });
+  var done=items.filter(function(w){ return w.status==='done'; }).length;
+  var overdue=items.filter(isOverdue).length;
+  var total=items.length;
+  var pct=total?Math.round(done/total*100):0;
+  return {unit:unit,total:total,done:done,open:total-done,overdue:overdue,pct:pct,items:items};
+}
+function dailyEnsureSettlements(s){
+  var today=dailyTodayStr();
+  FIXED_UNITS.forEach(function(unit){
+    var w=s.works.find(function(x){ return x.kind==='settlement'&&x.unit===unit&&x.dueDate===today&&x.status!=='cancelled'; });
+    if(!w){
+      s.works.push(mkWork({
+        id:'settle_'+unit+'_'+today,
+        title:unit+' 每日結算',
+        content:'完成門市當日結算相關檢查（示範；正式版接 Part 2 POS／日結）。',
+        unit:unit, kind:'settlement', status:'open', dueDate:today, priority:'高'
+      }));
+    }
+  });
+  // 國內倉永不保留結算
+  s.works=s.works.filter(function(w){ return !(w.kind==='settlement'&&w.unit==='國內倉'); });
+}
+function generateRecurringForToday(){
+  var s=loadDailyState(), today=dailyTodayStr();
+  s.recurringTemplates.forEach(function(t){
+    if(!t||!t.active) return;
+    (t.units||[]).forEach(function(unit){
+      if(STORE_UNITS.indexOf(unit)<0) return;
+      var exists=s.works.some(function(w){
+        return w.kind==='recurring'&&w.templateId===t.id&&w.unit===unit&&w.dueDate===today&&w.status!=='cancelled';
+      });
+      if(!exists){
+        s.works.push(mkWork({
+          title:t.title, content:t.content||'', unit:unit, kind:'recurring',
+          dueDate:today, priority:t.priority||'中', templateId:t.id, createdBy:'system'
+        }));
+      }
+    });
+  });
+  dailyEnsureSettlements(s);
+  return saveDailyState(s);
+}
+function ensureDailySeed(){
+  try{ localStorage.removeItem('store-web-daily-v1'); }catch(e){}
+  var s=loadDailyState(), today=dailyTodayStr(), seeded=s.works.length>0||s.recurringTemplates.length>0;
+  if(!seeded){
+    s.recurringTemplates=[
+      {id:dailyId('tpl'), title:'門市巡檢', content:'檢查陳列、試衣間及店面整潔。', units:FIXED_UNITS.slice(), priority:'中', active:true},
+      {id:dailyId('tpl'), title:'倉存點算', content:'核對國內倉今日進出貨。', units:['國內倉'], priority:'中', active:true}
+    ];
+    s.works=[
+      mkWork({title:'整理今日到貨箱單', content:'確認收貨與上架時序。', unit:'觀塘', kind:'adhoc', dueDate:today, priority:'高'}),
+      mkWork({title:'更新門市陳列清單', content:'檢查缺貨與陳列位置。', unit:'屯門', kind:'adhoc', dueDate:today, priority:'中'}),
+      mkWork({title:'逾期示範：昨夜未完成點貨', content:'示範逾期標示。', unit:'灣仔', kind:'adhoc', dueDate:'2026-08-01', priority:'高'})
+    ];
+    saveDailyState(s);
+  }
+  generateRecurringForToday();
+  return loadDailyState();
+}
+function canTickWork(w,user){
+  if(!w||!user||w.status==='cancelled') return false;
+  if(dailyCanManage(user)) return true;
+  if(user.role!=='personal') return false;
+  return w.unit===dailyUserUnit(user);
+}
+function completeDailyWork(id,user,checked){
+  user=user||currentUser;
+  var s=loadDailyState();
+  var w=s.works.find(function(x){ return x.id===id; });
+  if(!w||w.status==='cancelled') return false;
+  if(checked){
+    if(!canTickWork(w,user)) return false;
+    if(w.status==='done') return true;
+    w.status='done';
+    w.completedAt=dailyNowStr();
+    w.completedBy=dailyUserId(user);
+    w.completedByName=dailyUserName(user);
+    w.updatedAt=dailyNowStr();
+  }else{
+    // 只有管理層可重開（取消剔選）
+    if(!dailyCanManage(user)) return false;
+    w.status='open';
+    w.completedAt=null;
+    w.completedBy=null;
+    w.completedByName=null;
+    w.updatedAt=dailyNowStr();
+  }
+  saveDailyState(s);
+  return true;
+}
+function cancelAdhocWork(id,user){
+  if(!dailyCanManage(user||currentUser)) return false;
+  var s=loadDailyState();
+  var w=s.works.find(function(x){ return x.id===id; });
+  if(!w||w.kind==='settlement') return false;
+  w.status='cancelled';
+  w.updatedAt=dailyNowStr();
+  saveDailyState(s);
+  return true;
+}
+function editWorkFields(id,data,user){
+  if(!dailyCanManage(user||currentUser)) return false;
+  var s=loadDailyState();
+  var w=s.works.find(function(x){ return x.id===id; });
+  if(!w||w.status==='cancelled') return false;
+  if(data.title!=null) w.title=String(data.title).trim()||w.title;
+  if(data.content!=null) w.content=String(data.content);
+  if(data.dueDate!=null) w.dueDate=data.dueDate;
+  if(data.priority!=null&&PRIORITIES.indexOf(data.priority)>=0) w.priority=data.priority;
+  w.updatedAt=dailyNowStr();
+  saveDailyState(s);
+  return true;
+}
+function createAdhocWork(data,user){
+  user=user||currentUser;
+  if(!dailyCanManage(user)) return false;
+  var title=(data.title||'').trim();
+  var content=data.content||'';
+  var dueDate=data.dueDate||dailyTodayStr();
+  var priority=PRIORITIES.indexOf(data.priority)>=0?data.priority:'中';
+  var units=(data.units||[]).filter(function(u,i,a){ return STORE_UNITS.indexOf(u)>=0&&a.indexOf(u)===i; });
+  if(!title||!units.length) return false;
+  var s=loadDailyState();
+  units.forEach(function(unit){
+    s.works.push(mkWork({
+      title:title, content:content, unit:unit, kind:'adhoc',
+      dueDate:dueDate, priority:priority, createdBy:dailyUserId(user)
+    }));
+  });
+  saveDailyState(s);
+  return true;
+}
+function createRecurringTemplate(data,user){
+  user=user||currentUser;
+  if(!dailyCanManage(user)) return false;
+  var title=(data.title||'').trim();
+  var content=data.content||'';
+  var priority=PRIORITIES.indexOf(data.priority)>=0?data.priority:'中';
+  var units=(data.units||[]).filter(function(u,i,a){ return STORE_UNITS.indexOf(u)>=0&&a.indexOf(u)===i; });
+  if(!title||!units.length) return false;
+  var s=loadDailyState();
+  s.recurringTemplates.push({
+    id:dailyId('tpl'), title:title, content:content, units:units, priority:priority, active:true
+  });
+  saveDailyState(s);
+  generateRecurringForToday();
+  return true;
+}
+function setTemplateActive(id,active,user){
+  if(!dailyCanManage(user||currentUser)) return false;
+  var s=loadDailyState();
+  var t=s.recurringTemplates.find(function(x){ return x.id===id; });
+  if(!t) return false;
+  t.active=!!active;
+  saveDailyState(s);
+  if(active) generateRecurringForToday();
+  return true;
+}
+function editTemplate(id,data,user){
+  if(!dailyCanManage(user||currentUser)) return false;
+  var s=loadDailyState();
+  var t=s.recurringTemplates.find(function(x){ return x.id===id; });
+  if(!t) return false;
+  if(data.title!=null) t.title=String(data.title).trim()||t.title;
+  if(data.content!=null) t.content=String(data.content);
+  if(data.priority!=null&&PRIORITIES.indexOf(data.priority)>=0) t.priority=data.priority;
+  if(Array.isArray(data.units)) t.units=data.units.filter(function(u){ return STORE_UNITS.indexOf(u)>=0; });
+  saveDailyState(s);
+  generateRecurringForToday();
+  return true;
+}
+function getTodayWorksForUser(user){
+  user=user||currentUser;
+  var list=loadDailyState().works.filter(isDailyTodayWork);
+  if(dailyCanManage(user)){
+    if(dailyUnitFilter!=='全部') list=list.filter(function(w){ return w.unit===dailyUnitFilter; });
+  }else{
+    var unit=dailyUserUnit(user);
+    list=list.filter(function(w){ return w.unit===unit; });
+  }
+  return list.sort(function(a,b){
+    var po={高:0,中:1,低:2};
+    return (po[a.priority]-po[b.priority])||a.unit.localeCompare(b.unit,'zh-Hant')||a.title.localeCompare(b.title,'zh-Hant');
+  });
+}
+function getUnitProgress(){
+  var out={};
+  STORE_UNITS.forEach(function(unit){ out[unit]=workCountsForUnit(unit); });
+  return out;
+}
+function priorityTag(p){
+  var cls=p==='高'?'s-fix':(p==='低'?'s-notstart':'s-pending');
+  return '<span class="tag '+cls+'">優先：'+dailyEsc(p||'中')+'</span>';
+}
+function dailyKindTag(w){
+  var m={adhoc:['t-dev','突發'],recurring:['t-rep','恆常'],settlement:['dept','結算']}[w.kind]||['s-na',w.kind];
+  return '<span class="tag '+m[0]+'">'+m[1]+'</span>';
+}
+function dailyStatusTag(w){
+  if(w.status==='cancelled') return '<span class="tag s-cancelled">已取消</span>';
+  if(isOverdue(w)) return '<span class="tag s-overdue">逾期</span>';
+  if(w.status==='done') return '<span class="tag s-done">'+(w.kind==='settlement'?'已結算':'已完成')+'</span>';
+  return '<span class="tag s-pending">'+(w.kind==='settlement'?'待結算':'未完成')+'</span>';
+}
 function goDailyView(v){
   currentModule='daily';
-  const map={today:'dailyToday',progress:'dailyProgress',new:'dailyNew',recurring:'dailyRecurring'};
+  var map={today:'dailyToday',progress:'dailyProgress',new:'dailyNew',recurring:'dailyRecurring',records:'dailyRecords',unit:'dailyUnit'};
   currentView=map[v]||'dailyToday';
-  dailyView=v||'today';
-  if(typeof render==='function')render();
+  if(v!=='unit') dailyProgressUnit=null;
+  render();
 }
-function goDailyViewToday(){goDailyView('today')}
-function goDailyViewProgress(){goDailyView('progress')}
-function goDailyViewNew(){goDailyView('new')}
-function goDailyViewRecurring(){goDailyView('recurring')}
-function setDailyUnitFilter(unit){dailyUnitFilter=unit||'全部';if(typeof render==='function')render()}
-function dailyStatusTag(w){var label=w.status==='done'?'已完成':'進行中',cls=w.status==='done'?'s-done':'s-pending';if(w.kind==='settlement')label=w.status==='done'?'已結算':'待結算';return '<span class="tag '+cls+'">'+label+'</span>'}
-function dailyKindTag(w){var m={adhoc:['t-dev','臨時'],recurring:['t-rep','例行'],settlement:['dept','結算']}[w.kind]||['s-na',w.kind||'其他'];return '<span class="tag '+m[0]+'">'+m[1]+'</span>'}
-function dailyWorkRows(list,user){if(!list.length)return '<div class="card">🌙 今日沒有工作。</div>';return '<div class="table-wrap"><table><thead><tr><th>工作</th><th>單位</th><th>類型</th><th>狀態</th><th>經手人</th><th>操作</th></tr></thead><tbody>'+list.map(function(w){var action='';if(w.status!=='done'){if(w.kind==='settlement'){action=dailyCanManage(user)?'<button class="btn sm warn" onclick="dailyCloseSettlement(\''+w.unit+'\')">✅ 結算</button>':'<span style="color:#888;font-size:12px">待管理層結算</span>';}else{action='<button class="btn sm green" onclick="dailyComplete(\''+w.id+'\')">完成</button>';}}else if(w.kind==='settlement'&&dailyIsAdmin(user))action='<button class="btn sm gray" onclick="dailyReopenSettlement(\''+w.unit+'\')">↩️ 重開</button>';return '<tr><td><b>'+w.title+'</b><div style="font-size:12px;color:#777;margin-top:2px">'+(w.note||'')+'</div></td><td>'+w.unit+'</td><td>'+dailyKindTag(w)+'</td><td>'+dailyStatusTag(w)+'</td><td>'+(w.handlerAccountId||'－')+'</td><td>'+action+'</td></tr>'}).join('')+'</tbody></table></div>'}
-function dailyComplete(id){completeDailyWork(id,typeof currentUser!=='undefined'?currentUser:null);if(typeof render==='function')render()}
-function dailyCloseSettlement(unit){closeSettlement(unit,typeof currentUser!=='undefined'?currentUser:null);if(typeof render==='function')render()}
-function dailyReopenSettlement(unit){reopenSettlement(unit,typeof currentUser!=='undefined'?currentUser:null);if(typeof render==='function')render()}
-function dailyCreateAdhoc(){var user=typeof currentUser!=='undefined'?currentUser:null;if(!dailyCanManage(user))return alert2('只有主管或管理員可以建立臨時工作。');var unitOptions=STORE_UNITS.map(function(u){return '<option value="'+u+'">'+u+'</option>'}).join('');showModal('<h3>🛠️ 建立臨時工作</h3><label>標題</label><input id="d-adhoc-title" type="text" placeholder="例：補貨確認"><div class="filters"><select id="d-adhoc-unit">'+unitOptions+'</select><input id="d-adhoc-handler" type="text" placeholder="經手人帳號（可留空）"></div><div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitAdhoc()">建立</button></div>')}
-function dailySubmitAdhoc(){var title=(document.getElementById('d-adhoc-title').value||'').trim(),unit=document.getElementById('d-adhoc-unit').value,handler=(document.getElementById('d-adhoc-handler').value||'').trim();if(!title)return alert2('請輸入工作標題。');var map={};if(handler)map[unit]=handler;createAdhocWork({title:title,units:[unit],handlerByUnit:map},typeof currentUser!=='undefined'?currentUser:null);closeModal();if(typeof render==='function')render()}
-function dailyCreateRecurring(){var user=typeof currentUser!=='undefined'?currentUser:null;if(!dailyCanManage(user))return alert2('只有主管或管理員可以建立例行模板。');var unitOptions=STORE_UNITS.map(function(u){return '<label style="display:inline-flex;align-items:center;gap:4px;margin-right:10px"><input type="checkbox" value="'+u+'" checked> '+u+'</label>'}).join('');showModal('<h3>🔁 建立例行模板</h3><label>標題</label><input id="d-rec-title" type="text" placeholder="例：門市巡檢"><label style="margin-top:10px;display:block">適用單位</label><div class="card" style="padding:10px">'+unitOptions+'</div><div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitRecurring()">建立</button></div>')}
-function dailySubmitRecurring(){var title=(document.getElementById('d-rec-title').value||'').trim(),units=Array.prototype.slice.call(document.querySelectorAll('#modal-content input[type="checkbox"]:checked')).map(function(x){return x.value});if(!title||!units.length)return alert2('請輸入標題並選擇至少一個單位。');createRecurringTemplate({title:title,units:units},typeof currentUser!=='undefined'?currentUser:null);closeModal();if(typeof render==='function')render()}
-function vDailyToday(user){var s=loadDailyState(),list=getTodayWorksForUser(user),done=list.filter(function(w){return w.status==='done'}).length,open=list.length-done,filterSelect='<select onchange="setDailyUnitFilter(this.value)">'+['全部'].concat(STORE_UNITS).map(function(u){return '<option value="'+u+'"'+(dailyUnitFilter===u?' selected':'')+'>'+u+'</option>'}).join('')+'</select>';return '<div class="card"><h2>🗓️ 今日工作</h2><div class="stats"><div class="stat"><div class="num">'+list.length+'</div><div class="lbl">總數</div></div><div class="stat"><div class="num">'+done+'</div><div class="lbl">已完成</div></div><div class="stat"><div class="num">'+open+'</div><div class="lbl">待辦</div></div><div class="stat"><div class="num">'+s.recurringTemplates.filter(function(x){return x.active}).length+'</div><div class="lbl">例行模板</div></div></div><div class="filters" style="margin-top:12px">'+filterSelect+'<button class="btn sm" onclick="goDailyViewProgress()">📊 進度</button><button class="btn sm gray" onclick="goDailyViewRecurring()">🔁 例行</button><button class="btn sm purple" onclick="goDailyViewNew()">➕ 新增</button></div>'+dailyWorkRows(list,user)+'</div>'}
-function vDailyProgress(user){var progress=getUnitProgress(),s=loadDailyState(),cards=STORE_UNITS.map(function(unit){var p=progress[unit]||{unit:unit,total:0,done:0,open:0},settle=s.settlements[unit]||{state:'open'},settleTag=settle.state==='closed'?'<span class="tag s-done">已結算</span>':'<span class="tag s-wait">未結算</span>',action='';if(FIXED_UNITS.indexOf(unit)>=0)action=settle.state==='closed'?(dailyIsAdmin(user)?'<button class="btn sm gray" onclick="dailyReopenSettlement(\''+unit+'\')">↩️ 重開</button>':''):(dailyCanManage(user)?'<button class="btn sm warn" onclick="dailyCloseSettlement(\''+unit+'\')">✅ 結算</button>':'');return '<div class="card"><h3>'+unit+' '+settleTag+'</h3><div class="stats"><div class="stat"><div class="num">'+p.total+'</div><div class="lbl">總工作</div></div><div class="stat"><div class="num">'+p.done+'</div><div class="lbl">已完成</div></div><div class="stat"><div class="num">'+p.open+'</div><div class="lbl">待辦</div></div></div><div style="margin-top:10px">'+action+'</div></div>'}).join(''),total=STORE_UNITS.reduce(function(a,u){a.total+=progress[u].total;a.done+=progress[u].done;a.open+=progress[u].open;return a},{total:0,done:0,open:0});return '<div class="card"><h2>📊 單位進度</h2><div class="stats"><div class="stat"><div class="num">'+total.total+'</div><div class="lbl">總工作</div></div><div class="stat"><div class="num">'+total.done+'</div><div class="lbl">已完成</div></div><div class="stat"><div class="num">'+total.open+'</div><div class="lbl">待辦</div></div><div class="stat"><div class="num">'+FIXED_UNITS.length+'</div><div class="lbl">門市單位</div></div></div><div class="filters" style="margin-top:12px"><button class="btn sm" onclick="goDailyViewToday()">🗓️ 今日</button><button class="btn sm gray" onclick="goDailyViewRecurring()">🔁 例行</button><button class="btn sm purple" onclick="goDailyViewNew()">➕ 新增</button></div></div>'+cards}
-function vDailyNew(user){if(!dailyCanManage(user))return '<div class="card"><h2>➕ 新增工作</h2><p>你只能查看及完成自己單位的工作。</p></div>';return '<div class="card"><h2>➕ 新增工作</h2><div class="stats"><div class="stat"><div class="num">1</div><div class="lbl">臨時工作</div></div><div class="stat"><div class="num">1</div><div class="lbl">例行模板</div></div></div><div class="filters" style="margin-top:12px"><button class="btn" onclick="dailyCreateAdhoc()">🛠️ 建立臨時工作</button><button class="btn gray" onclick="dailyCreateRecurring()">🔁 建立例行模板</button></div><p style="margin-top:10px;color:#666;font-size:13px">提示：臨時工作會預設為今日，例行模板會即時生成今日例項。</p></div>'}
-function vDailyRecurring(user){var s=loadDailyState(),list=s.recurringTemplates,rows=list.length?'<div class="table-wrap"><table><thead><tr><th>模板</th><th>單位</th><th>狀態</th></tr></thead><tbody>'+list.map(function(t){return '<tr><td><b>'+t.title+'</b></td><td>'+(t.units||[]).join('、')+'</td><td>'+(t.active?'<span class="tag s-done">啟用</span>':'<span class="tag s-na">停用</span>')+'</td></tr>'}).join('')+'</tbody></table></div>':'<p>暫時沒有例行模板。</p>';return '<div class="card"><h2>🔁 例行工作</h2><div class="stats"><div class="stat"><div class="num">'+list.filter(function(x){return x.active}).length+'</div><div class="lbl">啟用模板</div></div><div class="stat"><div class="num">'+s.works.filter(function(w){return w.kind==='recurring'&&isDailyTodayWork(w)}).length+'</div><div class="lbl">今日例項</div></div></div><div class="filters" style="margin-top:12px"><button class="btn sm" onclick="goDailyViewToday()">🗓️ 今日</button><button class="btn sm gray" onclick="goDailyViewProgress()">📊 進度</button><button class="btn sm purple" onclick="goDailyViewNew()">➕ 新增</button>'+(dailyCanManage(user)?'<button class="btn sm" onclick="dailyCreateRecurring()">🔁 新模板</button>':'')+'</div>'+rows+'</div>'}
+function setDailyUnitFilter(unit){ dailyUnitFilter=unit||'全部'; render(); }
+function openDailyUnit(unit){ dailyProgressUnit=unit; currentModule='daily'; currentView='dailyUnit'; render(); }
+function dailyToggle(id,el){
+  var ok=completeDailyWork(id,currentUser,!!el.checked);
+  if(!ok){ el.checked=!el.checked; alert2(dailyCanManage(currentUser)?'無法更新此工作。':'你只能剔選自己所屬單位的工作，且不可自行取消剔選。'); return; }
+  render();
+}
+function dailyReopen(id){
+  if(!dailyCanManage(currentUser)){ alert2('只有管理層可以重新開啟工作。'); return; }
+  completeDailyWork(id,currentUser,false);
+  render();
+}
+function dailyCancelWork(id){
+  if(!dailyCanManage(currentUser)) return;
+  cancelAdhocWork(id,currentUser);
+  render();
+}
+function unitChecksHtml(selected){
+  selected=selected||STORE_UNITS.slice();
+  return STORE_UNITS.map(function(u){
+    return '<label style="display:inline-flex;align-items:center;gap:4px;margin:4px 10px 4px 0"><input type="checkbox" class="d-unit" value="'+u+'" '+(selected.indexOf(u)>=0?'checked':'')+'> '+u+'</label>';
+  }).join('');
+}
+function prioritySelectHtml(val,id){
+  id=id||'d-priority';
+  return '<select id="'+id+'">'+PRIORITIES.map(function(p){ return '<option value="'+p+'" '+(p===(val||'中')?'selected':'')+'>'+p+'</option>'; }).join('')+'</select>';
+}
+function dailyCreateAdhoc(){
+  if(!dailyCanManage(currentUser)) return alert2('只有管理層可以建立突發工作。');
+  showModal(
+    '<h3>🛠️ 建立突發工作</h3>'+
+    '<label>標題</label><input id="d-title" type="text" placeholder="例如：臨時補貨核對">'+
+    '<label>內容</label><textarea id="d-content" placeholder="工作說明"></textarea>'+
+    '<label>完成期限</label><input id="d-due" type="date" value="'+dailyTodayStr()+'">'+
+    '<label>優先級</label>'+prioritySelectHtml('中')+
+    '<label>適用單位（可多選）</label><div class="card" style="padding:10px">'+unitChecksHtml()+'</div>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitAdhoc()">建立</button></div>'
+  );
+}
+function dailySubmitAdhoc(){
+  var title=(document.getElementById('d-title').value||'').trim();
+  var content=document.getElementById('d-content').value||'';
+  var due=document.getElementById('d-due').value||dailyTodayStr();
+  var priority=document.getElementById('d-priority').value;
+  var units=[].slice.call(document.querySelectorAll('#modal-content .d-unit:checked')).map(function(x){return x.value;});
+  if(!title||!units.length) return alert2('請輸入標題並選擇至少一個單位。');
+  createAdhocWork({title:title,content:content,dueDate:due,priority:priority,units:units},currentUser);
+  closeModal(); render();
+}
+function dailyCreateRecurring(){
+  if(!dailyCanManage(currentUser)) return alert2('只有管理層可以建立恆常模板。');
+  showModal(
+    '<h3>🔁 建立恆常模板</h3>'+
+    '<label>標題</label><input id="d-title" type="text" placeholder="例如：門市巡檢">'+
+    '<label>內容</label><textarea id="d-content" placeholder="工作說明"></textarea>'+
+    '<label>優先級</label>'+prioritySelectHtml('中')+
+    '<label>適用單位（可多選）</label><div class="card" style="padding:10px">'+unitChecksHtml()+'</div>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitRecurring()">建立</button></div>'
+  );
+}
+function dailySubmitRecurring(){
+  var title=(document.getElementById('d-title').value||'').trim();
+  var content=document.getElementById('d-content').value||'';
+  var priority=document.getElementById('d-priority').value;
+  var units=[].slice.call(document.querySelectorAll('#modal-content .d-unit:checked')).map(function(x){return x.value;});
+  if(!title||!units.length) return alert2('請輸入標題並選擇至少一個單位。');
+  createRecurringTemplate({title:title,content:content,priority:priority,units:units},currentUser);
+  closeModal(); render();
+}
+function dailyEditWork(id){
+  if(!dailyCanManage(currentUser)) return;
+  var w=loadDailyState().works.find(function(x){return x.id===id;});
+  if(!w) return;
+  showModal(
+    '<h3>✏️ 編輯工作</h3>'+
+    '<label>標題</label><input id="d-title" type="text" value="'+dailyEsc(w.title)+'">'+
+    '<label>內容</label><textarea id="d-content">'+dailyEsc(w.content)+'</textarea>'+
+    '<label>完成期限</label><input id="d-due" type="date" value="'+dailyEsc(w.dueDate)+'">'+
+    '<label>優先級</label>'+prioritySelectHtml(w.priority)+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitEditWork(\''+id+'\')">儲存</button></div>'
+  );
+}
+function dailySubmitEditWork(id){
+  editWorkFields(id,{
+    title:document.getElementById('d-title').value,
+    content:document.getElementById('d-content').value,
+    dueDate:document.getElementById('d-due').value,
+    priority:document.getElementById('d-priority').value
+  },currentUser);
+  closeModal(); render();
+}
+function dailyEditTemplate(id){
+  if(!dailyCanManage(currentUser)) return;
+  var t=loadDailyState().recurringTemplates.find(function(x){return x.id===id;});
+  if(!t) return;
+  showModal(
+    '<h3>✏️ 編輯恆常模板</h3>'+
+    '<label>標題</label><input id="d-title" type="text" value="'+dailyEsc(t.title)+'">'+
+    '<label>內容</label><textarea id="d-content">'+dailyEsc(t.content||'')+'</textarea>'+
+    '<label>優先級</label>'+prioritySelectHtml(t.priority||'中')+
+    '<label>適用單位</label><div class="card" style="padding:10px">'+unitChecksHtml(t.units||[])+'</div>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitEditTemplate(\''+id+'\')">儲存</button></div>'
+  );
+}
+function dailySubmitEditTemplate(id){
+  var units=[].slice.call(document.querySelectorAll('#modal-content .d-unit:checked')).map(function(x){return x.value;});
+  editTemplate(id,{
+    title:document.getElementById('d-title').value,
+    content:document.getElementById('d-content').value,
+    priority:document.getElementById('d-priority').value,
+    units:units
+  },currentUser);
+  closeModal(); render();
+}
+function dailyToggleTemplate(id,active){
+  setTemplateActive(id,active,currentUser);
+  render();
+}
+function dailyWorkRows(list,user,opts){
+  opts=opts||{};
+  var readonly=!!opts.readonly;
+  if(!list.length) return '<p style="color:#888">沒有工作。</p>';
+  return '<div class="table-wrap"><table><thead><tr>'+
+    (readonly?'':'<th style="width:40px">剔選</th>')+
+    '<th>工作</th><th>單位</th><th>類型</th><th>優先</th><th>期限</th><th>狀態</th><th>完成資訊</th>'+
+    (dailyCanManage(user)&&!readonly?'<th>管理</th>':'')+
+    '</tr></thead><tbody>'+list.map(function(w){
+      var can=canTickWork(w,user);
+      var tick='';
+      if(!readonly){
+        if(w.status==='done'){
+          tick=dailyCanManage(user)
+            ?'<input type="checkbox" checked onchange="dailyToggle(\''+w.id+'\',this)" title="取消剔選＝重開">'
+            :'<input type="checkbox" checked disabled title="已完成（個人不可取消）">';
+        }else{
+          tick=can
+            ?'<input type="checkbox" onchange="dailyToggle(\''+w.id+'\',this)">'
+            :'<input type="checkbox" disabled title="不可操作">';
+        }
+      }
+      var doneInfo=w.status==='done'
+        ? dailyEsc(w.completedByName||'—')+'<div style="font-size:11px;color:#888">'+dailyEsc(w.completedAt||'')+'</div>'
+        : '—';
+      var admin='';
+      if(dailyCanManage(user)&&!readonly){
+        admin='<button class="btn gray sm" onclick="dailyEditWork(\''+w.id+'\')">編輯</button> ';
+        if(w.status==='done') admin+='<button class="btn warn sm" onclick="dailyReopen(\''+w.id+'\')">重開</button> ';
+        if(w.kind!=='settlement'&&w.status!=='cancelled') admin+='<button class="btn red sm" onclick="dailyCancelWork(\''+w.id+'\')">取消</button>';
+      }
+      return '<tr>'+
+        (readonly?'':'<td>'+tick+'</td>')+
+        '<td><b>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+'</td>'+
+        '<td>'+dailyEsc(w.unit)+'</td><td>'+dailyKindTag(w)+'</td><td>'+priorityTag(w.priority)+'</td>'+
+        '<td>'+dailyEsc(w.dueDate||'—')+'</td><td>'+dailyStatusTag(w)+'</td><td>'+doneInfo+'</td>'+
+        (dailyCanManage(user)&&!readonly?'<td><div class="actions-row">'+admin+'</div></td>':'')+
+        '</tr>';
+    }).join('')+'</tbody></table></div>';
+}
+function vDailyToday(user){
+  ensureDailySeed();
+  var list=getTodayWorksForUser(user);
+  var done=list.filter(function(w){return w.status==='done';}).length;
+  var overdue=list.filter(isOverdue).length;
+  var filter='';
+  if(dailyCanManage(user)){
+    filter='<select onchange="setDailyUnitFilter(this.value)">'+['全部'].concat(STORE_UNITS).map(function(u){
+      return '<option value="'+u+'"'+(dailyUnitFilter===u?' selected':'')+'>'+u+'</option>';
+    }).join('')+'</select>';
+  }else{
+    filter='<span class="tag dept">所屬單位：'+dailyEsc(dailyUserUnit(user)||'—')+'</span>';
+  }
+  return '<div class="card"><h2>🗓️ 今日工作｜'+dailyEsc(todayStr())+'</h2>'+
+    '<div class="stats">'+
+    '<div class="stat"><div class="num">'+list.length+'</div><div class="lbl">總數</div></div>'+
+    '<div class="stat"><div class="num green">'+done+'</div><div class="lbl">已完成</div></div>'+
+    '<div class="stat"><div class="num orange">'+(list.length-done)+'</div><div class="lbl">未完成</div></div>'+
+    '<div class="stat"><div class="num red">'+overdue+'</div><div class="lbl">逾期</div></div>'+
+    '</div><div class="filters" style="margin-top:12px">'+filter+'</div></div>'+
+    '<div class="card"><h3>工作清單（剔選完成）</h3>'+dailyWorkRows(list,user)+'</div>';
+}
+function vDailyProgress(user){
+  ensureDailySeed();
+  var progress=getUnitProgress();
+  var cards=STORE_UNITS.map(function(unit){
+    var p=progress[unit];
+    var settleNote=unit==='國內倉'
+      ?'<span class="tag s-na">無每日結算</span>'
+      :(p.items.some(function(w){return w.kind==='settlement'&&w.status==='done';})
+        ?'<span class="tag s-done">結算已完成</span>'
+        :'<span class="tag s-wait">結算未完成</span>');
+    return '<div class="card" style="cursor:pointer" onclick="openDailyUnit(\''+unit+'\')">'+
+      '<h3>'+unit+' '+settleNote+'</h3>'+
+      '<div class="stats">'+
+      '<div class="stat"><div class="num">'+p.total+'</div><div class="lbl">總數</div></div>'+
+      '<div class="stat"><div class="num green">'+p.done+'</div><div class="lbl">已完成</div></div>'+
+      '<div class="stat"><div class="num orange">'+p.open+'</div><div class="lbl">未完成</div></div>'+
+      '<div class="stat"><div class="num red">'+p.overdue+'</div><div class="lbl">逾期</div></div>'+
+      '<div class="stat"><div class="num blue">'+p.pct+'%</div><div class="lbl">完成率</div></div>'+
+      '</div><p style="margin-top:8px;font-size:12px;color:#888">點擊查看唯讀明細</p></div>';
+  }).join('');
+  return '<div class="card"><h2>📊 各單位進度</h2><p style="color:#666;font-size:13px">個人賬號可查看其他單位，但不可替其他單位剔選。</p></div>'+cards;
+}
+function vDailyUnit(user){
+  ensureDailySeed();
+  var unit=dailyProgressUnit||STORE_UNITS[0];
+  var p=workCountsForUnit(unit);
+  var mine=dailyUserUnit(user)===unit;
+  var readonly=!dailyCanManage(user)&&!mine;
+  return '<div class="card"><h2>📍 '+dailyEsc(unit)+' 工作明細</h2>'+
+    '<div class="stats">'+
+    '<div class="stat"><div class="num">'+p.total+'</div><div class="lbl">總數</div></div>'+
+    '<div class="stat"><div class="num green">'+p.done+'</div><div class="lbl">已完成</div></div>'+
+    '<div class="stat"><div class="num red">'+p.overdue+'</div><div class="lbl">逾期</div></div>'+
+    '<div class="stat"><div class="num blue">'+p.pct+'%</div><div class="lbl">完成率</div></div></div>'+
+    '<div class="filters" style="margin-top:12px"><button class="btn gray sm" onclick="goDailyView(\'progress\')">← 返回進度</button></div>'+
+    (readonly?'<div class="info-banner" style="margin-top:10px">🔒 唯讀：非你所屬單位，不可剔選。</div>':'')+
+    '</div><div class="card">'+dailyWorkRows(p.items,user,{readonly:readonly})+'</div>';
+}
+function vDailyNew(user){
+  if(!dailyCanManage(user)) return '<div class="card"><h2>➕ 管理工作</h2><p>個人賬號不可新增工作。</p></div>';
+  return '<div class="card"><h2>➕ 新增突發工作</h2>'+
+    '<p style="color:#666;font-size:13px;margin-bottom:10px">可指定多個單位、期限與優先級；建立後即出現在對應單位今日／期限日清單。</p>'+
+    '<button class="btn" onclick="dailyCreateAdhoc()">🛠️ 建立突發工作</button> '+
+    '<button class="btn gray" onclick="goDailyView(\'recurring\')">前往恆常模板</button></div>';
+}
+function vDailyRecurring(user){
+  ensureDailySeed();
+  var list=loadDailyState().recurringTemplates;
+  var rows=!list.length?'<p style="color:#888">暫無恆常模板。</p>':
+    '<div class="table-wrap"><table><thead><tr><th>模板</th><th>單位</th><th>優先</th><th>狀態</th>'+(dailyCanManage(user)?'<th>管理</th>':'')+'</tr></thead><tbody>'+
+    list.map(function(t){
+      var admin=dailyCanManage(user)
+        ?('<button class="btn gray sm" onclick="dailyEditTemplate(\''+t.id+'\')">編輯</button> '+
+          (t.active
+            ?'<button class="btn warn sm" onclick="dailyToggleTemplate(\''+t.id+'\',false)">停用</button>'
+            :'<button class="btn green sm" onclick="dailyToggleTemplate(\''+t.id+'\',true)">啟用</button>'))
+        :'';
+      return '<tr><td><b>'+dailyEsc(t.title)+'</b>'+(t.content?'<div style="font-size:12px;color:#777">'+dailyEsc(t.content)+'</div>':'')+'</td>'+
+        '<td>'+dailyEsc((t.units||[]).join('、'))+'</td><td>'+priorityTag(t.priority||'中')+'</td>'+
+        '<td>'+(t.active?'<span class="tag s-done">啟用</span>':'<span class="tag s-na">停用</span>')+'</td>'+
+        (dailyCanManage(user)?'<td><div class="actions-row">'+admin+'</div></td>':'')+'</tr>';
+    }).join('')+'</tbody></table></div>';
+  return '<div class="card"><h2>🔁 恆常模板</h2>'+
+    (dailyCanManage(user)?'<button class="btn sm" onclick="dailyCreateRecurring()">＋ 建立模板</button>':'')+
+    '<div style="margin-top:12px">'+rows+'</div></div>';
+}
+function vDailyRecords(user){
+  ensureDailySeed();
+  var s=loadDailyState();
+  var list=s.works.filter(function(w){ return w.status==='done'; });
+  if(dailyCanManage(user)){
+    if(dailyRecordsFilter!=='全部'&&dailyRecordsFilter!=='mine'){
+      list=list.filter(function(w){ return w.unit===dailyRecordsFilter; });
+    }
+  }else{
+    list=list.filter(function(w){ return w.completedBy===dailyUserId(user); });
+  }
+  list=list.sort(function(a,b){ return String(b.completedAt||'').localeCompare(String(a.completedAt||'')); });
+  var filter='';
+  if(dailyCanManage(user)){
+    filter='<select onchange="dailyRecordsFilter=this.value;render()">'+
+      ['全部'].concat(STORE_UNITS).map(function(u){
+        return '<option value="'+u+'"'+(dailyRecordsFilter===u?' selected':'')+'>'+u+'</option>';
+      }).join('')+'</select>';
+  }
+  var rows=!list.length?'<p style="color:#888">暫無完成記錄。</p>':
+    '<div class="table-wrap"><table><thead><tr><th>工作</th><th>單位</th><th>類型</th><th>完成人</th><th>完成時間</th></tr></thead><tbody>'+
+    list.map(function(w){
+      return '<tr><td><b>'+dailyEsc(w.title)+'</b></td><td>'+dailyEsc(w.unit)+'</td><td>'+dailyKindTag(w)+'</td>'+
+        '<td>'+dailyEsc(w.completedByName||'—')+'</td><td style="font-size:12px">'+dailyEsc(w.completedAt||'—')+'</td></tr>';
+    }).join('')+'</tbody></table></div>';
+  return '<div class="card"><h2>📋 '+(dailyCanManage(user)?'完成記錄':'我的完成記錄')+'</h2>'+
+    (filter?'<div class="filters">'+filter+'</div>':'')+rows+'</div>';
+}
 
 
 /* ═══════════ Modal ═══════════ */
