@@ -1140,3 +1140,28 @@ input {
 .task-item a:hover strong {
   color: #1e3a5f;
 }
+
+.mention {
+  color: #1e3a5f;
+  font-weight: 600;
+}
+
+.prod-comment-list,
+.prod-comment-replies {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.prod-comment {
+  border: 1px solid var(--p-line);
+  border-radius: 8px;
+  padding: 0.75rem;
+  background: #fff;
+}
+
+.prod-comment-replies {
+  margin: 0.65rem 0 0 0.75rem;
+}

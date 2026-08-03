@@ -66,6 +66,12 @@ export type ProductionStageView = {
   completedAt: Date | null;
 };
 
+export type ProjectLifecycleStatus =
+  | "進行中"
+  | "已完成"
+  | "暫停"
+  | "已取消";
+
 export type ProductionProjectView = {
   id: string;
   type: ProductionProjectType;
@@ -77,11 +83,106 @@ export type ProductionProjectView = {
   ownerDisplayName: string | null;
   dueDate: string | null;
   status: string;
+  statusReason: string | null;
   progressPercent: number;
   currentStageName: string | null;
   stages: ProductionStageView[];
   createdAt: Date;
 };
+
+export type ProductionCommentView = {
+  id: string;
+  projectId: string;
+  authorAccountId: string;
+  authorDisplayName: string;
+  text: string;
+  parentId: string | null;
+  removed: boolean;
+  createdAt: Date;
+  mentions: string[];
+};
+
+export type ProductionMentionView = {
+  commentId: string;
+  projectId: string;
+  projectCode: string;
+  projectName: string;
+  type: ProductionProjectType;
+  excerpt: string;
+  authorDisplayName: string;
+  createdAt: Date;
+};
+
+export type ProductionFileVersionView = {
+  id: string;
+  projectId: string;
+  logicalName: string;
+  version: number;
+  fileName: string;
+  contentType: string;
+  size: number;
+  isLatest: boolean;
+  uploadedByDisplayName: string;
+  uploadedAt: Date;
+};
+
+export function projectAllowsStageUpdates(status: string): boolean {
+  return status !== "暫停" && status !== "已取消";
+}
+
+export function extractMentionNames(text: string): string[] {
+  const names = new Set<string>();
+  const re = /@([^\s@，,。！？!?]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) {
+    if (match[1]) names.add(match[1]);
+  }
+  return [...names];
+}
+
+export function highlightMentions(text: string): string {
+  return text.replace(
+    /@([^\s@，,。！？!?]+)/g,
+    '<span class="mention">@$1</span>',
+  );
+}
+
+export function toProductionCsv(
+  projects: ProductionProjectView[],
+): string {
+  const header = [
+    "編號",
+    "名稱",
+    "分類",
+    "狀態",
+    "當前階段",
+    "進度%",
+    "期限",
+    "狀態原因",
+  ];
+  const rows = projects.map((p) =>
+    [
+      p.code,
+      p.name,
+      p.category,
+      p.status,
+      p.currentStageName ?? "",
+      String(p.progressPercent),
+      p.dueDate ?? "",
+      p.statusReason ?? "",
+    ]
+      .map(csvEscape)
+      .join(","),
+  );
+  return [header.join(","), ...rows].join("\n");
+}
+
+function csvEscape(value: string): string {
+  if (/[",\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
 
 export type ProductionTaskView = {
   projectId: string;

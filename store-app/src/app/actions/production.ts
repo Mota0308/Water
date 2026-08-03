@@ -112,6 +112,8 @@ export async function updateProductionStageAction(
         return { error: "狀態不允許" };
       case "not_found":
         return { error: "找不到項目" };
+      case "project_locked":
+        return { error: "項目已暫停或取消，無法更新階段" };
       default:
         return { error: "更新失敗" };
     }
@@ -187,4 +189,132 @@ export async function adminResolveStageAction(
   return {
     success: decision === "confirm" ? "已確認完成" : "已退回需修改",
   };
+}
+
+export async function editProductionProjectAction(
+  _prev: ProductionActionMessage,
+  formData: FormData,
+): Promise<ProductionActionMessage> {
+  const sessionId = await readSessionId();
+  if (!sessionId) return { error: "請重新登入" };
+  const type = String(formData.get("type") ?? "") as ProductionProjectType;
+  const projectId = String(formData.get("projectId") ?? "");
+  const app = await getStoreWorkFlowApp();
+  const result = await app.editProductionProject(sessionId, {
+    projectId,
+    code: String(formData.get("code") ?? "").trim(),
+    name: String(formData.get("name") ?? "").trim(),
+    category: String(formData.get("category") ?? "").trim(),
+    description: String(formData.get("description") ?? "").trim(),
+    dueDate: String(formData.get("dueDate") ?? "").trim() || undefined,
+  });
+  if (!result.ok) {
+    if (result.error === "forbidden") return { error: "只有系統管理員可編輯" };
+    if (result.error === "not_editable") return { error: "已取消項目不可編輯" };
+    return { error: "編輯失敗" };
+  }
+  revalidateProduction(type || result.project.type, projectId);
+  return { success: "項目資料已更新" };
+}
+
+export async function setProductionLifecycleAction(
+  _prev: ProductionActionMessage,
+  formData: FormData,
+): Promise<ProductionActionMessage> {
+  const sessionId = await readSessionId();
+  if (!sessionId) return { error: "請重新登入" };
+  const type = String(formData.get("type") ?? "") as ProductionProjectType;
+  const projectId = String(formData.get("projectId") ?? "");
+  const status = String(formData.get("status") ?? "") as
+    | "暫停"
+    | "已取消"
+    | "進行中";
+  const reason = String(formData.get("reason") ?? "").trim();
+  const app = await getStoreWorkFlowApp();
+  const result = await app.setProductionProjectLifecycle(sessionId, {
+    projectId,
+    status,
+    reason,
+  });
+  if (!result.ok) {
+    if (result.error === "forbidden") return { error: "只有系統管理員可操作" };
+    if (result.error === "invalid_input") return { error: "請填寫原因" };
+    return { error: "狀態更新失敗" };
+  }
+  revalidateProduction(type || result.project.type, projectId);
+  return { success: `項目已設為${status}` };
+}
+
+export async function addProductionCommentAction(
+  _prev: ProductionActionMessage,
+  formData: FormData,
+): Promise<ProductionActionMessage> {
+  const sessionId = await readSessionId();
+  if (!sessionId) return { error: "請重新登入" };
+  const type = String(formData.get("type") ?? "") as ProductionProjectType;
+  const projectId = String(formData.get("projectId") ?? "");
+  const parentId = String(formData.get("parentId") ?? "").trim();
+  const app = await getStoreWorkFlowApp();
+  const result = await app.addProductionComment(sessionId, {
+    projectId,
+    text: String(formData.get("text") ?? ""),
+    parentId: parentId || undefined,
+  });
+  if (!result.ok) {
+    if (result.error === "invalid_input") return { error: "請輸入留言內容" };
+    return { error: "留言失敗" };
+  }
+  revalidateProduction(type, projectId);
+  return { success: "留言已發表" };
+}
+
+export async function removeProductionCommentAction(
+  _prev: ProductionActionMessage,
+  formData: FormData,
+): Promise<ProductionActionMessage> {
+  const sessionId = await readSessionId();
+  if (!sessionId) return { error: "請重新登入" };
+  const type = String(formData.get("type") ?? "") as ProductionProjectType;
+  const projectId = String(formData.get("projectId") ?? "");
+  const app = await getStoreWorkFlowApp();
+  const result = await app.removeProductionComment(sessionId, {
+    commentId: String(formData.get("commentId") ?? ""),
+  });
+  if (!result.ok) {
+    if (result.error === "forbidden") return { error: "只有系統管理員可移除留言" };
+    return { error: "移除失敗" };
+  }
+  revalidateProduction(type, projectId);
+  return { success: "留言已移除" };
+}
+
+export async function uploadProductionFileAction(
+  _prev: ProductionActionMessage,
+  formData: FormData,
+): Promise<ProductionActionMessage> {
+  const sessionId = await readSessionId();
+  if (!sessionId) return { error: "請重新登入" };
+  const type = String(formData.get("type") ?? "") as ProductionProjectType;
+  const projectId = String(formData.get("projectId") ?? "");
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    return { error: "請選擇檔案" };
+  }
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const logicalName =
+    String(formData.get("logicalName") ?? "").trim() || file.name;
+  const app = await getStoreWorkFlowApp();
+  const result = await app.uploadProductionFile(sessionId, {
+    projectId,
+    logicalName,
+    fileName: file.name,
+    contentType: file.type || "application/octet-stream",
+    dataBase64: buffer.toString("base64"),
+  });
+  if (!result.ok) {
+    if (result.error === "forbidden") return { error: "沒有上傳權限" };
+    return { error: "上傳失敗" };
+  }
+  revalidateProduction(type, projectId);
+  return { success: `已上傳 ${result.file.logicalName} v${result.file.version}` };
 }

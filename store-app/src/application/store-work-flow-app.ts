@@ -5,6 +5,8 @@ import {
   createProductionApi,
   type ProductionApi,
 } from "./production-api";
+import { createLocalFileStorage } from "./production-file-storage";
+import path from "node:path";
 
 export type AccountRole = "personal" | "manager" | "system_admin";
 
@@ -1163,7 +1165,14 @@ export function createStoreWorkFlowApp(deps: {
     return createdCount;
   }
 
-  const productionApi = createProductionApi({ db, now, getSession });
+  const productionApi = createProductionApi({
+    db,
+    now,
+    getSession,
+    fileStorage: createLocalFileStorage(
+      path.join(process.cwd(), "uploads"),
+    ),
+  });
 
   return {
     ...productionApi,

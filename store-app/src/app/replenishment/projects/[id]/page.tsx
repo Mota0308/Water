@@ -14,6 +14,8 @@ export default async function ReplenishmentProjectPage({
       session={data.session}
       project={data.project}
       handlers={data.handlers}
+      comments={data.comments}
+      files={data.files}
     />
   );
 }

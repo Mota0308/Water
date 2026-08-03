@@ -1,12 +1,19 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "mongodb";
 import type { Session } from "./store-work-flow-app";
+import type { FileStorage } from "./production-file-storage";
 import {
   HANDLER_STAGE_STATUSES,
   currentStageIndex,
+  extractMentionNames,
   isStageDone,
+  projectAllowsStageUpdates,
   projectProgress,
   stagesForType,
+  toProductionCsv,
+  type ProductionCommentView,
+  type ProductionFileVersionView,
+  type ProductionMentionView,
   type ProductionProjectType,
   type ProductionProjectView,
   type ProductionStageView,
@@ -16,6 +23,8 @@ import {
 
 const PROJECTS = "production_projects";
 const ACCOUNTS = "accounts";
+const COMMENTS = "production_comments";
+const FILES = "production_files";
 
 type AuthError = "unauthenticated" | "forbidden";
 
@@ -38,10 +47,37 @@ type ProjectRecord = {
   ownerAccountId: string | null;
   dueDate: string | null;
   status: string;
+  statusReason: string | null;
   stages: StageRecord[];
   createdByAccountId: string;
   createdAt: Date;
   updatedAt: Date;
+};
+
+type CommentRecord = {
+  _id: string;
+  projectId: string;
+  authorAccountId: string;
+  text: string;
+  parentId: string | null;
+  removed: boolean;
+  removedByAccountId: string | null;
+  mentionAccountIds: string[];
+  createdAt: Date;
+};
+
+type FileRecord = {
+  _id: string;
+  projectId: string;
+  logicalName: string;
+  version: number;
+  storageKey: string;
+  fileName: string;
+  contentType: string;
+  size: number;
+  isLatest: boolean;
+  uploadedByAccountId: string;
+  uploadedAt: Date;
 };
 
 type AccountLite = {
@@ -95,6 +131,37 @@ export type ProductionApi = {
     | { ok: true; project: ProductionProjectView }
     | { ok: false; error: AuthError | "not_found" }
   >;
+  editProductionProject(
+    actorSessionId: string,
+    input: {
+      projectId: string;
+      code: string;
+      name: string;
+      category: string;
+      description?: string;
+      dueDate?: string;
+    },
+  ): Promise<
+    | { ok: true; project: ProductionProjectView }
+    | {
+        ok: false;
+        error: AuthError | "not_found" | "invalid_input" | "not_editable";
+      }
+  >;
+  setProductionProjectLifecycle(
+    actorSessionId: string,
+    input: {
+      projectId: string;
+      status: "暫停" | "已取消" | "進行中";
+      reason: string;
+    },
+  ): Promise<
+    | { ok: true; project: ProductionProjectView }
+    | {
+        ok: false;
+        error: AuthError | "not_found" | "invalid_input" | "invalid_status";
+      }
+  >;
   updateProductionStage(
     sessionId: string,
     input: {
@@ -113,7 +180,8 @@ export type ProductionApi = {
           | "invalid_stage"
           | "not_handler"
           | "not_current_stage"
-          | "invalid_status";
+          | "invalid_status"
+          | "project_locked";
       }
   >;
   setProductionStageHandler(
@@ -127,7 +195,12 @@ export type ProductionApi = {
     | { ok: true; project: ProductionProjectView }
     | {
         ok: false;
-        error: AuthError | "not_found" | "invalid_stage" | "invalid_handler";
+        error:
+          | AuthError
+          | "not_found"
+          | "invalid_stage"
+          | "invalid_handler"
+          | "project_locked";
       }
   >;
   adminResolveStage(
@@ -142,7 +215,12 @@ export type ProductionApi = {
     | { ok: true; project: ProductionProjectView }
     | {
         ok: false;
-        error: AuthError | "not_found" | "invalid_stage" | "not_pending_confirm";
+        error:
+          | AuthError
+          | "not_found"
+          | "invalid_stage"
+          | "not_pending_confirm"
+          | "project_locked";
       }
   >;
   listMyProductionTasks(
@@ -179,14 +257,105 @@ export type ProductionApi = {
       }
     | { ok: false; error: AuthError }
   >;
+  addProductionComment(
+    sessionId: string,
+    input: { projectId: string; text: string; parentId?: string },
+  ): Promise<
+    | { ok: true; comment: ProductionCommentView }
+    | {
+        ok: false;
+        error: AuthError | "not_found" | "invalid_input" | "invalid_parent";
+      }
+  >;
+  listProductionComments(
+    sessionId: string,
+    input: { projectId: string },
+  ): Promise<
+    | { ok: true; comments: ProductionCommentView[] }
+    | { ok: false; error: AuthError | "not_found" }
+  >;
+  removeProductionComment(
+    actorSessionId: string,
+    input: { commentId: string },
+  ): Promise<
+    | { ok: true }
+    | { ok: false; error: AuthError | "not_found" }
+  >;
+  listMyMentions(
+    sessionId: string,
+    input?: { type?: ProductionProjectType },
+  ): Promise<
+    | { ok: true; mentions: ProductionMentionView[] }
+    | { ok: false; error: AuthError }
+  >;
+  uploadProductionFile(
+    sessionId: string,
+    input: {
+      projectId: string;
+      logicalName: string;
+      fileName: string;
+      contentType: string;
+      dataBase64: string;
+    },
+  ): Promise<
+    | { ok: true; file: ProductionFileVersionView }
+    | {
+        ok: false;
+        error: AuthError | "not_found" | "invalid_input" | "storage_unavailable";
+      }
+  >;
+  listProductionFiles(
+    sessionId: string,
+    input: { projectId: string },
+  ): Promise<
+    | { ok: true; files: ProductionFileVersionView[] }
+    | { ok: false; error: AuthError | "not_found" }
+  >;
+  getProductionFileContent(
+    sessionId: string,
+    input: { fileId: string },
+  ): Promise<
+    | {
+        ok: true;
+        fileName: string;
+        contentType: string;
+        dataBase64: string;
+      }
+    | { ok: false; error: AuthError | "not_found" | "storage_unavailable" }
+  >;
+  exportProductionProjectsCsv(
+    actorSessionId: string,
+    input: { type: ProductionProjectType },
+  ): Promise<
+    | { ok: true; csv: string }
+    | { ok: false; error: AuthError }
+  >;
 };
+
+export function createMemoryFileStorage(): FileStorage {
+  const files = new Map<string, Buffer>();
+  return {
+    async save(input) {
+      const storageKey = `${input.projectId}/${randomUUID()}-${input.fileName}`;
+      files.set(storageKey, input.data);
+      return { storageKey, size: input.data.length };
+    },
+    async read(storageKey) {
+      const data = files.get(storageKey);
+      if (!data) throw new Error("missing");
+      return data;
+    },
+  };
+}
 
 export function createProductionApi(deps: {
   db: Db;
   now: () => Date;
   getSession: (sessionId: string) => Promise<Session | null>;
+  fileStorage?: FileStorage;
 }): ProductionApi {
   const { db, now, getSession } = deps;
+  const fileStorage = deps.fileStorage;
 
   async function requireSession(sessionId: string) {
     const session = await getSession(sessionId);
@@ -251,6 +420,7 @@ export function createProductionApi(deps: {
       ownerDisplayName: owner?.displayName ?? null,
       dueDate: project.dueDate,
       status: project.status,
+      statusReason: project.statusReason ?? null,
       progressPercent: projectProgress(project.stages),
       currentStageName: project.stages[cur]?.name ?? null,
       stages,
@@ -270,6 +440,59 @@ export function createProductionApi(deps: {
       return null;
     }
     return account;
+  }
+
+  async function resolveMentions(text: string): Promise<string[]> {
+    const names = extractMentionNames(text);
+    if (!names.length) return [];
+    const rows = await db
+      .collection<AccountLite>(ACCOUNTS)
+      .find({ displayName: { $in: names }, status: "active" })
+      .toArray();
+    return rows.map((r) => r._id);
+  }
+
+  async function toCommentView(
+    comment: CommentRecord,
+  ): Promise<ProductionCommentView> {
+    const author = await db.collection<AccountLite>(ACCOUNTS).findOne({
+      _id: comment.authorAccountId,
+    });
+    return {
+      id: comment._id,
+      projectId: comment.projectId,
+      authorAccountId: comment.authorAccountId,
+      authorDisplayName: author?.displayName ?? "未知",
+      text: comment.text,
+      parentId: comment.parentId,
+      removed: comment.removed,
+      createdAt: comment.createdAt,
+      mentions: comment.mentionAccountIds,
+    };
+  }
+
+  async function toFileView(file: FileRecord): Promise<ProductionFileVersionView> {
+    const uploader = await db.collection<AccountLite>(ACCOUNTS).findOne({
+      _id: file.uploadedByAccountId,
+    });
+    return {
+      id: file._id,
+      projectId: file.projectId,
+      logicalName: file.logicalName,
+      version: file.version,
+      fileName: file.fileName,
+      contentType: file.contentType,
+      size: file.size,
+      isLatest: file.isLatest,
+      uploadedByDisplayName: uploader?.displayName ?? "未知",
+      uploadedAt: file.uploadedAt,
+    };
+  }
+
+  async function canUpload(session: Session, project: ProjectRecord) {
+    if (session.role === "system_admin") return true;
+    if (session.role !== "personal") return false;
+    return project.stages.some((s) => s.handlerAccountId === session.accountId);
   }
 
   return {
@@ -321,6 +544,7 @@ export function createProductionApi(deps: {
         ownerAccountId: input.ownerAccountId ?? null,
         dueDate: input.dueDate?.trim() || null,
         status: "進行中",
+        statusReason: null,
         stages,
         createdByAccountId: auth.session.accountId,
         createdAt: at,
@@ -373,11 +597,79 @@ export function createProductionApi(deps: {
       return { ok: true, project: await toView(project) };
     },
 
+    async editProductionProject(actorSessionId, input) {
+      const auth = await requireSystemAdmin(actorSessionId);
+      if (!auth.ok) return auth;
+      const project = await getProject(input.projectId);
+      if (!project) return { ok: false, error: "not_found" };
+      if (project.status === "已取消") {
+        return { ok: false, error: "not_editable" };
+      }
+      const code = input.code.trim();
+      const name = input.name.trim();
+      const category = input.category.trim();
+      if (!code || !name || !category) {
+        return { ok: false, error: "invalid_input" };
+      }
+      project.code = code;
+      project.name = name;
+      project.category = category;
+      project.description = input.description?.trim() ?? "";
+      project.dueDate = input.dueDate?.trim() || null;
+      project.updatedAt = now();
+      await db.collection<ProjectRecord>(PROJECTS).updateOne(
+        { _id: project._id },
+        {
+          $set: {
+            code: project.code,
+            name: project.name,
+            category: project.category,
+            description: project.description,
+            dueDate: project.dueDate,
+            updatedAt: project.updatedAt,
+          },
+        },
+      );
+      return { ok: true, project: await toView(project) };
+    },
+
+    async setProductionProjectLifecycle(actorSessionId, input) {
+      const auth = await requireSystemAdmin(actorSessionId);
+      if (!auth.ok) return auth;
+      const project = await getProject(input.projectId);
+      if (!project) return { ok: false, error: "not_found" };
+      if (!["暫停", "已取消", "進行中"].includes(input.status)) {
+        return { ok: false, error: "invalid_status" };
+      }
+      const reason = input.reason.trim();
+      if (!reason) return { ok: false, error: "invalid_input" };
+      if (project.status === "已完成" && input.status !== "進行中") {
+        // allow cancel/pause of completed? skip - only active projects
+      }
+      project.status = input.status;
+      project.statusReason = reason;
+      project.updatedAt = now();
+      await db.collection<ProjectRecord>(PROJECTS).updateOne(
+        { _id: project._id },
+        {
+          $set: {
+            status: project.status,
+            statusReason: project.statusReason,
+            updatedAt: project.updatedAt,
+          },
+        },
+      );
+      return { ok: true, project: await toView(project) };
+    },
+
     async updateProductionStage(sessionId, input) {
       const auth = await requireSession(sessionId);
       if (!auth.ok) return auth;
       const project = await getProject(input.projectId);
       if (!project) return { ok: false, error: "not_found" };
+      if (!projectAllowsStageUpdates(project.status)) {
+        return { ok: false, error: "project_locked" };
+      }
       const stage = project.stages[input.stageIndex];
       if (!stage) return { ok: false, error: "invalid_stage" };
 
@@ -409,7 +701,9 @@ export function createProductionApi(deps: {
       }
 
       const allDone = project.stages.every((s) => isStageDone(s.status));
-      project.status = allDone ? "已完成" : "進行中";
+      if (project.status !== "暫停" && project.status !== "已取消") {
+        project.status = allDone ? "已完成" : "進行中";
+      }
       project.updatedAt = at;
 
       await db.collection<ProjectRecord>(PROJECTS).updateOne(
@@ -430,6 +724,9 @@ export function createProductionApi(deps: {
       if (!auth.ok) return auth;
       const project = await getProject(input.projectId);
       if (!project) return { ok: false, error: "not_found" };
+      if (!projectAllowsStageUpdates(project.status)) {
+        return { ok: false, error: "project_locked" };
+      }
       const stage = project.stages[input.stageIndex];
       if (!stage) return { ok: false, error: "invalid_stage" };
       const handler = await assertPersonalHandler(input.handlerAccountId);
@@ -449,6 +746,9 @@ export function createProductionApi(deps: {
       if (!auth.ok) return auth;
       const project = await getProject(input.projectId);
       if (!project) return { ok: false, error: "not_found" };
+      if (!projectAllowsStageUpdates(project.status)) {
+        return { ok: false, error: "project_locked" };
+      }
       const stage = project.stages[input.stageIndex];
       if (!stage) return { ok: false, error: "invalid_stage" };
       if (stage.status !== "待確認") {
@@ -491,7 +791,9 @@ export function createProductionApi(deps: {
         return { ok: true, tasks: [] };
       }
 
-      const filter: Record<string, unknown> = {};
+      const filter: Record<string, unknown> = {
+        status: { $nin: ["暫停", "已取消"] },
+      };
       if (input.type) filter.type = input.type;
       const projects = await db
         .collection<ProjectRecord>(PROJECTS)
@@ -530,6 +832,7 @@ export function createProductionApi(deps: {
       let waitingConfirm = 0;
       let needFix = 0;
       for (const project of projects) {
+        if (!projectAllowsStageUpdates(project.status)) continue;
         if (project.stages.some((s) => s.status === "待確認")) waitingConfirm += 1;
         if (project.stages.some((s) => s.status === "需要修改")) needFix += 1;
       }
@@ -537,6 +840,7 @@ export function createProductionApi(deps: {
       let myTaskCount = 0;
       if (auth.session.role === "personal") {
         for (const project of projects) {
+          if (!projectAllowsStageUpdates(project.status)) continue;
           const cur = currentStageIndex(project.stages);
           const stage = project.stages[cur];
           if (!stage) continue;
@@ -579,6 +883,205 @@ export function createProductionApi(deps: {
           department: row.department,
         })),
       };
+    },
+
+    async addProductionComment(sessionId, input) {
+      const auth = await requireSession(sessionId);
+      if (!auth.ok) return auth;
+      const project = await getProject(input.projectId);
+      if (!project) return { ok: false, error: "not_found" };
+      const text = input.text.trim();
+      if (!text) return { ok: false, error: "invalid_input" };
+      if (input.parentId) {
+        const parent = await db.collection<CommentRecord>(COMMENTS).findOne({
+          _id: input.parentId,
+          projectId: project._id,
+        });
+        if (!parent) return { ok: false, error: "invalid_parent" };
+      }
+      const mentionAccountIds = await resolveMentions(text);
+      const comment: CommentRecord = {
+        _id: randomUUID(),
+        projectId: project._id,
+        authorAccountId: auth.session.accountId,
+        text,
+        parentId: input.parentId ?? null,
+        removed: false,
+        removedByAccountId: null,
+        mentionAccountIds,
+        createdAt: now(),
+      };
+      await db.collection<CommentRecord>(COMMENTS).insertOne(comment);
+      return { ok: true, comment: await toCommentView(comment) };
+    },
+
+    async listProductionComments(sessionId, input) {
+      const auth = await requireSession(sessionId);
+      if (!auth.ok) return auth;
+      const project = await getProject(input.projectId);
+      if (!project) return { ok: false, error: "not_found" };
+      const rows = await db
+        .collection<CommentRecord>(COMMENTS)
+        .find({ projectId: project._id })
+        .sort({ createdAt: 1 })
+        .toArray();
+      const canSeeRemoved =
+        auth.session.role === "system_admin" ||
+        auth.session.role === "manager";
+      const visible = rows.filter((c) => canSeeRemoved || !c.removed);
+      return {
+        ok: true,
+        comments: await Promise.all(visible.map((c) => toCommentView(c))),
+      };
+    },
+
+    async removeProductionComment(actorSessionId, input) {
+      const auth = await requireSystemAdmin(actorSessionId);
+      if (!auth.ok) return auth;
+      const comment = await db.collection<CommentRecord>(COMMENTS).findOne({
+        _id: input.commentId,
+      });
+      if (!comment) return { ok: false, error: "not_found" };
+      await db.collection<CommentRecord>(COMMENTS).updateOne(
+        { _id: comment._id },
+        {
+          $set: {
+            removed: true,
+            removedByAccountId: auth.session.accountId,
+          },
+        },
+      );
+      return { ok: true };
+    },
+
+    async listMyMentions(sessionId, input = {}) {
+      const auth = await requireSession(sessionId);
+      if (!auth.ok) return auth;
+      const comments = await db
+        .collection<CommentRecord>(COMMENTS)
+        .find({
+          mentionAccountIds: auth.session.accountId,
+          removed: false,
+        })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      const mentions: ProductionMentionView[] = [];
+      for (const comment of comments) {
+        const project = await getProject(comment.projectId);
+        if (!project) continue;
+        if (input.type && project.type !== input.type) continue;
+        const author = await db.collection<AccountLite>(ACCOUNTS).findOne({
+          _id: comment.authorAccountId,
+        });
+        mentions.push({
+          commentId: comment._id,
+          projectId: project._id,
+          projectCode: project.code,
+          projectName: project.name,
+          type: project.type,
+          excerpt: comment.text.slice(0, 80),
+          authorDisplayName: author?.displayName ?? "未知",
+          createdAt: comment.createdAt,
+        });
+      }
+      return { ok: true, mentions };
+    },
+
+    async uploadProductionFile(sessionId, input) {
+      const auth = await requireSession(sessionId);
+      if (!auth.ok) return auth;
+      if (!fileStorage) return { ok: false, error: "storage_unavailable" };
+      const project = await getProject(input.projectId);
+      if (!project) return { ok: false, error: "not_found" };
+      if (!(await canUpload(auth.session, project))) {
+        return { ok: false, error: "forbidden" };
+      }
+      const logicalName = input.logicalName.trim() || input.fileName.trim();
+      if (!logicalName || !input.fileName.trim() || !input.dataBase64) {
+        return { ok: false, error: "invalid_input" };
+      }
+      const data = Buffer.from(input.dataBase64, "base64");
+      const saved = await fileStorage.save({
+        projectId: project._id,
+        fileName: input.fileName.trim(),
+        contentType: input.contentType || "application/octet-stream",
+        data,
+      });
+
+      const latest = await db.collection<FileRecord>(FILES).findOne({
+        projectId: project._id,
+        logicalName,
+        isLatest: true,
+      });
+      const version = latest ? latest.version + 1 : 1;
+      if (latest) {
+        await db.collection<FileRecord>(FILES).updateOne(
+          { _id: latest._id },
+          { $set: { isLatest: false } },
+        );
+      }
+
+      const file: FileRecord = {
+        _id: randomUUID(),
+        projectId: project._id,
+        logicalName,
+        version,
+        storageKey: saved.storageKey,
+        fileName: input.fileName.trim(),
+        contentType: input.contentType || "application/octet-stream",
+        size: saved.size,
+        isLatest: true,
+        uploadedByAccountId: auth.session.accountId,
+        uploadedAt: now(),
+      };
+      await db.collection<FileRecord>(FILES).insertOne(file);
+      return { ok: true, file: await toFileView(file) };
+    },
+
+    async listProductionFiles(sessionId, input) {
+      const auth = await requireSession(sessionId);
+      if (!auth.ok) return auth;
+      const project = await getProject(input.projectId);
+      if (!project) return { ok: false, error: "not_found" };
+      const rows = await db
+        .collection<FileRecord>(FILES)
+        .find({ projectId: project._id })
+        .sort({ logicalName: 1, version: -1 })
+        .toArray();
+      return {
+        ok: true,
+        files: await Promise.all(rows.map((f) => toFileView(f))),
+      };
+    },
+
+    async getProductionFileContent(sessionId, input) {
+      const auth = await requireSession(sessionId);
+      if (!auth.ok) return auth;
+      if (!fileStorage) return { ok: false, error: "storage_unavailable" };
+      const file = await db.collection<FileRecord>(FILES).findOne({
+        _id: input.fileId,
+      });
+      if (!file) return { ok: false, error: "not_found" };
+      const data = await fileStorage.read(file.storageKey);
+      return {
+        ok: true,
+        fileName: file.fileName,
+        contentType: file.contentType,
+        dataBase64: data.toString("base64"),
+      };
+    },
+
+    async exportProductionProjectsCsv(actorSessionId, input) {
+      const auth = await requireSystemAdmin(actorSessionId);
+      if (!auth.ok) return auth;
+      const projects = await db
+        .collection<ProjectRecord>(PROJECTS)
+        .find({ type: input.type })
+        .sort({ createdAt: -1 })
+        .toArray();
+      const views = await Promise.all(projects.map((p) => toView(p)));
+      return { ok: true, csv: toProductionCsv(views) };
     },
   };
 }

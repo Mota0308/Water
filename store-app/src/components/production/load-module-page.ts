@@ -1,6 +1,9 @@
 import { redirect } from "next/navigation";
 import type { AppModule } from "@/application/app-module";
-import type { ProductionProjectView } from "@/application/production-domain";
+import type {
+  ProductionMentionView,
+  ProductionProjectView,
+} from "@/application/production-domain";
 import { projectTypeForModule } from "@/application/production-module-paths";
 import { getStoreWorkFlowApp } from "@/infrastructure/app";
 import { readSessionId } from "@/infrastructure/session-cookie";
@@ -35,7 +38,12 @@ export async function loadHomeData(module: ProdModule) {
     waitingProjects = listed.ok ? listed.projects : [];
   }
 
-  return { session, summary, tasks, waitingProjects };
+  const mentionsResult = await app.listMyMentions(sessionId, { type });
+  const mentions: ProductionMentionView[] = mentionsResult.ok
+    ? mentionsResult.mentions
+    : [];
+
+  return { session, summary, tasks, waitingProjects, mentions };
 }
 
 export async function loadListData(
@@ -101,5 +109,16 @@ export async function loadDetailData(module: ProdModule, projectId: string) {
     handlers = listed.ok ? listed.handlers : [];
   }
 
-  return { session, project: result.project, handlers };
+  const commentsResult = await app.listProductionComments(sessionId, {
+    projectId,
+  });
+  const filesResult = await app.listProductionFiles(sessionId, { projectId });
+
+  return {
+    session,
+    project: result.project,
+    handlers,
+    comments: commentsResult.ok ? commentsResult.comments : [],
+    files: filesResult.ok ? filesResult.files : [],
+  };
 }

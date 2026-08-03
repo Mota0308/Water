@@ -10,6 +10,7 @@ export default async function ProductionHomePage() {
       summary={data.summary}
       tasks={data.tasks}
       waitingProjects={data.waitingProjects}
+      mentions={data.mentions}
     />
   );
 }

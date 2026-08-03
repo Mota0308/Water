@@ -2,6 +2,10 @@ import Link from "next/link";
 import {
   PRODUCT_CATEGORIES,
   currentStageIndex,
+  projectAllowsStageUpdates,
+  type ProductionCommentView,
+  type ProductionFileVersionView,
+  type ProductionMentionView,
   type ProductionProjectType,
   type ProductionProjectView,
   type ProductionTaskView,
@@ -14,6 +18,9 @@ import {
 } from "@/application/production-module-paths";
 import type { AppModule } from "@/application/app-module";
 import { CreateProjectForm } from "@/components/production/create-project-form";
+import { ProjectAdminPanel } from "@/components/production/project-admin-panel";
+import { ProjectComments } from "@/components/production/project-comments";
+import { ProjectFiles } from "@/components/production/project-files";
 import { StagePanel } from "@/components/production/stage-panel";
 import { AppShell } from "@/components/app-shell";
 
@@ -51,6 +58,7 @@ export function ProductionHomeView({
   summary,
   tasks,
   waitingProjects,
+  mentions,
 }: {
   module: ProdModule;
   session: Session;
@@ -62,6 +70,7 @@ export function ProductionHomeView({
   };
   tasks: ProductionTaskView[];
   waitingProjects: ProductionProjectView[];
+  mentions: ProductionMentionView[];
 }) {
   const base = moduleBasePath(module);
   const title = moduleTitle(module);
@@ -81,6 +90,26 @@ export function ProductionHomeView({
           ) : null}
         </div>
       </section>
+
+      {mentions.length > 0 ? (
+        <section className="personal-card">
+          <h2 className="personal-card-title">被提及</h2>
+          <ul className="task-list">
+            {mentions.map((m) => (
+              <li key={m.commentId} className="task-item">
+                <Link href={`${base}/projects/${m.projectId}`}>
+                  <strong>
+                    {m.projectCode} {m.projectName}
+                  </strong>
+                  <span className="meta">
+                    {m.authorDisplayName}：{m.excerpt}
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {isPersonal ? (
         <section className="personal-card">
@@ -163,10 +192,18 @@ export function ProductionListView({
   const base = moduleBasePath(module);
   const title = moduleTitle(module);
 
+  const type = projectTypeForModule(module);
+  const isAdmin = session.role === "system_admin";
+
   return (
     <AppShell session={session} module={module} active="prod-list">
       <section className="personal-card">
         <h1 className="personal-card-title">{title}｜項目列表</h1>
+        {isAdmin ? (
+          <p className="meta">
+            <a href={`/api/production/export?type=${type}`}>匯出 CSV</a>
+          </p>
+        ) : null}
         <form className="form-grid compact" method="get">
           <label>
             分類
@@ -188,6 +225,8 @@ export function ProductionListView({
               <option value="待確認">待確認</option>
               <option value="需要修改">需要修改</option>
               <option value="已完成">已完成</option>
+              <option value="暫停">暫停</option>
+              <option value="已取消">已取消</option>
               <option value="直接下一階段">直接下一階段</option>
               <option value="不適用">不適用</option>
             </select>
@@ -330,6 +369,8 @@ export function ProductionDetailView({
   session,
   project,
   handlers,
+  comments,
+  files,
 }: {
   module: ProdModule;
   session: Session;
@@ -339,10 +380,17 @@ export function ProductionDetailView({
     displayName: string;
     department: string | null;
   }[];
+  comments: ProductionCommentView[];
+  files: ProductionFileVersionView[];
 }) {
   const title = moduleTitle(module);
   const isAdmin = session.role === "system_admin";
   const current = currentStageIndex(project.stages);
+  const unlocked = projectAllowsStageUpdates(project.status);
+  const canUpload =
+    isAdmin ||
+    (session.role === "personal" &&
+      project.stages.some((s) => s.handlerAccountId === session.accountId));
 
   return (
     <AppShell session={session} module={module} active="prod-detail">
@@ -351,11 +399,17 @@ export function ProductionDetailView({
           {project.code}｜{project.name}
         </h1>
         <p className="meta">
-          {title}｜{project.category}
+          {title}｜{project.category}｜{project.status}
+          {project.statusReason ? `（${project.statusReason}）` : ""}
           {project.dueDate ? `｜期限 ${project.dueDate}` : ""}
           ｜進度 {project.progressPercent}%
         </p>
         {project.description ? <p>{project.description}</p> : null}
+        {!unlocked ? (
+          <p className="form-error">
+            項目已{project.status}，階段暫不可推進。
+          </p>
+        ) : null}
         <div className="personal-progress">
           <div className="personal-progress-track">
             <div
@@ -367,12 +421,17 @@ export function ProductionDetailView({
         </div>
       </section>
 
+      {isAdmin ? (
+        <ProjectAdminPanel project={project} type={project.type} />
+      ) : null}
+
       <section className="personal-card">
         <h2 className="personal-card-title">階段流程</h2>
         <ul className="prod-stage-list">
           {project.stages.map((stage) => {
             const isCurrent = stage.index === current;
             const canUpdate =
+              unlocked &&
               session.role === "personal" &&
               isCurrent &&
               stage.handlerAccountId === session.accountId &&
@@ -387,13 +446,26 @@ export function ProductionDetailView({
                 stage={stage}
                 isCurrent={isCurrent}
                 canUpdate={canUpdate}
-                isAdmin={isAdmin}
+                isAdmin={isAdmin && unlocked}
                 handlers={handlers}
               />
             );
           })}
         </ul>
       </section>
+
+      <ProjectComments
+        projectId={project.id}
+        type={project.type}
+        comments={comments}
+        isAdmin={isAdmin}
+      />
+      <ProjectFiles
+        projectId={project.id}
+        type={project.type}
+        files={files}
+        canUpload={canUpload}
+      />
     </AppShell>
   );
 }
