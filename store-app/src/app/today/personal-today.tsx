@@ -1,8 +1,9 @@
 import Link from "next/link";
-import type {
-  Session,
-  TodayWorkSummary,
-  WorkView,
+import {
+  personalCanCompleteWork,
+  type Session,
+  type TodayWorkSummary,
+  type WorkView,
 } from "@/application/store-work-flow-app";
 import { cancelCompletionAction } from "@/app/actions/work";
 import { CompleteWorkForm } from "@/app/work/complete-work-form";
@@ -29,8 +30,12 @@ export function PersonalTodayView({
     <PersonalShell session={session} active="today">
       <section className="personal-card">
         <h1 className="personal-card-title">
-          {dateLabel} | {session.fixedUnit ?? ""} 今日工作
+          {dateLabel} | 關注地區今日工作
         </h1>
+        <p className="meta">
+          所屬：{session.fixedUnit ?? "—"}｜關注：
+          {session.watchedUnits.join("、") || session.fixedUnit || "—"}
+        </p>
         <div className="personal-stats">
           <Stat label="工作總數" value={summary.total} />
           <Stat label="已完成" value={summary.completed} tone="ok" />
@@ -67,6 +72,8 @@ export function PersonalTodayView({
                     ? "恆常"
                     : "每日結算";
 
+              const canComplete = personalCanCompleteWork(session, work);
+
               return (
                 <li
                   key={work.id}
@@ -81,12 +88,18 @@ export function PersonalTodayView({
                       />
                     ) : work.status === "completed" ? (
                       <span className="task-done" aria-label="已完成" />
-                    ) : (
+                    ) : canComplete ? (
                       <CompleteWorkForm
                         workId={work.id}
                         attachmentRequirement={work.attachmentRequirement}
                         noteRequirement={work.noteRequirement}
                         variant="checkbox"
+                      />
+                    ) : (
+                      <span
+                        className="task-lock"
+                        title="僅供查看"
+                        aria-label="唯讀"
                       />
                     )}
                   </div>
@@ -96,10 +109,16 @@ export function PersonalTodayView({
                       <Link href={`/work/${work.id}`} className="task-title">
                         {work.title}
                       </Link>
+                      <span className="pill due">{work.unit}</span>
                       <span className={`pill type-${work.type}`}>{typeLabel}</span>
                       <span className={`pill priority-${work.priority}`}>
                         {priorityLabel(work.priority)}
                       </span>
+                      {work.handlerDisplayName ? (
+                        <span className="pill status-open">
+                          負責人 {work.handlerDisplayName}
+                        </span>
+                      ) : null}
                       {work.dueAt ? (
                         <span className="pill due">
                           期限{" "}
@@ -122,6 +141,17 @@ export function PersonalTodayView({
                     {work.type === "daily_settlement" ? (
                       <p className="task-note">
                         此工作由第二部分（POS 匯入與日結）自動更新，不可手動剔選。
+                      </p>
+                    ) : null}
+                    {work.status === "pending" &&
+                    work.type !== "daily_settlement" &&
+                    !canComplete ? (
+                      <p className="task-note">
+                        僅供查看
+                        {work.handlerDisplayName
+                          ? `（負責人：${work.handlerDisplayName}）`
+                          : "（非所屬單位任務）"}
+                        。
                       </p>
                     ) : null}
 

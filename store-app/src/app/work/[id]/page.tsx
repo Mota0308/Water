@@ -4,6 +4,7 @@ import {
   ManagerEditWorkForm,
   ManagerWorkActions,
 } from "@/app/work/manager-work-actions";
+import { SetWorkHandlerForm } from "@/app/work/set-handler-form";
 import { AppShell } from "@/components/app-shell";
 import { getStoreWorkFlowApp } from "@/infrastructure/app";
 import { readSessionId } from "@/infrastructure/session-cookie";
@@ -38,6 +39,13 @@ export default async function WorkDetailPage({
     ? await app.listCompletionHistory(auth.session.sessionId, { workId: id })
     : null;
 
+  const unitHandlers =
+    isManager && detail.work.type !== "daily_settlement"
+      ? await app.listUnitPersonalHandlers(auth.session.sessionId, {
+          unit: detail.work.unit,
+        })
+      : null;
+
   return (
     <AppShell session={auth.session} active="detail">
       <div className="personal-detail-head">
@@ -54,6 +62,9 @@ export default async function WorkDetailPage({
         <p>{detail.work.content}</p>
         <p className="meta">
           {detail.work.unit} · {detail.work.status} · {detail.work.priority}
+          {detail.work.handlerDisplayName
+            ? ` · 負責人 ${detail.work.handlerDisplayName}`
+            : " · 無指定負責人"}
         </p>
         {detail.work.completionNote ? (
           <p className="meta">完成備註：{detail.work.completionNote}</p>
@@ -66,6 +77,20 @@ export default async function WorkDetailPage({
           />
         ) : null}
       </section>
+
+      {isManager &&
+      detail.work.status !== "cancelled" &&
+      detail.work.type !== "daily_settlement" &&
+      unitHandlers?.ok ? (
+        <section className="personal-card">
+          <h2 className="personal-card-title">改派負責人</h2>
+          <SetWorkHandlerForm
+            workId={detail.work.id}
+            currentHandlerId={detail.work.handlerAccountId}
+            handlers={unitHandlers.handlers}
+          />
+        </section>
+      ) : null}
 
       {isManager && detail.work.status !== "cancelled" ? (
         <section className="personal-card">

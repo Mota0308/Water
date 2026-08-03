@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { FIXED_UNITS } from "@/application/store-work-flow-app";
 import { seedDemoAction } from "@/app/actions/demo";
 import { deactivateRecurringAction } from "@/app/actions/work";
+import { loadHandlersByUnit } from "@/app/work/load-unit-handlers";
 import { CreateRecurringForm } from "@/app/work/recurring/create-recurring-form";
 import { AppShell } from "@/components/app-shell";
 import { getStoreWorkFlowApp } from "@/infrastructure/app";
@@ -15,18 +16,24 @@ export default async function RecurringWorkPage() {
   if (auth.session.role === "personal") redirect("/");
 
   const templates = await app.listRecurringTemplates(auth.session.sessionId);
+  const handlersByUnit = await loadHandlersByUnit(auth.session.sessionId);
 
   return (
     <AppShell session={auth.session} active="recurring">
       <section className="personal-card">
         <h1 className="personal-card-title">新增恆常工作</h1>
-        <p className="meta">每日／平日自動產生；未完成會跨日延續同一筆</p>
+        <p className="meta">
+          每日／平日自動產生；可為各地區指定負責人；未完成會跨日延續同一筆
+        </p>
         <form action={seedDemoAction} style={{ marginBottom: "1rem" }}>
           <button type="submit" className="secondary-btn">
             載入示範恆常工作種子
           </button>
         </form>
-        <CreateRecurringForm units={[...FIXED_UNITS]} />
+        <CreateRecurringForm
+          units={[...FIXED_UNITS]}
+          handlersByUnit={handlersByUnit}
+        />
       </section>
 
       <section className="personal-card stack">

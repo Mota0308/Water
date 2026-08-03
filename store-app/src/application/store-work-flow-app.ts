@@ -85,6 +85,7 @@ export type Session = {
   displayName: string;
   role: AccountRole;
   fixedUnit: FixedUnit | null;
+  watchedUnits: FixedUnit[];
 };
 
 export type AccountView = {
@@ -93,6 +94,7 @@ export type AccountView = {
   displayName: string;
   role: AccountRole;
   fixedUnit: FixedUnit | null;
+  watchedUnits: FixedUnit[];
   jobTitle: string | null;
   department: string | null;
   status: "active" | "suspended";
@@ -131,6 +133,8 @@ export type WorkView = {
   noteRequirement: NoteRequirement;
   completionNote: string | null;
   sensitive: boolean;
+  handlerAccountId: string | null;
+  handlerDisplayName: string | null;
   completedByAccountId: string | null;
   completedByDisplayName: string | null;
   completedAt: Date | null;
@@ -148,6 +152,7 @@ export type RecurringTemplateView = {
   attachmentRequirement: AttachmentRequirement;
   noteRequirement: NoteRequirement;
   sensitive: boolean;
+  handlersByUnit: Partial<Record<FixedUnit, string | null>>;
 };
 
 export type TodayWorkSummary = {
@@ -206,6 +211,7 @@ type AccountRecord = {
   passwordHash: string;
   role: AccountRole;
   fixedUnit: FixedUnit | null;
+  watchedUnits: FixedUnit[];
   jobTitle: string | null;
   department: string | null;
   status: "active" | "suspended";
@@ -247,6 +253,8 @@ type WorkRecord = {
   noteRequirement: NoteRequirement;
   completionNote: string | null;
   sensitive: boolean;
+  handlerAccountId: string | null;
+  handlerDisplayName: string | null;
   completedByAccountId: string | null;
   completedByDisplayName: string | null;
   completedAt: Date | null;
@@ -302,6 +310,7 @@ type RecurringTemplateRecord = {
   attachmentRequirement: AttachmentRequirement;
   noteRequirement: NoteRequirement;
   sensitive: boolean;
+  handlersByUnit: Partial<Record<FixedUnit, string | null>>;
   createdByAccountId: string;
   createdAt: Date;
   updatedAt: Date;
@@ -399,6 +408,34 @@ export type StoreWorkFlowApp = {
     | { ok: true; logs: UnitChangeLogView[] }
     | { ok: false; error: AuthError }
   >;
+  updateWatchedUnits(
+    sessionId: string,
+    input: { units: FixedUnit[] },
+  ): Promise<
+    | { ok: true; watchedUnits: FixedUnit[] }
+    | {
+        ok: false;
+        error:
+          | "unauthenticated"
+          | "forbidden"
+          | "invalid_unit"
+          | "units_required";
+      }
+  >;
+  listUnitPersonalHandlers(
+    actorSessionId: string,
+    input: { unit: FixedUnit },
+  ): Promise<
+    | {
+        ok: true;
+        handlers: {
+          accountId: string;
+          displayName: string;
+          department: string | null;
+        }[];
+      }
+    | { ok: false; error: AuthError | "invalid_unit" }
+  >;
   createAdhocWork(
     actorSessionId: string,
     input: {
@@ -411,10 +448,32 @@ export type StoreWorkFlowApp = {
       attachmentRequirement?: AttachmentRequirement;
       noteRequirement?: NoteRequirement;
       sensitive?: boolean;
+      handlersByUnit?: Partial<Record<FixedUnit, string | null | undefined>>;
     },
   ): Promise<
     | { ok: true; works: WorkView[] }
-    | { ok: false; error: AuthError | "invalid_unit" | "units_required" }
+    | {
+        ok: false;
+        error:
+          | AuthError
+          | "invalid_unit"
+          | "units_required"
+          | "invalid_handler";
+      }
+  >;
+  setWorkHandler(
+    actorSessionId: string,
+    input: { workId: string; handlerAccountId: string | null },
+  ): Promise<
+    | { ok: true; work: WorkView }
+    | {
+        ok: false;
+        error:
+          | AuthError
+          | "not_found"
+          | "invalid_handler"
+          | "not_assignable";
+      }
   >;
   getTodayWork(
     sessionId: string,
@@ -586,10 +645,18 @@ export type StoreWorkFlowApp = {
       attachmentRequirement?: AttachmentRequirement;
       noteRequirement?: NoteRequirement;
       sensitive?: boolean;
+      handlersByUnit?: Partial<Record<FixedUnit, string | null | undefined>>;
     },
   ): Promise<
     | { ok: true; template: RecurringTemplateView }
-    | { ok: false; error: AuthError | "invalid_unit" | "units_required" }
+    | {
+        ok: false;
+        error:
+          | AuthError
+          | "invalid_unit"
+          | "units_required"
+          | "invalid_handler";
+      }
   >;
   generateRecurringForDate(
     actorSessionId: string,
@@ -646,6 +713,46 @@ function isFixedUnit(value: string): value is FixedUnit {
   return (FIXED_UNITS as readonly string[]).includes(value);
 }
 
+function effectiveWatchedUnits(account: {
+  fixedUnit: FixedUnit | null;
+  watchedUnits?: FixedUnit[] | null;
+}): FixedUnit[] {
+  const watched = (account.watchedUnits ?? []).filter(isFixedUnit);
+  if (watched.length) return [...new Set(watched)];
+  if (account.fixedUnit && isFixedUnit(account.fixedUnit)) {
+    return [account.fixedUnit];
+  }
+  return [];
+}
+
+export function personalCanCompleteWork(
+  session: Pick<Session, "accountId" | "fixedUnit" | "role">,
+  work: Pick<WorkView | WorkRecord, "handlerAccountId" | "unit" | "type" | "status">,
+): boolean {
+  if (session.role !== "personal") return true;
+  if (work.status !== "pending") return false;
+  if (work.type === "daily_settlement") return false;
+  if (work.handlerAccountId) {
+    return work.handlerAccountId === session.accountId;
+  }
+  return !!session.fixedUnit && work.unit === session.fixedUnit;
+}
+
+function personalCanViewWork(
+  session: Pick<Session, "role" | "fixedUnit" | "watchedUnits">,
+  work: Pick<WorkRecord, "unit" | "sensitive">,
+): boolean {
+  if (session.role !== "personal") return true;
+  const watched = session.watchedUnits.length
+    ? session.watchedUnits
+    : session.fixedUnit
+      ? [session.fixedUnit]
+      : [];
+  if (!watched.includes(work.unit)) return false;
+  if (work.sensitive && session.fixedUnit !== work.unit) return false;
+  return true;
+}
+
 function toAccountView(account: AccountRecord): AccountView {
   return {
     id: account._id,
@@ -653,6 +760,7 @@ function toAccountView(account: AccountRecord): AccountView {
     displayName: account.displayName,
     role: account.role,
     fixedUnit: account.fixedUnit,
+    watchedUnits: effectiveWatchedUnits(account),
     jobTitle: account.jobTitle,
     department: account.department,
     status: account.status,
@@ -677,6 +785,8 @@ function toWorkView(work: WorkRecord): WorkView {
     noteRequirement: work.noteRequirement ?? "optional",
     completionNote: work.completionNote ?? null,
     sensitive: work.sensitive ?? false,
+    handlerAccountId: work.handlerAccountId ?? null,
+    handlerDisplayName: work.handlerDisplayName ?? null,
     completedByAccountId: work.completedByAccountId,
     completedByDisplayName: work.completedByDisplayName,
     completedAt: work.completedAt,
@@ -716,6 +826,7 @@ function toTemplateView(template: RecurringTemplateRecord): RecurringTemplateVie
     attachmentRequirement: template.attachmentRequirement ?? "none",
     noteRequirement: template.noteRequirement ?? "optional",
     sensitive: template.sensitive ?? false,
+    handlersByUnit: template.handlersByUnit ?? {},
   };
 }
 
@@ -798,7 +909,68 @@ export function createStoreWorkFlowApp(deps: {
       displayName: account.displayName,
       role: account.role,
       fixedUnit: account.fixedUnit,
+      watchedUnits: effectiveWatchedUnits(account),
     };
+  }
+
+  async function resolveUnitHandler(
+    unit: FixedUnit,
+    handlerAccountId: string | null | undefined,
+  ): Promise<
+    | { ok: true; handlerAccountId: string | null; handlerDisplayName: string | null }
+    | { ok: false; error: "invalid_handler" }
+  > {
+    const raw = handlerAccountId?.trim() || null;
+    if (!raw) {
+      return { ok: true, handlerAccountId: null, handlerDisplayName: null };
+    }
+    const account = await db.collection<AccountRecord>(ACCOUNTS).findOne({
+      _id: raw,
+    });
+    if (
+      !account ||
+      account.role !== "personal" ||
+      account.status !== "active" ||
+      account.fixedUnit !== unit
+    ) {
+      return { ok: false, error: "invalid_handler" };
+    }
+    return {
+      ok: true,
+      handlerAccountId: account._id,
+      handlerDisplayName: account.displayName,
+    };
+  }
+
+  async function resolveHandlersByUnit(
+    units: FixedUnit[],
+    handlersByUnit?: Partial<Record<FixedUnit, string | null | undefined>>,
+  ): Promise<
+    | {
+        ok: true;
+        map: Map<
+          FixedUnit,
+          { handlerAccountId: string | null; handlerDisplayName: string | null }
+        >;
+      }
+    | { ok: false; error: "invalid_handler" }
+  > {
+    const map = new Map<
+      FixedUnit,
+      { handlerAccountId: string | null; handlerDisplayName: string | null }
+    >();
+    for (const unit of units) {
+      const resolved = await resolveUnitHandler(
+        unit,
+        handlersByUnit?.[unit],
+      );
+      if (!resolved.ok) return resolved;
+      map.set(unit, {
+        handlerAccountId: resolved.handlerAccountId,
+        handlerDisplayName: resolved.handlerDisplayName,
+      });
+    }
+    return { ok: true, map };
   }
 
   async function requireSystemAdmin(sessionId: string) {
@@ -876,6 +1048,7 @@ export function createStoreWorkFlowApp(deps: {
 
   async function listTodayWorkRecords(options?: {
     unit?: FixedUnit;
+    units?: FixedUnit[];
     hideSensitiveFor?: Session | null;
   }): Promise<WorkRecord[]> {
     const today = now();
@@ -885,7 +1058,9 @@ export function createStoreWorkFlowApp(deps: {
       status: { $in: ["pending", "completed"] },
       type: { $in: ["adhoc", "recurring", "daily_settlement"] },
     };
-    if (options?.unit) {
+    if (options?.units?.length) {
+      filter.unit = { $in: options.units };
+    } else if (options?.unit) {
       filter.unit = options.unit;
     }
 
@@ -948,6 +1123,13 @@ export function createStoreWorkFlowApp(deps: {
           continue;
         }
 
+        const handlerId = template.handlersByUnit?.[unit] ?? null;
+        const handler = await resolveUnitHandler(unit, handlerId);
+        const handlerAccountId = handler.ok ? handler.handlerAccountId : null;
+        const handlerDisplayName = handler.ok
+          ? handler.handlerDisplayName
+          : null;
+
         const work: WorkRecord = {
           _id: randomUUID(),
           type: "recurring",
@@ -964,6 +1146,8 @@ export function createStoreWorkFlowApp(deps: {
           noteRequirement: template.noteRequirement ?? "optional",
           completionNote: null,
           sensitive: template.sensitive ?? false,
+          handlerAccountId,
+          handlerDisplayName,
           completedByAccountId: null,
           completedByDisplayName: null,
           completedAt: null,
@@ -1001,6 +1185,7 @@ export function createStoreWorkFlowApp(deps: {
         passwordHash,
         role: "system_admin",
         fixedUnit: null,
+        watchedUnits: [],
         jobTitle: null,
         department: null,
         status: "active",
@@ -1087,13 +1272,16 @@ export function createStoreWorkFlowApp(deps: {
         return { ok: false, error: "login_name_taken" };
       }
 
+      const fixedUnit =
+        input.role === "personal" ? (input.fixedUnit ?? null) : null;
       const account: AccountRecord = {
         _id: randomUUID(),
         loginName: input.loginName,
         displayName: input.displayName,
         passwordHash: await bcrypt.hash(input.password, 10),
         role: input.role,
-        fixedUnit: input.role === "personal" ? (input.fixedUnit ?? null) : null,
+        fixedUnit,
+        watchedUnits: fixedUnit ? [fixedUnit] : [],
         jobTitle: input.jobTitle?.trim() || null,
         department: input.department?.trim() || null,
         status: "active",
@@ -1258,6 +1446,53 @@ export function createStoreWorkFlowApp(deps: {
       };
     },
 
+    async updateWatchedUnits(sessionId, input) {
+      const session = await getSession(sessionId);
+      if (!session) {
+        return { ok: false, error: "unauthenticated" };
+      }
+      if (session.role !== "personal") {
+        return { ok: false, error: "forbidden" };
+      }
+      if (!input.units.length) {
+        return { ok: false, error: "units_required" };
+      }
+      if (input.units.some((unit) => !isFixedUnit(unit))) {
+        return { ok: false, error: "invalid_unit" };
+      }
+      const watchedUnits = [...new Set(input.units)];
+      await db.collection<AccountRecord>(ACCOUNTS).updateOne(
+        { _id: session.accountId },
+        { $set: { watchedUnits } },
+      );
+      return { ok: true, watchedUnits };
+    },
+
+    async listUnitPersonalHandlers(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) return auth;
+      if (!isFixedUnit(input.unit)) {
+        return { ok: false, error: "invalid_unit" };
+      }
+      const rows = await db
+        .collection<AccountRecord>(ACCOUNTS)
+        .find({
+          role: "personal",
+          status: "active",
+          fixedUnit: input.unit,
+        })
+        .sort({ displayName: 1 })
+        .toArray();
+      return {
+        ok: true,
+        handlers: rows.map((row) => ({
+          accountId: row._id,
+          displayName: row.displayName,
+          department: row.department,
+        })),
+      };
+    },
+
     async createAdhocWork(actorSessionId, input) {
       const auth = await requireManager(actorSessionId);
       if (!auth.ok) {
@@ -1272,35 +1507,88 @@ export function createStoreWorkFlowApp(deps: {
       }
 
       const uniqueUnits = [...new Set(input.units)];
-      const works: WorkRecord[] = uniqueUnits.map((unit) => ({
-        _id: randomUUID(),
-        type: "adhoc",
-        title: input.title.trim(),
-        content: input.content.trim(),
-        unit,
-        priority: input.priority,
-        status: "pending",
-        startAt: input.startAt ?? null,
-        dueAt: input.dueAt ?? null,
-        templateId: null,
-        settlementState: null,
-        attachmentRequirement: input.attachmentRequirement ?? "none",
-        noteRequirement: input.noteRequirement ?? "optional",
-        completionNote: null,
-        sensitive: input.sensitive ?? false,
-        completedByAccountId: null,
-        completedByDisplayName: null,
-        completedAt: null,
-        createdByAccountId: auth.session.accountId,
-        createdAt: now(),
-        updatedAt: now(),
-      }));
+      const handlers = await resolveHandlersByUnit(
+        uniqueUnits,
+        input.handlersByUnit,
+      );
+      if (!handlers.ok) return handlers;
+
+      const works: WorkRecord[] = uniqueUnits.map((unit) => {
+        const handler = handlers.map.get(unit)!;
+        return {
+          _id: randomUUID(),
+          type: "adhoc" as const,
+          title: input.title.trim(),
+          content: input.content.trim(),
+          unit,
+          priority: input.priority,
+          status: "pending" as const,
+          startAt: input.startAt ?? null,
+          dueAt: input.dueAt ?? null,
+          templateId: null,
+          settlementState: null,
+          attachmentRequirement: input.attachmentRequirement ?? "none",
+          noteRequirement: input.noteRequirement ?? "optional",
+          completionNote: null,
+          sensitive: input.sensitive ?? false,
+          handlerAccountId: handler.handlerAccountId,
+          handlerDisplayName: handler.handlerDisplayName,
+          completedByAccountId: null,
+          completedByDisplayName: null,
+          completedAt: null,
+          createdByAccountId: auth.session.accountId,
+          createdAt: now(),
+          updatedAt: now(),
+        };
+      });
 
       if (works.length) {
         await db.collection<WorkRecord>(WORKS).insertMany(works);
       }
 
       return { ok: true, works: works.map(toWorkView) };
+    },
+
+    async setWorkHandler(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) return auth;
+
+      const work = await db
+        .collection<WorkRecord>(WORKS)
+        .findOne({ _id: input.workId });
+      if (!work || work.status === "cancelled") {
+        return { ok: false, error: "not_found" };
+      }
+      if (work.type === "daily_settlement") {
+        return { ok: false, error: "not_assignable" };
+      }
+
+      const resolved = await resolveUnitHandler(
+        work.unit,
+        input.handlerAccountId,
+      );
+      if (!resolved.ok) return resolved;
+
+      const updatedAt = now();
+      await db.collection<WorkRecord>(WORKS).updateOne(
+        { _id: work._id },
+        {
+          $set: {
+            handlerAccountId: resolved.handlerAccountId,
+            handlerDisplayName: resolved.handlerDisplayName,
+            updatedAt,
+          },
+        },
+      );
+      return {
+        ok: true,
+        work: toWorkView({
+          ...work,
+          handlerAccountId: resolved.handlerAccountId,
+          handlerDisplayName: resolved.handlerDisplayName,
+          updatedAt,
+        }),
+      };
     },
 
     async getTodayWork(sessionId) {
@@ -1316,11 +1604,14 @@ export function createStoreWorkFlowApp(deps: {
           return { ok: false, error: "fixed_unit_required" };
         }
 
+        const units = session.watchedUnits.length
+          ? session.watchedUnits
+          : [session.fixedUnit];
         const works = sortTodayWorks(
           (
             await listTodayWorkRecords({
-              unit: session.fixedUnit,
-              hideSensitiveFor: null,
+              units,
+              hideSensitiveFor: session,
             })
           ).map(toWorkView),
           today,
@@ -1350,14 +1641,17 @@ export function createStoreWorkFlowApp(deps: {
       if (!work || work.status === "cancelled") {
         return { ok: false, error: "not_found" };
       }
-      if (session.role === "personal" && work.unit !== session.fixedUnit) {
-        return { ok: false, error: "forbidden" };
-      }
       if (work.type === "daily_settlement") {
         return { ok: false, error: "reserved_for_part2" };
       }
       if (work.status === "completed") {
         return { ok: false, error: "already_completed" };
+      }
+      if (
+        session.role === "personal" &&
+        !personalCanCompleteWork(session, work)
+      ) {
+        return { ok: false, error: "forbidden" };
       }
 
       const attachments = input.attachments ?? [];
@@ -1516,11 +1810,23 @@ export function createStoreWorkFlowApp(deps: {
         return { ok: false, error: "invalid_unit" };
       }
 
+      const uniqueUnits = [...new Set(input.units)];
+      const handlers = await resolveHandlersByUnit(
+        uniqueUnits,
+        input.handlersByUnit,
+      );
+      if (!handlers.ok) return handlers;
+
+      const handlersByUnit: Partial<Record<FixedUnit, string | null>> = {};
+      for (const unit of uniqueUnits) {
+        handlersByUnit[unit] = handlers.map.get(unit)!.handlerAccountId;
+      }
+
       const template: RecurringTemplateRecord = {
         _id: randomUUID(),
         title: input.title.trim(),
         content: input.content.trim(),
-        units: [...new Set(input.units)],
+        units: uniqueUnits,
         priority: input.priority,
         recurrence: input.recurrence,
         sortOrder: input.sortOrder ?? 0,
@@ -1528,6 +1834,7 @@ export function createStoreWorkFlowApp(deps: {
         attachmentRequirement: input.attachmentRequirement ?? "none",
         noteRequirement: input.noteRequirement ?? "optional",
         sensitive: input.sensitive ?? false,
+        handlersByUnit,
         createdByAccountId: auth.session.accountId,
         createdAt: now(),
         updatedAt: now(),
@@ -1557,20 +1864,22 @@ export function createStoreWorkFlowApp(deps: {
 
       const works: WorkRecord[] = STORE_UNITS.map((unit) => ({
         _id: randomUUID(),
-        type: "daily_settlement",
+        type: "daily_settlement" as const,
         title: input.title.trim(),
         content: input.content.trim(),
         unit,
         priority: input.priority,
-        status: "pending",
+        status: "pending" as const,
         startAt: now(),
         dueAt: dueAtOnHongKongDate(now()),
         templateId: null,
-        settlementState: "awaiting_part2",
-        attachmentRequirement: "none",
-        noteRequirement: "optional",
+        settlementState: "awaiting_part2" as const,
+        attachmentRequirement: "none" as const,
+        noteRequirement: "optional" as const,
         completionNote: null,
         sensitive: false,
+        handlerAccountId: null,
+        handlerDisplayName: null,
         completedByAccountId: null,
         completedByDisplayName: null,
         completedAt: null,
@@ -1645,7 +1954,7 @@ export function createStoreWorkFlowApp(deps: {
       const canView =
         session.role === "manager" ||
         session.role === "system_admin" ||
-        (session.role === "personal" && session.fixedUnit === work.unit);
+        personalCanViewWork(session, work);
       if (!canView) {
         return { ok: false, error: "forbidden" };
       }
@@ -1666,7 +1975,7 @@ export function createStoreWorkFlowApp(deps: {
       const canView =
         session.role === "manager" ||
         session.role === "system_admin" ||
-        (session.role === "personal" && session.fixedUnit === work.unit);
+        personalCanViewWork(session, work);
       if (!canView) {
         return { ok: false, error: "forbidden" };
       }
@@ -2072,6 +2381,7 @@ export function createStoreWorkFlowApp(deps: {
           attachmentRequirement: "none",
           noteRequirement: "optional",
           sensitive: false,
+          handlersByUnit: {},
           createdByAccountId: auth.session.accountId,
           createdAt: now(),
           updatedAt: now(),

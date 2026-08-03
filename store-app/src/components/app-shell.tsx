@@ -13,6 +13,7 @@ export type AppTab =
   | "history"
   | "accounts"
   | "password"
+  | "settings"
   | "detail"
   | "prod-home"
   | "prod-list"
@@ -38,6 +39,7 @@ function dailyTabs(session: Session) {
       { href: "/", id: "today" as const, label: "今日工作" },
       { href: "/progress", id: "progress" as const, label: "各單位進度" },
       { href: "/my-records", id: "records" as const, label: "我的完成記錄" },
+      { href: "/settings", id: "settings" as const, label: "個人設置" },
     ];
   }
   return [
@@ -114,6 +116,11 @@ export function AppShell({
                 ? ` | 所屬單位：${session.fixedUnit}`
                 : ` | ${roleLabel(session.role)}`}
             </span>
+            {isPersonal ? (
+              <Link href="/settings" className="personal-link">
+                個人設置
+              </Link>
+            ) : null}
             <Link href="/password" className="personal-link">
               修改密碼
             </Link>

@@ -6,10 +6,20 @@ import {
   createAdhocWorkAction,
   type WorkActionMessage,
 } from "@/app/actions/work";
+import {
+  UnitHandlerFields,
+  type UnitHandlerOption,
+} from "@/app/work/unit-handler-fields";
 
 const empty: WorkActionMessage = {};
 
-export function CreateAdhocForm({ units }: { units: FixedUnit[] }) {
+export function CreateAdhocForm({
+  units,
+  handlersByUnit,
+}: {
+  units: FixedUnit[];
+  handlersByUnit: Partial<Record<FixedUnit, UnitHandlerOption[]>>;
+}) {
   const [state, action, pending] = useActionState(createAdhocWorkAction, empty);
 
   return (
@@ -57,21 +67,12 @@ export function CreateAdhocForm({ units }: { units: FixedUnit[] }) {
         <input type="checkbox" name="sensitive" disabled={pending} />
         標記為敏感（跨單位進度不顯示）
       </label>
-      <fieldset className="span-2 unit-fieldset">
-        <legend>適用單位</legend>
-        {units.map((unit) => (
-          <label key={unit} className="checkbox-row">
-            <input
-              type="checkbox"
-              name="units"
-              value={unit}
-              defaultChecked={unit !== "國內倉"}
-              disabled={pending}
-            />
-            {unit}
-          </label>
-        ))}
-      </fieldset>
+      <UnitHandlerFields
+        units={units}
+        handlersByUnit={handlersByUnit}
+        defaultChecked={(unit) => unit !== "國內倉"}
+        disabled={pending}
+      />
       <button type="submit" disabled={pending}>
         {pending ? "建立中…" : "建立突發工作"}
       </button>

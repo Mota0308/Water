@@ -24,6 +24,18 @@ function selectedUnits(formData: FormData): FixedUnit[] {
     );
 }
 
+function handlersByUnitFromForm(
+  formData: FormData,
+  units: FixedUnit[],
+): Partial<Record<FixedUnit, string | null>> {
+  const map: Partial<Record<FixedUnit, string | null>> = {};
+  for (const unit of units) {
+    const raw = String(formData.get(`handler_${unit}`) ?? "").trim();
+    map[unit] = raw || null;
+  }
+  return map;
+}
+
 function requirement(
   value: FormDataEntryValue | null,
   fallback: AttachmentRequirement,
@@ -68,11 +80,12 @@ export async function createAdhocWorkAction(
   }
 
   const dueRaw = String(formData.get("dueAt") ?? "").trim();
+  const units = selectedUnits(formData);
   const app = await getStoreWorkFlowApp();
   const result = await app.createAdhocWork(sessionId, {
     title: String(formData.get("title") ?? "").trim(),
     content: String(formData.get("content") ?? "").trim(),
-    units: selectedUnits(formData),
+    units,
     priority: String(formData.get("priority") ?? "normal") as WorkPriority,
     dueAt: dueRaw ? new Date(dueRaw) : undefined,
     attachmentRequirement: requirement(
@@ -81,9 +94,13 @@ export async function createAdhocWorkAction(
     ),
     noteRequirement: noteRequirement(formData.get("noteRequirement")),
     sensitive: formData.get("sensitive") === "on",
+    handlersByUnit: handlersByUnitFromForm(formData, units),
   });
 
   if (!result.ok) {
+    if (result.error === "invalid_handler") {
+      return { error: "負責人必須為該地區的啟用個人賬號" };
+    }
     return { error: "建立突發工作失敗（需要管理層權限與至少一個單位）" };
   }
 
@@ -125,13 +142,15 @@ export async function createRecurringAction(
     return { error: "請重新登入" };
   }
 
+  const units = selectedUnits(formData);
   const app = await getStoreWorkFlowApp();
   const result = await app.createRecurringTemplate(sessionId, {
     title: String(formData.get("title") ?? "").trim(),
     content: String(formData.get("content") ?? "").trim(),
-    units: selectedUnits(formData),
+    units,
     priority: String(formData.get("priority") ?? "normal") as WorkPriority,
     recurrence: String(formData.get("recurrence") ?? "daily") as Recurrence,
+    handlersByUnit: handlersByUnitFromForm(formData, units),
     attachmentRequirement: requirement(
       formData.get("attachmentRequirement"),
       "none",
@@ -141,12 +160,44 @@ export async function createRecurringAction(
   });
 
   if (!result.ok) {
+    if (result.error === "invalid_handler") {
+      return { error: "負責人必須為該地區的啟用個人賬號" };
+    }
     return { error: "建立恆常工作失敗（需要管理層權限與至少一個單位）" };
   }
 
   revalidatePath("/");
   revalidatePath("/work/recurring");
   return { success: `已建立恆常工作「${result.template.title}」` };
+}
+
+export async function setWorkHandlerAction(
+  _prev: WorkActionMessage,
+  formData: FormData,
+): Promise<WorkActionMessage> {
+  const sessionId = await readSessionId();
+  if (!sessionId) return { error: "請重新登入" };
+
+  const handlerRaw = String(formData.get("handlerAccountId") ?? "").trim();
+  const app = await getStoreWorkFlowApp();
+  const result = await app.setWorkHandler(sessionId, {
+    workId: String(formData.get("workId") ?? ""),
+    handlerAccountId: handlerRaw || null,
+  });
+
+  if (!result.ok) {
+    if (result.error === "invalid_handler") {
+      return { error: "負責人必須為該地區的啟用個人賬號" };
+    }
+    if (result.error === "not_assignable") {
+      return { error: "每日結算不可指定負責人" };
+    }
+    return { error: "改派負責人失敗" };
+  }
+
+  revalidatePath("/");
+  revalidatePath(`/work/${result.work.id}`);
+  return { success: "負責人已更新" };
 }
 
 export async function completeWorkAction(
