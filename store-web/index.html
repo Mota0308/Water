@@ -112,6 +112,23 @@
   .file-item .fname { font-weight:bold; }
   .file-item .fmeta { color:#888; font-size:12px; }
   .latest-badge { background:#2e7d32; color:#fff; font-size:10px; padding:1px 6px; border-radius:8px; }
+  a.file-link { color:#7b1fa2; font-weight:bold; text-decoration:underline; cursor:pointer; }
+  a.file-link:hover { color:#4a148c; }
+  .msg .mfile a.file-link { color:#7b1fa2; }
+
+  .mention-wrap { position:relative; }
+  .mention-box {
+    display:none; position:absolute; left:0; right:0; top:100%; z-index:20;
+    background:#fff; border:1px solid #ccd4de; border-radius:8px;
+    box-shadow:0 4px 14px rgba(0,0,0,.12); max-height:180px; overflow:auto; margin-top:4px;
+  }
+  .mention-box.show { display:block; }
+  .mention-item {
+    display:block; width:100%; text-align:left; border:none; background:#fff;
+    padding:8px 12px; cursor:pointer; font-size:13px; color:#333;
+  }
+  .mention-item:hover, .mention-item.active { background:#eef2f7; }
+  .mention-item .mid { color:#888; font-size:12px; margin-left:6px; }
 
   .info-banner { background:#e3f2fd; border:1px solid #90caf9; color:#0d47a1; padding:10px 14px; border-radius:8px; margin-bottom:12px; font-size:13px; }
   @media (max-width:600px){ body{font-size:14px} .stat .num{font-size:20px} .stage-body{padding-left:14px} }
@@ -311,7 +328,96 @@ function canOperateStage(p, s){
   return isPersonal() && s.handler===currentUser.id;
 }
 function fmtMention(text){
-  return text.replace(/@([^\s@，,。]+)/g,'<span class="mention">@$1</span>');
+  return String(text||'').replace(/@([^\s@，,。]+)/g,'<span class="mention">@$1</span>');
+}
+function demoFileDataUrl(name){
+  const body = '示範檔案：'+name+'\n（靜態示範用內容，正式版為實際上傳檔案。）\n建立時間：'+nowStr();
+  return 'data:text/plain;charset=utf-8,'+encodeURIComponent(body);
+}
+function ensureFilePayload(f){
+  if(!f) return f;
+  if(typeof f==='string') return {name:f, dataUrl:demoFileDataUrl(f)};
+  if(!f.dataUrl) f.dataUrl = demoFileDataUrl(f.name||'file.txt');
+  return f;
+}
+function fileLinkHtml(fileOrName, label){
+  const f = ensureFilePayload(typeof fileOrName==='string'?{name:fileOrName}:fileOrName);
+  const name = f.name||'附件';
+  const href = f.dataUrl||demoFileDataUrl(name);
+  return `<a class="file-link" href="${href}" download="${name.replace(/"/g,'')}" target="_blank" rel="noopener">${label||('📎 '+name)}</a>`;
+}
+function mentionCandidates(q){
+  const qq = (q||'').toLowerCase();
+  return users.filter(u=>u.active && (!currentUser || u.id!==currentUser.id))
+    .filter(u=>!qq || u.name.toLowerCase().includes(qq) || (u.login||'').toLowerCase().includes(qq) || (u.dept||'').toLowerCase().includes(qq));
+}
+function bindMentionInput(textareaId){
+  const ta = document.getElementById(textareaId);
+  if(!ta || ta.dataset.mentionBound==='1') return;
+  ta.dataset.mentionBound='1';
+  const wrap = document.createElement('div');
+  wrap.className='mention-wrap';
+  ta.parentNode.insertBefore(wrap, ta);
+  wrap.appendChild(ta);
+  const box = document.createElement('div');
+  box.className='mention-box';
+  box.id = textareaId+'-mention';
+  wrap.appendChild(box);
+  let activeIdx = 0;
+  const hide = ()=> box.classList.remove('show');
+  const insertMention = (name)=>{
+    const val = ta.value, pos = ta.selectionStart||val.length;
+    const before = val.slice(0,pos);
+    const at = before.lastIndexOf('@');
+    if(at<0) return;
+    const after = val.slice(pos);
+    ta.value = before.slice(0,at)+'@'+name+' '+after;
+    const np = at+name.length+2;
+    ta.focus(); ta.setSelectionRange(np,np);
+    hide();
+  };
+  const renderBox = (list)=>{
+    if(!list.length){ hide(); return; }
+    box.innerHTML = list.slice(0,8).map((u,i)=>`
+      <button type="button" class="mention-item${i===activeIdx?' active':''}" data-name="${u.name}">
+        <b>@${u.name}</b><span class="mid">${u.dept||u.role||''}</span>
+      </button>`).join('');
+    box.classList.add('show');
+    [...box.querySelectorAll('.mention-item')].forEach(btn=>{
+      btn.onmousedown = (e)=>{ e.preventDefault(); insertMention(btn.dataset.name); };
+    });
+  };
+  ta.addEventListener('input', ()=>{
+    const pos = ta.selectionStart||0;
+    const before = ta.value.slice(0,pos);
+    const m = before.match(/@([^\s@]*)$/);
+    if(!m){ hide(); return; }
+    activeIdx = 0;
+    renderBox(mentionCandidates(m[1]));
+  });
+  ta.addEventListener('keydown', (e)=>{
+    if(!box.classList.contains('show')) return;
+    const items = [...box.querySelectorAll('.mention-item')];
+    if(!items.length) return;
+    if(e.key==='ArrowDown'){ e.preventDefault(); activeIdx=(activeIdx+1)%items.length; renderBox(mentionCandidates((ta.value.slice(0,ta.selectionStart).match(/@([^\s@]*)$/)||['',''])[1])); }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); activeIdx=(activeIdx-1+items.length)%items.length; renderBox(mentionCandidates((ta.value.slice(0,ta.selectionStart).match(/@([^\s@]*)$/)||['',''])[1])); }
+    else if(e.key==='Enter' || e.key==='Tab'){ e.preventDefault(); insertMention(items[activeIdx].dataset.name); }
+    else if(e.key==='Escape'){ hide(); }
+  });
+  ta.addEventListener('blur', ()=> setTimeout(hide, 150));
+}
+function readFileAsDataUrl(file){
+  return new Promise((resolve,reject)=>{
+    const r = new FileReader();
+    r.onload = ()=> resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+function afterProjectChatRender(){
+  if(currentView==='project' && currentTab==='chat'){
+    setTimeout(()=> bindMentionInput('c-text'), 0);
+  }
 }
 
 /* ═══════════ 登入/登出 ═══════════ */
@@ -367,6 +473,7 @@ function render(){
     dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser)
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
+  afterProjectChatRender();
 }
 function go(v){
   currentView=v; currentProject=null;
@@ -598,7 +705,7 @@ function tabFlow(p){
         ${s.completedAt?`<div class="row">✅ 完成日期：${s.completedAt}</div>`:''}
         ${s.skipReason?`<div class="row">⏭ 跳過原因：${s.skipReason}</div>`:''}
         ${s.returnReason?`<div class="row" style="color:#c62828">↩️ 退回原因：${s.returnReason}</div>`:''}
-        ${s.files.length?`<div class="row">📎 文件：${s.files.map(f=>f.name+(f.latest?' ✅':'')).join('、')}</div>`:''}
+        ${s.files.length?`<div class="row">📎 文件：${s.files.map(f=>fileLinkHtml(f, f.name+(f.latest?' ✅':''))).join('、 ')}</div>`:''}
         ${!mine&&!isAdmin()?'<div class="row" style="color:#8d6e00">🔒 此階段由 '+userName(s.handler)+' 負責，你只可查看。</div>':''}
         <div class="actions-row">${actions}</div>
       </div>
@@ -681,19 +788,25 @@ function doContent(pid, idx){
 function askUpload(pid, idx){
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
   showModal(`<h3>上載文件／圖片</h3><p style="font-size:13px">階段：<b>${s.name}</b>｜支援 JPG、PNG、PDF、Word、Excel、ZIP 等</p>
-    <label>選擇檔案（示範版只記錄檔案名稱）</label><input type="file" id="m-file">
-    <label>或輸入檔案名稱</label><input type="text" id="m-fname" placeholder="例如：技術規格單V3.xlsx">
+    <label>選擇檔案</label><input type="file" id="m-file">
+    <label>或只輸入檔案名稱（示範佔位內容）</label><input type="text" id="m-fname" placeholder="例如：技術規格單V3.xlsx">
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
     <button class="btn purple sm" onclick="doUpload('${pid}',${idx})">上載</button></div>`);
 }
-function doUpload(pid, idx){
+async function doUpload(pid, idx){
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
   const fi = document.getElementById('m-file');
-  let name = fi.files && fi.files[0] ? fi.files[0].name : document.getElementById('m-fname').value.trim();
+  const picked = fi.files && fi.files[0] ? fi.files[0] : null;
+  let name = picked ? picked.name : document.getElementById('m-fname').value.trim();
   if(!name){ alert2('請選擇檔案或輸入檔案名稱。'); return; }
+  let dataUrl = demoFileDataUrl(name);
+  if(picked){
+    try { dataUrl = await readFileAsDataUrl(picked); }
+    catch(e){ alert2('讀取檔案失敗，請重試。'); return; }
+  }
   s.files.forEach(f=>f.latest=false);
   const ver = 'V'+(s.files.length+1);
-  s.files.push({name, by:currentUser.id, time:nowStr(), ver, latest:true});
+  s.files.push({name, by:currentUser.id, time:nowStr(), ver, latest:true, dataUrl});
   addProjLog(p,'上載文件', s.name+'｜'+name+'（'+ver+'）');
   closeModal(); render();
 }
@@ -701,83 +814,117 @@ function doUpload(pid, idx){
 /* ── 文件分頁 ── */
 function tabFiles(p){
   const all = [];
-  p.stages.forEach(s=>s.files.forEach(f=>all.push({...f, stage:s.name})));
-  return `<div class="info-banner">📁 同一份文件可有多個版本，舊版本會保留，系統標示最新版本。</div>
+  p.stages.forEach(s=>s.files.forEach(f=>all.push({...ensureFilePayload(f), stage:s.name})));
+  return `<div class="info-banner">📁 同一份文件可有多個版本，舊版本會保留，系統標示最新版本。點擊檔名或下載可開啟／儲存。</div>
     ${all.length? all.map(f=>`<div class="file-item">
-      <span>📎</span><span class="fname">${f.name}</span>
+      <span>📎</span>${fileLinkHtml(f, f.name)}
       <span class="tag s-pending">${f.stage}</span><span class="tag dept">${f.ver}</span>
       ${f.latest?'<span class="latest-badge">最新版本</span>':''}
       <span class="fmeta">上載人：${userName(f.by)}｜${f.time}</span>
-      <button class="btn gray sm" onclick="alert2('示範版：正式版可預覽及下載文件。')">下載</button>
+      <a class="btn gray sm" style="display:inline-block;text-decoration:none;color:#fff" href="${f.dataUrl}" download="${f.name.replace(/"/g,'')}" target="_blank" rel="noopener">下載</a>
     </div>`).join('') : '<p style="color:#888">此項目暫無文件。</p>'}`;
 }
 
 /* ── 留言板分頁 ── */
+function commentFileHtml(file){
+  if(!file) return '';
+  const f = ensureFilePayload(typeof file==='string'?{name:file}:file);
+  return `<div class="mfile">${fileLinkHtml(f, '📎 附件：'+f.name)}</div>`;
+}
 function tabChat(p){
   const stageOpts = ['整體項目', ...p.stages.map(s=>s.name)];
   let comments = p.comments;
   if(commentFilter!=='全部') comments = comments.filter(c=>c.stage===commentFilter);
-  return `<div class="info-banner">💬 此留言板只顯示「${p.code} ${p.name}」的相關溝通。留言不代表工作完成，經手人仍需在工作流程更新狀態。支援 @同事 提及功能。</div>
+  return `<div class="info-banner">💬 此留言板只顯示「${p.code} ${p.name}」的相關溝通。留言不代表工作完成，經手人仍需在工作流程更新狀態。輸入 @ 可選擇提及同事；自己的留言可刪除。</div>
     <div class="filters"><span style="font-size:13px;color:#888;align-self:center">按階段篩選：</span>
       <select onchange="commentFilter=this.value;render()">
         <option ${commentFilter==='全部'?'selected':''}>全部</option>
         ${stageOpts.map(s=>`<option ${commentFilter===s?'selected':''}>${s}</option>`).join('')}
       </select></div>
-    ${comments.length? comments.map((c,i)=>{
+    ${comments.length? comments.map((c)=>{
       const realIdx = p.comments.indexOf(c);
+      const canDelete = c.by===currentUser.id || isAdmin();
+      const removedLabel = c.removedBy==='self'
+        ? '此留言已由發表人刪除。'
+        : '此留言已由管理層移除。（原始記錄保留供管理層查閱）';
       return `<div class="msg">
-      ${c.removed? '<div class="removed">此留言已由管理層移除。（原始記錄保留供管理層查閱）</div>' : `
+      ${c.removed? `<div class="removed">${removedLabel}</div>` : `
       <div class="mhead"><span class="mname">${userName(c.by)}</span><span class="tag dept">${userDept(c.by)}</span>
         <span class="mtime">${c.time}</span><span class="tag s-pending">${c.stage}</span></div>
       <div class="mbody">${fmtMention(c.text)}</div>
-      ${c.file?`<div class="mfile">📎 附件：${c.file}</div>`:''}
-      ${c.replies.map(r=>`<div class="reply"><div class="mhead"><span class="mname">${userName(r.by)}</span>
-        <span class="mtime">${r.time}</span></div><div class="mbody">${fmtMention(r.text)}</div></div>`).join('')}
+      ${commentFileHtml(c.file)}
+      ${(c.replies||[]).map((r,ri)=>`<div class="reply"><div class="mhead"><span class="mname">${userName(r.by)}</span>
+        <span class="mtime">${r.time}</span>
+        ${(r.by===currentUser.id||isAdmin())&&!r.removed?`<button class="btn red sm" style="margin-left:auto" onclick="removeReply('${p.id}',${realIdx},${ri})">刪除</button>`:''}
+        </div>
+        ${r.removed?'<div class="removed">此回覆已刪除。</div>':`<div class="mbody">${fmtMention(r.text)}</div>`}
+      </div>`).join('')}
       <div class="actions-row">
         <button class="btn gray sm" onclick="askReply('${p.id}',${realIdx})">回覆</button>
-        ${isAdmin()?`<button class="btn red sm" onclick="removeComment('${p.id}',${realIdx})">移除留言</button>`:''}
+        ${canDelete?`<button class="btn red sm" onclick="removeComment('${p.id}',${realIdx})">${c.by===currentUser.id?'刪除留言':'移除留言'}</button>`:''}
       </div>`}
     </div>`;}).join('') : '<p style="color:#888;margin-bottom:12px">暫無留言。</p>'}
     <div class="card" style="background:#f7f9fc;margin-top:14px">
       <h3>✏️ 發表新留言</h3>
       <label>相關工作階段</label>
       <select id="c-stage">${stageOpts.map(s=>`<option>${s}</option>`).join('')}</select>
-      <label>留言內容（可用 @姓名 提及同事，例如 @Ann）</label>
-      <textarea id="c-text" placeholder="輸入留言內容…"></textarea>
-      <label>附件名稱（選填，示範用）</label>
-      <input type="text" id="c-file" placeholder="例如：樣板V2相片.jpg">
+      <label>留言內容（輸入 @ 選擇同事）</label>
+      <textarea id="c-text" placeholder="輸入留言內容… 可用 @ 提及同事"></textarea>
+      <label>附件（選填）</label>
+      <input type="file" id="c-file">
       <button class="btn" onclick="postComment('${p.id}')">發表留言</button>
     </div>`;
 }
-function postComment(pid){
+async function postComment(pid){
   const p = projects.find(x=>x.id===pid);
   const text = document.getElementById('c-text').value.trim();
   if(!text){ alert2('請輸入留言內容。'); return; }
   const stage = document.getElementById('c-stage').value;
-  const file = document.getElementById('c-file').value.trim() || null;
-  p.comments.unshift({by:currentUser.id, time:nowStr(), stage, text, file, removed:false, replies:[]});
+  const fi = document.getElementById('c-file');
+  let file = null;
+  if(fi.files && fi.files[0]){
+    const picked = fi.files[0];
+    try {
+      file = {name:picked.name, dataUrl: await readFileAsDataUrl(picked)};
+    } catch(e){ alert2('讀取附件失敗，請重試。'); return; }
+  }
+  p.comments.unshift({by:currentUser.id, time:nowStr(), stage, text, file, removed:false, removedBy:null, replies:[]});
   addProjLog(p,'發表留言', stage+'｜'+text.slice(0,30)+(text.length>30?'…':''));
   const mentions = text.match(/@([^\s@，,。]+)/g);
   if(mentions) addProjLog(p,'留言提及通知', mentions.join('、')+' 將收到系統通知');
   render();
 }
 function askReply(pid, idx){
-  showModal(`<h3>回覆留言</h3><label>回覆內容</label><textarea id="m-reply"></textarea>
+  showModal(`<h3>回覆留言</h3><label>回覆內容（輸入 @ 選擇同事）</label><textarea id="m-reply"></textarea>
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
     <button class="btn sm" onclick="doReply('${pid}',${idx})">回覆</button></div>`);
+  setTimeout(()=> bindMentionInput('m-reply'), 0);
 }
 function doReply(pid, idx){
   const text = document.getElementById('m-reply').value.trim();
   if(!text){ alert2('請輸入回覆內容。'); return; }
   const p = projects.find(x=>x.id===pid);
-  p.comments[idx].replies.push({by:currentUser.id, time:nowStr(), text});
+  p.comments[idx].replies.push({by:currentUser.id, time:nowStr(), text, removed:false});
   addProjLog(p,'回覆留言', text.slice(0,30));
   closeModal(); render();
 }
 function removeComment(pid, idx){
   const p = projects.find(x=>x.id===pid);
-  p.comments[idx].removed = true;
-  addProjLog(p,'移除留言', '留言人：'+userName(p.comments[idx].by)+'（原始記錄保留）');
+  const c = p.comments[idx];
+  if(!c) return;
+  if(c.by!==currentUser.id && !isAdmin()){ alert2('只能刪除自己的留言。'); return; }
+  c.removed = true;
+  c.removedBy = c.by===currentUser.id ? 'self' : 'admin';
+  addProjLog(p, c.removedBy==='self'?'刪除自己的留言':'移除留言', '留言人：'+userName(c.by));
+  render();
+}
+function removeReply(pid, cIdx, rIdx){
+  const p = projects.find(x=>x.id===pid);
+  const r = p.comments[cIdx] && p.comments[cIdx].replies[rIdx];
+  if(!r) return;
+  if(r.by!==currentUser.id && !isAdmin()){ alert2('只能刪除自己的回覆。'); return; }
+  r.removed = true;
+  addProjLog(p,'刪除回覆', '回覆人：'+userName(r.by));
   render();
 }
 
