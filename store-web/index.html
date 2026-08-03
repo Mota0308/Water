@@ -293,7 +293,7 @@ let projects = [
   },
 ];
 let projSeq = 4;
-let sysLogs = [];
+let moduleLogs = { daily: [], production: [], replenishment: [] };
 
 let currentUser = null, currentModule = 'production', currentView = 'home', currentProject = null, currentTab = 'overview', commentFilter = '全部';
 let listType = 'dev', fCat='全部', fStatus='全部', fKw='';
@@ -301,8 +301,22 @@ let listType = 'dev', fCat='全部', fStatus='全部', fKw='';
 /* ═══════════ 工具 ═══════════ */
 function nowStr(){ const d=new Date(); return d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日 '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
 function todayStr(){ const d=new Date(); return d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日'; }
-function addSysLog(action, detail){ sysLogs.unshift({time:nowStr(), user:currentUser.name, action, detail}); }
-function addProjLog(p, action, detail){ p.logs.unshift({time:nowStr(), user:currentUser.name, action, detail}); addSysLog(action, p.code+'｜'+detail); }
+function moduleForProject(p){ return p && p.type==='rep' ? 'replenishment' : 'production'; }
+function addModuleLog(mod, action, detail){
+  if(!moduleLogs[mod]) moduleLogs[mod] = [];
+  moduleLogs[mod].unshift({
+    time: nowStr(),
+    user: currentUser ? currentUser.name : '—',
+    action,
+    detail: detail || ''
+  });
+}
+/** @deprecated use addModuleLog — kept for call sites; scopes to currentModule */
+function addSysLog(action, detail){ addModuleLog(currentModule || 'daily', action, detail); }
+function addProjLog(p, action, detail){
+  p.logs.unshift({time:nowStr(), user:currentUser.name, action, detail});
+  addModuleLog(moduleForProject(p), action, p.code+'｜'+detail);
+}
 
 function stageDone(s){ return s.status==='已完成' || s.status==='直接下一階段' || s.status==='不適用'; }
 function projProgress(p){
@@ -433,10 +447,20 @@ function doLogin(){
   document.getElementById('top-user').textContent = user.role==='system_admin' ? '👑 '+user.name+'（系統管理員）' : (user.role==='manager' ? '🧭 '+user.name+'（一般管理層）' : '👤 '+user.name+'｜'+roleLabel(user));
   currentModule = 'daily'; currentView='dailyToday'; currentProject=null;
   ensureDailySeed(); generateRecurringForToday();
-  addSysLog('登入系統','');
+  addDailyOpLog('登入系統','進入每日工作流程');
   render();
 }
-function logout(){ addSysLog('登出系統',''); currentUser=null; document.getElementById('app').classList.add('hidden'); document.getElementById('page-login').classList.remove('hidden'); document.getElementById('login-pw').value=''; }
+function logout(){
+  if(currentModule==='daily' && typeof addDailyOpLog==='function'){
+    try{ addDailyOpLog('登出系統',''); }catch(e){ addModuleLog('daily','登出系統',''); }
+  } else {
+    addModuleLog(currentModule||'daily','登出系統','');
+  }
+  currentUser=null;
+  document.getElementById('app').classList.add('hidden');
+  document.getElementById('page-login').classList.remove('hidden');
+  document.getElementById('login-pw').value='';
+}
 
 /* ═══════════ 導航及渲染 ═══════════ */
 function setModule(m){
@@ -455,13 +479,15 @@ function render(){
   let items = [];
   if(currentModule==='daily'){
     items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyRecords','我的記錄']];
-    if(isAdmin()||isManager()) items.push(['dailyNew','新增突發'],['dailyRecurring','恆常模板']);
+    if(isAdmin()||isManager()) items.push(['dailyNew','新增突發'],['dailyRecurring','恆常模板'],['dailyOpLogs','操作記錄']);
   } else if(currentModule==='production'){
     items = [['home','首頁'],['devList','項目列表'],['myTasks','我的工作']];
-    if(isAdmin()) items.push(['addProject','建立項目'],['sysLogs','操作記錄']);
+    if(isAdmin()) items.push(['addProject','建立項目']);
+    if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
   } else {
     items = [['home','首頁'],['repList','項目列表'],['myTasks','我的工作']];
-    if(isAdmin()) items.push(['addProject','建立項目'],['sysLogs','操作記錄']);
+    if(isAdmin()) items.push(['addProject','建立項目']);
+    if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
   }
   const subActive = (k)=> currentView===k || (currentView==='project' && ((k==='devList'&&currentModule==='production')||(k==='repList'&&currentModule==='replenishment')));
   nav.innerHTML = items.map(([k,l])=>`<button class="${subActive(k)?'active':''}" onclick="go('${k}')">${l}</button>`).join('');
@@ -470,7 +496,8 @@ function render(){
     devList:()=>vList('dev'), repList:()=>vList('rep'), myTasks:vMyTasks, addProject:vAddProject, sysLogs:vSysLogs, project:vProject,
     dailyToday:()=>vDailyToday(currentUser), dailyProgress:()=>vDailyProgress(currentUser),
     dailyUnit:()=>vDailyUnit(currentUser), dailyRecords:()=>vDailyRecords(currentUser),
-    dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser)
+    dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser),
+    dailyOpLogs:()=>vDailyOpLogs(currentUser)
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
   afterProjectChatRender();
@@ -990,13 +1017,37 @@ function createProject(){
     <div class="actions"><button class="btn sm" onclick="closeModal();openProject('${p.id}','flow')">查看項目</button></div>`);
 }
 
-/* ═══════════ 系統操作記錄 ═══════════ */
+/* ═══════════ 模組操作記錄（僅顯示當前模組） ═══════════ */
 function vSysLogs(){
-  const all = [...sysLogs, ...projects.flatMap(p=>p.logs.map(l=>({...l, detail:p.code+'｜'+(l.detail||'')})))];
-  return `<div class="card"><h2>📜 系統操作記錄（全部項目）</h2>
-    <div class="table-wrap"><table><tr><th>時間</th><th>操作人員</th><th>操作</th><th>詳情</th></tr>
+  const mod = currentModule === 'replenishment' ? 'replenishment' : 'production';
+  const type = mod === 'replenishment' ? 'rep' : 'dev';
+  const title = mod === 'replenishment' ? '補貨' : '開發及生產';
+  const fromModule = (moduleLogs[mod] || []).slice();
+  // 種子項目既有 logs：只併入本模組類型，避免跨模組混雜
+  const fromProjects = projects
+    .filter(p => p.type === type)
+    .flatMap(p => (p.logs || []).map(l => ({
+      time: l.time,
+      user: l.user,
+      action: l.action,
+      detail: p.code + '｜' + (l.detail || ''),
+      _seed: true
+    })));
+  // moduleLogs 已含執行期 addProjLog；種子用 fromProjects 補齊。去重：同時間+操作+詳情
+  const seen = new Set();
+  const all = [];
+  [...fromModule, ...fromProjects].forEach(l => {
+    const key = [l.time, l.user, l.action, l.detail].join('|');
+    if (seen.has(key)) return;
+    seen.add(key);
+    all.push(l);
+  });
+  return `<div class="card"><h2>📜 ${title}｜操作記錄</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:10px">只顯示「${title}」模組內的操作，不含每日工作或其他模組。</p>
+    ${all.length ? `<div class="table-wrap"><table><tr><th>時間</th><th>操作人員</th><th>操作</th><th>詳情</th></tr>
     ${all.map(l=>`<tr><td style="font-size:11px;white-space:nowrap">${l.time}</td><td>${l.user}</td><td><b>${l.action}</b></td><td style="font-size:12px">${l.detail}</td></tr>`).join('')}
-    </table></div></div>`;
+    </table></div>` : '<p style="color:#888">此模組暫無操作記錄。</p>'}
+  </div>`;
 }
 
 /* ═══════════ Part 1 每日工作流程（localStorage v2） ═══════════ */
@@ -1020,13 +1071,26 @@ function dailyUserUnit(user){ user=user||currentUser; return user?(user.unit||us
 function dailyCanManage(user){ user=user||currentUser; return !!(user&&(user.role==='system_admin'||user.role==='manager')); }
 function dailyId(prefix){ return prefix+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7); }
 function dailyEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];}); }
-function dailyBaseState(){ return {version:2,works:[],recurringTemplates:[]}; }
+function dailyBaseState(){ return {version:2,works:[],recurringTemplates:[],opLogs:[]}; }
 function dailyNormalizeState(raw){
   var s=raw&&typeof raw==='object'?raw:dailyBaseState();
   s.version=2;
   s.works=Array.isArray(s.works)?s.works:[];
   s.recurringTemplates=Array.isArray(s.recurringTemplates)?s.recurringTemplates:[];
+  s.opLogs=Array.isArray(s.opLogs)?s.opLogs:[];
   return s;
+}
+function addDailyOpLog(action, detail){
+  var s=loadDailyState();
+  s.opLogs.unshift({
+    time: dailyNowStr(),
+    user: dailyUserName(currentUser),
+    action: action,
+    detail: detail||''
+  });
+  if(s.opLogs.length>500) s.opLogs=s.opLogs.slice(0,500);
+  saveDailyState(s);
+  addModuleLog('daily', action, detail||'');
 }
 function saveDailyState(next){
   dailyStateCache=dailyNormalizeState(next||dailyStateCache||dailyBaseState());
@@ -1149,6 +1213,8 @@ function completeDailyWork(id,user,checked){
     w.completedBy=dailyUserId(user);
     w.completedByName=dailyUserName(user);
     w.updatedAt=dailyNowStr();
+    saveDailyState(s);
+    addDailyOpLog(w.kind==='settlement'?'完成結算':'完成工作', w.unit+'｜'+w.title);
   }else{
     // 只有管理層可重開（取消剔選）
     if(!dailyCanManage(user)) return false;
@@ -1157,8 +1223,9 @@ function completeDailyWork(id,user,checked){
     w.completedBy=null;
     w.completedByName=null;
     w.updatedAt=dailyNowStr();
+    saveDailyState(s);
+    addDailyOpLog('重新開啟工作', w.unit+'｜'+w.title);
   }
-  saveDailyState(s);
   return true;
 }
 function cancelAdhocWork(id,user){
@@ -1169,6 +1236,7 @@ function cancelAdhocWork(id,user){
   w.status='cancelled';
   w.updatedAt=dailyNowStr();
   saveDailyState(s);
+  addDailyOpLog('取消工作', w.unit+'｜'+w.title);
   return true;
 }
 function editWorkFields(id,data,user){
@@ -1182,6 +1250,7 @@ function editWorkFields(id,data,user){
   if(data.priority!=null&&PRIORITIES.indexOf(data.priority)>=0) w.priority=data.priority;
   w.updatedAt=dailyNowStr();
   saveDailyState(s);
+  addDailyOpLog('編輯工作', w.unit+'｜'+w.title);
   return true;
 }
 function createAdhocWork(data,user){
@@ -1201,6 +1270,7 @@ function createAdhocWork(data,user){
     }));
   });
   saveDailyState(s);
+  addDailyOpLog('建立突發工作', title+'｜單位：'+units.join('、')+'｜期限 '+dueDate);
   return true;
 }
 function createRecurringTemplate(data,user){
@@ -1217,6 +1287,7 @@ function createRecurringTemplate(data,user){
   });
   saveDailyState(s);
   generateRecurringForToday();
+  addDailyOpLog('建立恆常模板', title+'｜單位：'+units.join('、'));
   return true;
 }
 function setTemplateActive(id,active,user){
@@ -1227,6 +1298,7 @@ function setTemplateActive(id,active,user){
   t.active=!!active;
   saveDailyState(s);
   if(active) generateRecurringForToday();
+  addDailyOpLog(active?'啟用恆常模板':'停用恆常模板', t.title);
   return true;
 }
 function editTemplate(id,data,user){
@@ -1240,6 +1312,7 @@ function editTemplate(id,data,user){
   if(Array.isArray(data.units)) t.units=data.units.filter(function(u){ return STORE_UNITS.indexOf(u)>=0; });
   saveDailyState(s);
   generateRecurringForToday();
+  addDailyOpLog('編輯恆常模板', t.title+'｜單位：'+(t.units||[]).join('、'));
   return true;
 }
 function getTodayWorksForUser(user){
@@ -1277,7 +1350,7 @@ function dailyStatusTag(w){
 }
 function goDailyView(v){
   currentModule='daily';
-  var map={today:'dailyToday',progress:'dailyProgress',new:'dailyNew',recurring:'dailyRecurring',records:'dailyRecords',unit:'dailyUnit'};
+  var map={today:'dailyToday',progress:'dailyProgress',new:'dailyNew',recurring:'dailyRecurring',records:'dailyRecords',unit:'dailyUnit',logs:'dailyOpLogs'};
   currentView=map[v]||'dailyToday';
   if(v!=='unit') dailyProgressUnit=null;
   render();
@@ -1555,6 +1628,21 @@ function vDailyRecords(user){
     }).join('')+'</tbody></table></div>';
   return '<div class="card"><h2>📋 '+(dailyCanManage(user)?'完成記錄':'我的完成記錄')+'</h2>'+
     (filter?'<div class="filters">'+filter+'</div>':'')+rows+'</div>';
+}
+function vDailyOpLogs(user){
+  if(!dailyCanManage(user)){
+    return '<div class="card"><h2>📜 操作記錄</h2><p>只有管理層可以查看每日工作流程的操作記錄。</p></div>';
+  }
+  ensureDailySeed();
+  var list=(loadDailyState().opLogs||[]).slice();
+  var rows=!list.length?'<p style="color:#888">暫無操作記錄。</p>':
+    '<div class="table-wrap"><table><thead><tr><th>時間</th><th>操作人員</th><th>操作</th><th>詳情</th></tr></thead><tbody>'+
+    list.map(function(l){
+      return '<tr><td style="font-size:11px;white-space:nowrap">'+dailyEsc(l.time)+'</td><td>'+dailyEsc(l.user)+'</td><td><b>'+dailyEsc(l.action)+'</b></td><td style="font-size:12px">'+dailyEsc(l.detail||'')+'</td></tr>';
+    }).join('')+'</tbody></table></div>';
+  return '<div class="card"><h2>📜 每日工作流程｜操作記錄</h2>'+
+    '<p style="font-size:13px;color:#666;margin-bottom:10px">只顯示每日工作流程內的操作（完成、建立、編輯、停用等），不含開發及生產／補貨。</p>'+
+    rows+'</div>';
 }
 
 
