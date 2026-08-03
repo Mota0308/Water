@@ -80,6 +80,21 @@ describe("門市工作流程應用服務 — 管理層工作操作", () => {
       await app.reopenWork(managerSessionId, { workId, reason: "誤點需重做" }),
     ).toEqual({ ok: true });
 
+    const completionHistory = await app.listCompletionHistory(
+      managerSessionId,
+      { workId },
+    );
+    expect(completionHistory).toMatchObject({
+      ok: true,
+      history: [
+        expect.objectContaining({
+          workId,
+          completedByDisplayName: "觀塘甲",
+          reason: "誤點需重做",
+        }),
+      ],
+    });
+
     const afterReopen = await app.getTodayWork(kt.sessionId);
     expect(afterReopen).toMatchObject({
       ok: true,

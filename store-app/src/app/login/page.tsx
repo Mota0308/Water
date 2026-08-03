@@ -14,10 +14,15 @@ export default async function LoginPage() {
   }
 
   return (
-    <main className="login-page">
-      <section className="login-panel">
-        <h1>門市工作流程系統</h1>
-        <p>公司內部使用 · 請以個人賬號登入</p>
+    <main className="login-page login-page-v2">
+      <section className="login-panel login-panel-v2">
+        <div className="login-brand">
+          <span className="personal-brand-icon" aria-hidden>
+            ▦
+          </span>
+          <h1>每日工作流程管理系統</h1>
+        </div>
+        <p>公司內部使用 · 請以賬號登入</p>
         <LoginForm />
         <p className="login-hint">忘記密碼請聯絡系統管理員重設。</p>
       </section>

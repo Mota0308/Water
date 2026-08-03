@@ -34,6 +34,29 @@ export function CreateAdhocForm({ units }: { units: FixedUnit[] }) {
         完成期限（選填）
         <input name="dueAt" type="datetime-local" disabled={pending} />
       </label>
+      <label>
+        附件規則
+        <select
+          name="attachmentRequirement"
+          defaultValue="none"
+          disabled={pending}
+        >
+          <option value="none">不需附件</option>
+          <option value="optional">附件選填</option>
+          <option value="required">附件必填</option>
+        </select>
+      </label>
+      <label>
+        完成備註規則
+        <select name="noteRequirement" defaultValue="optional" disabled={pending}>
+          <option value="optional">備註選填</option>
+          <option value="required">備註必填</option>
+        </select>
+      </label>
+      <label className="checkbox-row span-2">
+        <input type="checkbox" name="sensitive" disabled={pending} />
+        標記為敏感（跨單位進度不顯示）
+      </label>
       <fieldset className="span-2 unit-fieldset">
         <legend>適用單位</legend>
         {units.map((unit) => (

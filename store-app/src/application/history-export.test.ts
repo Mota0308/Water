@@ -76,6 +76,24 @@ describe("門市工作流程應用服務 — 歷史統計匯出", () => {
       works: [expect.objectContaining({ title: "清潔", status: "completed" })],
     });
 
+    const overdueFilter = await app.searchWorkHistory(managerSessionId, {
+      overdueOnly: true,
+    });
+    expect(overdueFilter.ok).toBe(true);
+    if (overdueFilter.ok) {
+      expect(
+        overdueFilter.works.every(
+          (work) =>
+            work.dueAt &&
+            ((work.status === "pending" &&
+              work.dueAt.getTime() < Date.now()) ||
+              (work.status === "completed" &&
+                work.completedAt &&
+                work.completedAt.getTime() > work.dueAt.getTime())),
+        ),
+      ).toBe(true);
+    }
+
     const stats = await app.getStaffStats(managerSessionId, { unit: "觀塘" });
     expect(stats).toMatchObject({
       ok: true,
@@ -106,6 +124,23 @@ describe("門市工作流程應用服務 — 歷史統計匯出", () => {
       error: "forbidden",
     });
     expect(await app.exportWorkHistoryCsv(kt.sessionId, {})).toEqual({
+      ok: false,
+      error: "forbidden",
+    });
+
+    const mine = await app.listMyCompletions(kt.sessionId, {});
+    expect(mine).toMatchObject({
+      ok: true,
+      completions: [
+        expect.objectContaining({
+          title: "清潔",
+          unit: "觀塘",
+          onTime: true,
+        }),
+      ],
+    });
+
+    expect(await app.listMyCompletions(managerSessionId, {})).toEqual({
       ok: false,
       error: "forbidden",
     });

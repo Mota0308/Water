@@ -1,6 +1,6 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ChangePasswordForm } from "@/app/password/change-password-form";
+import { AppShell } from "@/components/app-shell";
 import { getStoreWorkFlowApp } from "@/infrastructure/app";
 import { readSessionId } from "@/infrastructure/session-cookie";
 
@@ -13,17 +13,11 @@ export default async function PasswordPage() {
   }
 
   return (
-    <main className="page">
-      <header className="page-header">
-        <div>
-          <h1>修改密碼</h1>
-          <p>{auth.session.displayName}</p>
-        </div>
-        <Link href="/">返回</Link>
-      </header>
-      <section className="card">
+    <AppShell session={auth.session} active="password">
+      <section className="personal-card">
+        <h1 className="personal-card-title">修改密碼</h1>
         <ChangePasswordForm />
       </section>
-    </main>
+    </AppShell>
   );
 }

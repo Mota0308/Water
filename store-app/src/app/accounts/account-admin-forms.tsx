@@ -26,8 +26,8 @@ export function AccountAdminForms({
 
   return (
     <div className="stack">
-      <section className="card">
-        <h2>建立賬號</h2>
+      <section className="personal-card">
+        <h2 className="personal-card-title">建立賬號</h2>
         <form action={createAction} className="form-grid">
           <label>
             姓名
@@ -82,11 +82,11 @@ export function AccountAdminForms({
         ) : null}
       </section>
 
-      <section className="card">
-        <h2>現有賬號</h2>
+      <section className="personal-card">
+        <h2 className="personal-card-title">現有賬號</h2>
         <div className="account-list">
           {accounts.map((account) => (
-            <article key={account.id} className="account-item">
+            <article key={account.id} className="account-item shell-item">
               <div>
                 <strong>
                   {account.displayName}（{account.loginName}）

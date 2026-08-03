@@ -128,13 +128,22 @@ describe("門市工作流程應用服務 — 附件與備註", () => {
     const listed = await app.listWorkAttachments(kt.sessionId, { workId });
     expect(listed).toMatchObject({
       ok: true,
-      attachments: [{ fileName: "proof.png", contentType: "image/png" }],
+      attachments: [
+        {
+          fileName: "proof.png",
+          contentType: "image/png",
+          dataBase64: PNG_BASE64,
+        },
+      ],
     });
 
     const managerListed = await app.listWorkAttachments(managerSessionId, {
       workId,
     });
-    expect(managerListed.ok).toBe(true);
+    expect(managerListed).toMatchObject({
+      ok: true,
+      attachments: [{ dataBase64: PNG_BASE64 }],
+    });
 
     const tm = await app.login({ loginName: "tm.a", password: "Staff123!" });
     if (!tm.ok) throw new Error("tm");

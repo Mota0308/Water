@@ -1,7 +1,7 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { FIXED_UNITS } from "@/application/store-work-flow-app";
 import { AccountAdminForms } from "@/app/accounts/account-admin-forms";
+import { AppShell } from "@/components/app-shell";
 import { getStoreWorkFlowApp } from "@/infrastructure/app";
 import { readSessionId } from "@/infrastructure/session-cookie";
 
@@ -21,16 +21,12 @@ export default async function AccountsPage() {
   const accounts = listed.ok ? listed.accounts : [];
 
   return (
-    <main className="page">
-      <header className="page-header">
-        <div>
-          <h1>個人賬號管理</h1>
-          <p>僅系統管理員可建立、重設、暫停及調職</p>
-        </div>
-        <Link href="/">返回今日工作</Link>
-      </header>
-
+    <AppShell session={auth.session} active="accounts">
+      <section className="personal-card">
+        <h1 className="personal-card-title">個人賬號管理</h1>
+        <p className="meta">僅系統管理員可建立、重設、暫停及調職</p>
+      </section>
       <AccountAdminForms units={[...FIXED_UNITS]} accounts={accounts} />
-    </main>
+    </AppShell>
   );
 }

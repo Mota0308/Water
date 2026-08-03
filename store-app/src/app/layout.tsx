@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "門市工作流程系統",
+  title: "每日工作流程管理系統",
   description: "門市及國內倉每日工作流程管理系統",
 };
 

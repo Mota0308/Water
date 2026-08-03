@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import bcrypt from "bcryptjs";
 import type { Db } from "mongodb";
+import {
+  createProductionApi,
+  type ProductionApi,
+} from "./production-api";
 
 export type AccountRole = "personal" | "manager" | "system_admin";
 
@@ -31,8 +35,21 @@ export type WorkAttachmentView = {
   workId: string;
   fileName: string;
   contentType: string;
+  dataBase64: string;
   uploadedByDisplayName: string;
   uploadedAt: Date;
+};
+
+export type CompletionHistoryView = {
+  id: string;
+  workId: string;
+  completedByAccountId: string | null;
+  completedByDisplayName: string | null;
+  completedAt: Date | null;
+  completionNote: string | null;
+  reopenedAt: Date;
+  reopenedByDisplayName: string;
+  reason: string;
 };
 
 export type WorkChangeLogView = {
@@ -128,6 +145,9 @@ export type RecurringTemplateView = {
   recurrence: Recurrence;
   sortOrder: number;
   active: boolean;
+  attachmentRequirement: AttachmentRequirement;
+  noteRequirement: NoteRequirement;
+  sensitive: boolean;
 };
 
 export type TodayWorkSummary = {
@@ -152,6 +172,15 @@ export type WorkAuditView = {
 
 export type UnitProgressView = TodayWorkSummary & {
   unit: FixedUnit;
+};
+
+export type MyCompletionView = {
+  id: string;
+  title: string;
+  unit: FixedUnit;
+  completedAt: Date;
+  dueAt: Date | null;
+  onTime: boolean;
 };
 
 export type ReadonlyWorkView = {
@@ -237,6 +266,19 @@ type AttachmentRecord = {
   uploadedAt: Date;
 };
 
+type CompletionHistoryRecord = {
+  _id: string;
+  workId: string;
+  completedByAccountId: string | null;
+  completedByDisplayName: string | null;
+  completedAt: Date | null;
+  completionNote: string | null;
+  reopenedAt: Date;
+  reopenedByAccountId: string;
+  reopenedByDisplayName: string;
+  reason: string;
+};
+
 type WorkChangeLogRecord = {
   _id: string;
   workId: string;
@@ -257,6 +299,9 @@ type RecurringTemplateRecord = {
   recurrence: Recurrence;
   sortOrder: number;
   active: boolean;
+  attachmentRequirement: AttachmentRequirement;
+  noteRequirement: NoteRequirement;
+  sensitive: boolean;
   createdByAccountId: string;
   createdAt: Date;
   updatedAt: Date;
@@ -399,12 +444,26 @@ export type StoreWorkFlowApp = {
           | "invalid_attachment_type";
       }
   >;
+  getWork(
+    sessionId: string,
+    input: { workId: string },
+  ): Promise<
+    | { ok: true; work: WorkView }
+    | { ok: false; error: AuthError | "not_found" }
+  >;
   listWorkAttachments(
     sessionId: string,
     input: { workId: string },
   ): Promise<
     | { ok: true; attachments: WorkAttachmentView[] }
     | { ok: false; error: AuthError | "not_found" }
+  >;
+  listCompletionHistory(
+    actorSessionId: string,
+    input: { workId: string },
+  ): Promise<
+    | { ok: true; history: CompletionHistoryView[] }
+    | { ok: false; error: AuthError }
   >;
   reopenWork(
     actorSessionId: string,
@@ -432,6 +491,12 @@ export type StoreWorkFlowApp = {
     | { ok: true }
     | { ok: false; error: AuthError | "not_found" | "not_adhoc" }
   >;
+  listRecurringTemplates(
+    actorSessionId: string,
+  ): Promise<
+    | { ok: true; templates: RecurringTemplateView[] }
+    | { ok: false; error: AuthError }
+  >;
   deactivateRecurringTemplate(
     actorSessionId: string,
     input: { templateId: string },
@@ -441,6 +506,13 @@ export type StoreWorkFlowApp = {
     input: { workId: string },
   ): Promise<
     | { ok: true; logs: WorkChangeLogView[] }
+    | { ok: false; error: AuthError }
+  >;
+  listMyCompletions(
+    sessionId: string,
+    input?: { from?: Date; to?: Date },
+  ): Promise<
+    | { ok: true; completions: MyCompletionView[] }
     | { ok: false; error: AuthError }
   >;
   searchWorkHistory(
@@ -453,6 +525,7 @@ export type StoreWorkFlowApp = {
       accountId?: string;
       from?: Date;
       to?: Date;
+      overdueOnly?: boolean;
     },
   ): Promise<
     { ok: true; works: WorkView[] } | { ok: false; error: AuthError }
@@ -470,6 +543,7 @@ export type StoreWorkFlowApp = {
       status?: WorkStatus;
       priority?: WorkPriority;
       type?: WorkType;
+      overdueOnly?: boolean;
     },
   ): Promise<{ ok: true; csv: string } | { ok: false; error: AuthError }>;
   seedDemoRecurringTemplates(
@@ -509,6 +583,9 @@ export type StoreWorkFlowApp = {
       priority: WorkPriority;
       recurrence: Recurrence;
       sortOrder?: number;
+      attachmentRequirement?: AttachmentRequirement;
+      noteRequirement?: NoteRequirement;
+      sensitive?: boolean;
     },
   ): Promise<
     | { ok: true; template: RecurringTemplateView }
@@ -553,7 +630,7 @@ export type StoreWorkFlowApp = {
       }
     | { ok: false; error: AuthError | "invalid_unit" }
   >;
-};
+} & ProductionApi;
 
 const ACCOUNTS = "accounts";
 const SESSIONS = "sessions";
@@ -563,6 +640,7 @@ const WORK_AUDITS = "work_audits";
 const RECURRING_TEMPLATES = "recurring_templates";
 const WORK_ATTACHMENTS = "work_attachments";
 const WORK_CHANGE_LOGS = "work_change_logs";
+const COMPLETION_HISTORY = "work_completion_history";
 
 function isFixedUnit(value: string): value is FixedUnit {
   return (FIXED_UNITS as readonly string[]).includes(value);
@@ -635,6 +713,9 @@ function toTemplateView(template: RecurringTemplateRecord): RecurringTemplateVie
     recurrence: template.recurrence,
     sortOrder: template.sortOrder,
     active: template.active,
+    attachmentRequirement: template.attachmentRequirement ?? "none",
+    noteRequirement: template.noteRequirement ?? "optional",
+    sensitive: template.sensitive ?? false,
   };
 }
 
@@ -758,6 +839,7 @@ export function createStoreWorkFlowApp(deps: {
     accountId?: string;
     from?: Date;
     to?: Date;
+    overdueOnly?: boolean;
   }): Promise<WorkView[]> {
     const filter: Record<string, unknown> = {
       status: { $ne: "cancelled" },
@@ -773,11 +855,22 @@ export function createStoreWorkFlowApp(deps: {
         ...(input.to ? { $lte: input.to } : {}),
       };
     }
-    const works = await db
+    let works = await db
       .collection<WorkRecord>(WORKS)
       .find(filter)
       .sort({ createdAt: -1 })
       .toArray();
+    if (input.overdueOnly) {
+      const asOf = now().getTime();
+      works = works.filter((work) => {
+        if (!work.dueAt) return false;
+        if (work.status === "pending") return work.dueAt.getTime() < asOf;
+        if (work.status === "completed" && work.completedAt) {
+          return work.completedAt.getTime() > work.dueAt.getTime();
+        }
+        return false;
+      });
+    }
     return works.map(toWorkView);
   }
 
@@ -867,10 +960,10 @@ export function createStoreWorkFlowApp(deps: {
           dueAt: dueAtOnHongKongDate(date),
           templateId: template._id,
           settlementState: null,
-          attachmentRequirement: "none",
-          noteRequirement: "optional",
+          attachmentRequirement: template.attachmentRequirement ?? "none",
+          noteRequirement: template.noteRequirement ?? "optional",
           completionNote: null,
-          sensitive: false,
+          sensitive: template.sensitive ?? false,
           completedByAccountId: null,
           completedByDisplayName: null,
           completedAt: null,
@@ -886,7 +979,10 @@ export function createStoreWorkFlowApp(deps: {
     return createdCount;
   }
 
+  const productionApi = createProductionApi({ db, now, getSession });
+
   return {
+    ...productionApi,
     async seedSystemAdmin(input) {
       await db.collection(ACCOUNTS).createIndex({ loginName: 1 }, { unique: true });
 
@@ -1429,6 +1525,9 @@ export function createStoreWorkFlowApp(deps: {
         recurrence: input.recurrence,
         sortOrder: input.sortOrder ?? 0,
         active: true,
+        attachmentRequirement: input.attachmentRequirement ?? "none",
+        noteRequirement: input.noteRequirement ?? "optional",
+        sensitive: input.sensitive ?? false,
         createdByAccountId: auth.session.accountId,
         createdAt: now(),
         updatedAt: now(),
@@ -1532,6 +1631,27 @@ export function createStoreWorkFlowApp(deps: {
       };
     },
 
+    async getWork(sessionId, input) {
+      const session = await getSession(sessionId);
+      if (!session) {
+        return { ok: false, error: "unauthenticated" };
+      }
+      const work = await db
+        .collection<WorkRecord>(WORKS)
+        .findOne({ _id: input.workId });
+      if (!work || work.status === "cancelled") {
+        return { ok: false, error: "not_found" };
+      }
+      const canView =
+        session.role === "manager" ||
+        session.role === "system_admin" ||
+        (session.role === "personal" && session.fixedUnit === work.unit);
+      if (!canView) {
+        return { ok: false, error: "forbidden" };
+      }
+      return { ok: true, work: toWorkView(work) };
+    },
+
     async listWorkAttachments(sessionId, input) {
       const session = await getSession(sessionId);
       if (!session) {
@@ -1564,8 +1684,34 @@ export function createStoreWorkFlowApp(deps: {
           workId: file.workId,
           fileName: file.fileName,
           contentType: file.contentType,
+          dataBase64: file.dataBase64,
           uploadedByDisplayName: file.uploadedByDisplayName,
           uploadedAt: file.uploadedAt,
+        })),
+      };
+    },
+
+    async listCompletionHistory(actorSessionId, input) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) return auth;
+      const history = await db
+        .collection(COMPLETION_HISTORY)
+        .find({ workId: input.workId })
+        .sort({ reopenedAt: -1 })
+        .toArray();
+      return {
+        ok: true,
+        history: history.map((row) => ({
+          id: String(row._id),
+          workId: String(row.workId),
+          completedByAccountId: (row.completedByAccountId as string) ?? null,
+          completedByDisplayName:
+            (row.completedByDisplayName as string) ?? null,
+          completedAt: (row.completedAt as Date) ?? null,
+          completionNote: (row.completionNote as string) ?? null,
+          reopenedAt: row.reopenedAt as Date,
+          reopenedByDisplayName: String(row.reopenedByDisplayName),
+          reason: String(row.reason),
         })),
       };
     },
@@ -1583,6 +1729,18 @@ export function createStoreWorkFlowApp(deps: {
         return { ok: false, error: "not_completed" };
       }
       const at = now();
+      await db.collection<CompletionHistoryRecord>(COMPLETION_HISTORY).insertOne({
+        _id: randomUUID(),
+        workId: work._id,
+        completedByAccountId: work.completedByAccountId,
+        completedByDisplayName: work.completedByDisplayName,
+        completedAt: work.completedAt,
+        completionNote: work.completionNote,
+        reopenedAt: at,
+        reopenedByAccountId: auth.session.accountId,
+        reopenedByDisplayName: auth.session.displayName,
+        reason: input.reason.trim(),
+      });
       await db.collection<WorkRecord>(WORKS).updateOne(
         { _id: work._id },
         {
@@ -1693,6 +1851,17 @@ export function createStoreWorkFlowApp(deps: {
       return { ok: true };
     },
 
+    async listRecurringTemplates(actorSessionId) {
+      const auth = await requireManager(actorSessionId);
+      if (!auth.ok) return auth;
+      const templates = await db
+        .collection<RecurringTemplateRecord>(RECURRING_TEMPLATES)
+        .find({})
+        .sort({ sortOrder: 1, createdAt: 1 })
+        .toArray();
+      return { ok: true, templates: templates.map(toTemplateView) };
+    },
+
     async deactivateRecurringTemplate(actorSessionId, input) {
       const auth = await requireManager(actorSessionId);
       if (!auth.ok) return auth;
@@ -1725,6 +1894,49 @@ export function createStoreWorkFlowApp(deps: {
           changedByDisplayName: log.changedByDisplayName,
           changedAt: log.changedAt,
         })),
+      };
+    },
+
+    async listMyCompletions(sessionId, input = {}) {
+      const session = await getSession(sessionId);
+      if (!session) {
+        return { ok: false, error: "unauthenticated" };
+      }
+      if (session.role !== "personal") {
+        return { ok: false, error: "forbidden" };
+      }
+
+      const filter: Record<string, unknown> = {
+        status: "completed",
+        completedByAccountId: session.accountId,
+      };
+      if (input.from || input.to) {
+        filter.completedAt = {
+          ...(input.from ? { $gte: input.from } : {}),
+          ...(input.to ? { $lte: input.to } : {}),
+        };
+      }
+
+      const works = await db
+        .collection<WorkRecord>(WORKS)
+        .find(filter)
+        .sort({ completedAt: -1 })
+        .toArray();
+
+      return {
+        ok: true,
+        completions: works
+          .filter((work) => work.completedAt)
+          .map((work) => ({
+            id: work._id,
+            title: work.title,
+            unit: work.unit,
+            completedAt: work.completedAt!,
+            dueAt: work.dueAt,
+            onTime:
+              !work.dueAt ||
+              work.completedAt!.getTime() <= work.dueAt.getTime(),
+          })),
       };
     },
 
@@ -1857,6 +2069,9 @@ export function createStoreWorkFlowApp(deps: {
           recurrence: "daily",
           sortOrder: createdCount + 1,
           active: true,
+          attachmentRequirement: "none",
+          noteRequirement: "optional",
+          sensitive: false,
           createdByAccountId: auth.session.accountId,
           createdAt: now(),
           updatedAt: now(),
@@ -1868,5 +2083,5 @@ export function createStoreWorkFlowApp(deps: {
       }
       return { ok: true, createdCount };
     },
-  };
+  } satisfies StoreWorkFlowApp;
 }
