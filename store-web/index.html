@@ -350,6 +350,7 @@ const NOTIF_KEY = 'store-web-notifications-v1';
 const NOTIF_CATEGORIES = ['補貨','價錢更新','緊急通知','一般通知'];
 const NOTIF_PRIORITIES = ['一般','重要','緊急'];
 let mailboxOpen = false;
+let pushDraftFiles = []; // {name, dataUrl} draft attachments for compose
 
 let currentUser = null, currentModule = 'production', currentView = 'home', currentProject = null, currentTab = 'overview', commentFilter = '全部';
 let listType = 'dev', fCat='全部', fStatus='全部', fKw='';
@@ -499,7 +500,14 @@ function loadNotificationsLocal(){
   }
 }
 function saveNotificationsLocal(){
-  try{ localStorage.setItem(NOTIF_KEY, JSON.stringify({ notifications, notifSeq })); }catch(e){}
+  try{
+    const slim = notifications.map(n=>{
+      const copy = Object.assign({}, n);
+      if(Array.isArray(copy.attachments)) copy.attachments = copy.attachments.map(slimFileRef);
+      return copy;
+    });
+    localStorage.setItem(NOTIF_KEY, JSON.stringify({ notifications: slim, notifSeq }));
+  }catch(e){}
 }
 async function loadNotifications(){
   if(!apiEnabled){
@@ -577,9 +585,59 @@ function refreshMailboxUi(){
       </div>
       <div class="mb-title">${escHtml(title)}</div>
       <div class="mb-body">${escHtml(item.content||'')}</div>
+      ${notifAttachHtml(item.attachments)}
       <div class="mb-foot">${readBtn}</div>
     </div>`;
   }).join('');
+}
+function notifAttachHtml(files){
+  if(!Array.isArray(files) || !files.length) return '';
+  return `<div style="margin-top:4px;font-size:12px">${files.map(function(f,i){
+    const href = (typeof fileHref==='function') ? fileHref(f) : (f.dataUrl||'#');
+    const name = escHtml(f.name||('附件'+(i+1)));
+    return `<a class="file-link" href="${href}" download="${name.replace(/"/g,'')}" target="_blank" rel="noopener" style="display:inline-block;margin:2px 8px 2px 0">📎 ${name}</a>`;
+  }).join('')}</div>`;
+}
+function pushFileListHtml(){
+  if(!pushDraftFiles.length) return '<p style="font-size:12px;color:#888;margin:6px 0">尚未添加附件。</p>';
+  return `<div style="margin:8px 0">${pushDraftFiles.map((f,i)=>`
+    <div class="file-item" style="margin-bottom:6px">
+      <span>📎</span><span>${escHtml(f.name)}</span>
+      <button type="button" class="btn red sm" onclick="pushRemoveDraftFile(${i})">移除</button>
+    </div>`).join('')}</div>`;
+}
+function pushRenderFileList(){
+  const el = document.getElementById('push-file-list');
+  if(el) el.innerHTML = pushFileListHtml();
+}
+function pushRemoveDraftFile(i){
+  pushDraftFiles.splice(i,1);
+  pushRenderFileList();
+}
+async function pushOnFilesPick(input){
+  const files = input && input.files;
+  if(!files || !files.length) return;
+  try{
+    for(let i=0;i<files.length;i++){
+      const f = files[i];
+      pushDraftFiles.push({ name:f.name, dataUrl: await readFileAsDataUrl(f) });
+    }
+  }catch(e){ alert2('讀取附件失敗，請重試。'); }
+  input.value = '';
+  pushRenderFileList();
+}
+async function uploadPushAttachments(){
+  const out = [];
+  for(let i=0;i<pushDraftFiles.length;i++){
+    const f = pushDraftFiles[i];
+    if(apiEnabled){
+      const up = await cloudUploadDataUrl(f.name, f.dataUrl);
+      out.push({ name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType });
+    } else {
+      out.push({ name:f.name, dataUrl:f.dataUrl });
+    }
+  }
+  return out;
 }
 function escHtml(s){
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -643,13 +701,14 @@ function confirmSendPush(){
   const title = ((document.getElementById('push-title')||{}).value || '').trim();
   const content = ((document.getElementById('push-content')||{}).value || '').trim();
   const recipientIds = selectedPushRecipientIds();
-  if(!content){ alert2('請填寫訊息內容。'); return; }
+  if(!content && !pushDraftFiles.length){ alert2('請填寫訊息內容，或至少添加 1 個附件。'); return; }
   if(!recipientIds.length){ alert2('請至少選擇一位收件人。'); return; }
   showModal(`<h3>確認推送通知</h3>
     <p style="font-size:14px;line-height:1.6">
       類別：<b>${escHtml(category)}</b><br>
       優先程度：<b>${escHtml(priority)}</b><br>
-      收件人數：<b>${recipientIds.length}</b>
+      收件人數：<b>${recipientIds.length}</b><br>
+      附件：<b>${pushDraftFiles.length}</b> 個
     </p>
     <div class="actions">
       <button class="btn sm gray" onclick="closeModal()">取消</button>
@@ -662,9 +721,18 @@ async function sendPushNotification(){
   const title = ((document.getElementById('push-title')||{}).value || '').trim();
   const content = ((document.getElementById('push-content')||{}).value || '').trim();
   const recipientIds = selectedPushRecipientIds();
-  if(!content || !recipientIds.length || !currentUser) return;
+  if((!content && !pushDraftFiles.length) || !recipientIds.length || !currentUser) return;
+  let attachments = [];
+  try{
+    attachments = await uploadPushAttachments();
+  }catch(e){
+    alert2('上傳附件失敗：'+(e.message||e));
+    return;
+  }
   const payload = {
-    category, priority, title, content,
+    category, priority, title,
+    content: content || (attachments.length ? '（見附件）' : ''),
+    attachments,
     fromUserId: currentUser.id,
     fromName: currentUser.name,
     recipientIds,
@@ -684,7 +752,9 @@ async function sendPushNotification(){
       notifSeq += 1;
       notifications.unshift({
         id,
-        category, priority, title, content,
+        category, priority, title,
+        content: payload.content,
+        attachments,
         fromUserId: currentUser.id,
         fromName: currentUser.name,
         createdAt: payload.createdAt,
@@ -698,12 +768,16 @@ async function sendPushNotification(){
     const contentEl = document.getElementById('push-content');
     if(titleEl) titleEl.value = '';
     if(contentEl) contentEl.value = '';
+    pushDraftFiles = [];
+    pushRenderFileList();
+    const fileInput = document.getElementById('push-files');
+    if(fileInput) fileInput.value = '';
     togglePushRecipients(false);
     const catEl = document.getElementById('push-cat');
     const priEl = document.getElementById('push-pri');
     if(catEl) catEl.value = '一般通知';
     if(priEl) priEl.value = '一般';
-    alert2('已推送通知給 '+recipientIds.length+' 位用戶。');
+    alert2('已推送通知給 '+recipientIds.length+' 位用戶'+(attachments.length?'（含附件 '+attachments.length+' 個）':'')+'。');
   }catch(e){
     alert2('推送失敗：'+e.message);
   }
@@ -715,17 +789,25 @@ function vPushNotify(){
   const rows = cands.length
     ? cands.map(u=>`<label class="rc-item"><input type="checkbox" value="${u.id}"> ${escHtml(u.name)} <span style="color:#888">（${escHtml(roleLabel(u))}）</span></label>`).join('')
     : '<p style="color:#888;font-size:13px;margin:0">目前沒有可選收件人。</p>';
+  setTimeout(pushRenderFileList, 0);
   return `<div class="card">
     <h2>📢 推送通知</h2>
-    <p style="font-size:13px;color:#666;margin-bottom:8px">填寫內容並選擇收件人，送出後對方可在「信箱通知」查看並標為已讀。</p>
+    <p style="font-size:13px;color:#666;margin-bottom:8px">填寫內容並選擇收件人，送出後對方可在「信箱通知」查看並標為已讀。訊息可附加檔案。</p>
     <label>通知類別</label>
     <select id="push-cat">${catOpts}</select>
     <label>優先程度</label>
     <select id="push-pri">${priOpts}</select>
     <label>標題（選填）</label>
     <input type="text" id="push-title" placeholder="簡短標題，可留空">
-    <label>訊息內容（必填）</label>
-    <textarea id="push-content" placeholder="輸入要推送的內容" style="min-height:110px"></textarea>
+    <label>訊息內容</label>
+    <textarea id="push-content" placeholder="輸入要推送的內容（可與附件擇一或同時使用）" style="min-height:110px"></textarea>
+    <label>附件</label>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0">
+      <button type="button" class="btn green sm" onclick="document.getElementById('push-files').click()">📎 添加附件</button>
+      <span style="font-size:12px;color:#888">可多選、可多次添加（圖片／PDF／Office 等）</span>
+    </div>
+    <input type="file" id="push-files" multiple onchange="pushOnFilesPick(this)" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">
+    <div id="push-file-list">${pushFileListHtml()}</div>
     <label>收件人（可多選）</label>
     <div class="recipient-box" id="push-recipients">
       <div class="rc-tools">

@@ -100,8 +100,19 @@ export async function createNotification(input) {
     ? [...new Set(input.recipientIds.map(String).filter(Boolean))]
     : [];
   if (!recipientIds.length) throw new Error('recipientIds required');
-  const content = String(input?.content || '').trim();
-  if (!content) throw new Error('content required');
+  const attachments = Array.isArray(input?.attachments)
+    ? input.attachments
+        .filter((f) => f && (f.name || f.driveFileId || f.dataUrl))
+        .map((f) => ({
+          name: String(f.name || 'file'),
+          driveFileId: f.driveFileId ? String(f.driveFileId) : undefined,
+          dataUrl: f.dataUrl && !f.driveFileId ? String(f.dataUrl) : undefined,
+          mimeType: f.mimeType ? String(f.mimeType) : undefined,
+        }))
+    : [];
+  let content = String(input?.content || '').trim();
+  if (!content && !attachments.length) throw new Error('content or attachments required');
+  if (!content && attachments.length) content = '（見附件）';
   const id = 'N' + String(state.notifSeq).padStart(3, '0');
   const now = new Date();
   const createdAt =
@@ -113,6 +124,7 @@ export async function createNotification(input) {
     priority: String(input?.priority || '一般'),
     title: String(input?.title || '').trim(),
     content,
+    attachments,
     fromUserId: String(input?.fromUserId || ''),
     fromName: String(input?.fromName || ''),
     createdAt,
