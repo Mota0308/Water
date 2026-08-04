@@ -81,6 +81,8 @@
   .tag.s-fix{background:#fff3e0;color:#ef6c00} .tag.s-return{background:#ffebee;color:#c62828}
   .tag.s-done{background:#e8f5e9;color:#2e7d32} .tag.s-overdue{background:#ffebee;color:#c62828}
   .tag.s-skip{background:#f3e5f5;color:#7b1fa2} .tag.s-na{background:#f5f5f5;color:#aaa}
+  .tag.s-pause{background:#fff8e1;color:#f57f17} .tag.s-cancel{background:#eceff1;color:#546e7a}
+  .tag.s-archive{background:#efebe9;color:#5d4037}
   .tag.t-dev{background:#e8eaf6;color:#3949ab} .tag.t-rep{background:#e0f2f1;color:#00796b}
   .tag.dept{background:#f0f4f9;color:#546e7a}
 
@@ -318,7 +320,8 @@ const ST = {
 };
 function stTag(s){
   const map = {'未開始':'s-notstart','待處理':'s-pending','進行中':'s-doing','待確認':'s-wait',
-    '需要修改':'s-fix','已退回':'s-return','已完成':'s-done','直接下一階段':'s-skip','不適用':'s-na','逾期':'s-overdue'};
+    '需要修改':'s-fix','已退回':'s-return','已完成':'s-done','直接下一階段':'s-skip','不適用':'s-na','逾期':'s-overdue',
+    '暫停':'s-pause','已取消':'s-cancel','已封存':'s-archive'};
   return `<span class="tag ${map[s]||'s-notstart'}">${s}</span>`;
 }
 
@@ -1066,14 +1069,23 @@ function currentStage(p){
   const s = p.stages.find(x=>!stageDone(x));
   return s ? s.name : '全部完成';
 }
+function isProjectLocked(p){
+  return !!(p && ['暫停','已取消','已封存'].indexOf(p.status)>=0);
+}
 function projStatus(p){
-  if(p.status==='已取消'||p.status==='暫停') return p.status;
+  if(p.status==='已取消'||p.status==='暫停'||p.status==='已封存') return p.status;
   if(p.stages.every(stageDone)) return '已完成';
   if(p.stages.some(s=>s.status==='待確認')) return '待確認';
   if(p.stages.some(s=>s.status==='需要修改')) return '需要修改';
   return '進行中';
 }
 function typeTag(t){ return t==='dev'?'<span class="tag t-dev">開發及生產</span>':'<span class="tag t-rep">補貨</span>'; }
+function projectAssigneeOpts(selectedId){
+  let pool = users.filter(u=>u.active!==false && (u.role==='personal' || u.position==='員工'));
+  if(!pool.length) pool = users.filter(u=>u.active!==false && u.login!=='admin');
+  if(!pool.length) pool = users.filter(u=>u.active!==false);
+  return pool.map(u=>`<option value="${u.id}"${u.id===selectedId?' selected':''}>${escHtml(u.name)}（${escHtml(u.dept||roleLabel(u))}）</option>`).join('');
+}
 function projThumbHtml(p,size){
   size=size||44;
   const fs=size>=60?32:22;
@@ -1083,6 +1095,7 @@ function projThumbHtml(p,size){
   return `<div class="thumb" style="width:${size}px;height:${size}px;font-size:${fs}px">${p&&p.icon?p.icon:'🆕'}</div>`;
 }
 function canOperateStage(p, s){
+  if(isProjectLocked(p)) return false;
   if(isAdmin()) return true;
   if(isManager()) return false;
   return isPersonal() && s.handler===currentUser.id;
@@ -1351,7 +1364,7 @@ function getProjectTodosForUser(user){
   if(!user||user.role!=='personal') return [];
   const out=[];
   projects.forEach(p=>{
-    if(p.status==='已取消') return;
+    if(isProjectLocked(p)) return;
     p.stages.forEach((s,idx)=>{
       if(s.handler!==user.id||stageDone(s)) return;
       if(!['進行中','待處理','需要修改','待確認','未開始'].includes(s.status)) return;
@@ -1394,9 +1407,9 @@ function vList(type){
     <h2>${type==='dev'?'📐 開發及生產項目':'🔄 補貨項目'}（${list.length}）</h2>
     <div class="filters">
       <select onchange="fCat=this.value;render()"><option ${fCat==='全部'?'selected':''}>全部</option>${CATEGORIES.map(c=>`<option ${fCat===c?'selected':''}>${c}</option>`).join('')}</select>
-      <select onchange="fStatus=this.value;render()">${['全部','進行中','待確認','需要修改','已完成'].map(s=>`<option ${fStatus===s?'selected':''}>${s}</option>`).join('')}</select>
+      <select onchange="fStatus=this.value;render()">${['全部','進行中','待確認','需要修改','已完成','暫停','已取消','已封存'].map(s=>`<option ${fStatus===s?'selected':''}>${s}</option>`).join('')}</select>
       <input type="text" placeholder="搜尋編號／名稱／內容" value="${fKw}" onchange="fKw=this.value;render()">
-      ${isAdmin()?`<button class="btn sm" onclick="go('addProject')">＋ 建立新項目</button><button class="btn gray sm" onclick="alert2('匯出功能即將推出。')">匯出資料</button>`:''}
+      ${isAdmin()?`<button class="btn sm" onclick="go('addProject')">＋ 建立新項目</button><button class="btn gray sm" onclick="exportProjectsCsv('${type}')">匯出資料</button>`:''}
     </div>
     ${projTable(list)}
   </div>`;
@@ -1463,42 +1476,202 @@ function vProject(){
 }
 
 function tabOverview(p){
-  return `<div class="table-wrap"><table>
+  const lockedNote = isProjectLocked(p)
+    ? `<div class="info-banner" style="margin-bottom:12px">🔒 項目目前為「${escHtml(p.status)}」${p.statusReason?'：'+escHtml(p.statusReason):''}${p.statusChangedAt?'（'+escHtml(p.statusChangedAt)+'）':''}。階段推進已鎖定。</div>`
+    : '';
+  const hist = Array.isArray(p.revisions) && p.revisions.length
+    ? `<div style="margin-top:12px"><h3>修改紀錄（保留修改前版本）</h3>
+        <div class="table-wrap"><table><tr><th>時間</th><th>人員</th><th>變更摘要</th></tr>
+        ${p.revisions.slice(0,10).map(r=>`<tr><td style="font-size:11px;white-space:nowrap">${escHtml(r.time||'')}</td><td>${escHtml(r.byName||'')}</td><td style="font-size:12px">${escHtml(r.summary||'')}</td></tr>`).join('')}
+        </table></div></div>`
+    : '';
+  return `${lockedNote}<div class="table-wrap"><table>
     <tr><th style="width:130px">項目編號</th><td>${p.id}</td></tr>
     <tr><th>建立工作日期</th><td>${p.created}</td></tr>
     <tr><th>項目類型</th><td>${typeTag(p.type)}</td></tr>
-    <tr><th>產品編號</th><td><b>${p.code}</b></td></tr>
-    <tr><th>項目簡介</th><td>${p.name}</td></tr>
-    <tr><th>產品類別</th><td>${p.cat}</td></tr>
+    <tr><th>產品編號</th><td><b>${escHtml(p.code)}</b></td></tr>
+    <tr><th>項目簡介</th><td>${escHtml(p.name)}</td></tr>
+    <tr><th>產品類別</th><td>${escHtml(p.cat)}</td></tr>
     <tr><th>項目負責人</th><td>${userName(p.owner)}（${userDept(p.owner)}）</td></tr>
     <tr><th>項目建立人</th><td>${userName(p.createdBy)}</td></tr>
-    <tr><th>預計完成日期</th><td>${p.due}</td></tr>
+    <tr><th>預計完成日期</th><td>${escHtml(p.due||'—')}</td></tr>
     <tr><th>目前階段</th><td>${currentStage(p)}</td></tr>
     <tr><th>整體狀態</th><td>${stTag(projStatus(p))}</td></tr>
-    <tr><th>項目詳細</th><td style="white-space:pre-wrap">${p.desc}</td></tr>
+    <tr><th>項目詳細</th><td style="white-space:pre-wrap">${escHtml(p.desc||'')}</td></tr>
   </table></div>
   ${isAdmin()?`<div class="actions-row">
-    <button class="btn warn sm" onclick="alert2('編輯項目資料功能即將推出。')">編輯項目資料</button>
-    <button class="btn red sm" onclick="alert2('暫停／取消項目功能即將推出。')">暫停／取消項目</button>
-  </div>`:''}`;
+    <button class="btn warn sm" onclick="askEditProject('${p.id}')">編輯項目資料</button>
+    <button class="btn red sm" onclick="askProjectLifecycle('${p.id}')">暫停／取消／封存</button>
+    ${p.status==='暫停'?`<button class="btn green sm" onclick="resumeProject('${p.id}')">恢復進行</button>`:''}
+  </div>`:''}
+  ${hist}`;
+}
+
+function askEditProject(pid){
+  if(!isAdmin()){ alert2('只有系統管理員可以編輯項目。'); return; }
+  const p = projects.find(x=>x.id===pid);
+  if(!p) return;
+  showModal(`<h3>編輯項目資料</h3>
+    <label>產品編號</label><input type="text" id="ep-code" value="${escHtml(p.code)}">
+    <label>項目簡介</label><input type="text" id="ep-name" value="${escHtml(p.name)}">
+    <label>產品類別</label><select id="ep-cat">${CATEGORIES.map(c=>`<option${c===p.cat?' selected':''}>${c}</option>`).join('')}</select>
+    <label>項目負責人</label><select id="ep-owner">${projectAssigneeOpts(p.owner)}</select>
+    <label>預計完成日期</label><input type="date" id="ep-due" value="${(p.due&&p.due!=='—')?p.due:''}">
+    <label>項目詳細內容</label><textarea id="ep-desc">${escHtml(p.desc||'')}</textarea>
+    <p style="font-size:12px;color:#888;margin-top:8px">儲存時會保留修改前版本摘要於「修改紀錄」。</p>
+    <div class="actions">
+      <button class="btn sm gray" onclick="closeModal()">取消</button>
+      <button class="btn sm green" onclick="saveProjectEdit('${pid}')">儲存變更</button>
+    </div>`);
+}
+function saveProjectEdit(pid){
+  if(!isAdmin()){ alert2('只有系統管理員可以編輯項目。'); return; }
+  const p = projects.find(x=>x.id===pid);
+  if(!p) return;
+  const code = ((document.getElementById('ep-code')||{}).value||'').trim();
+  const name = ((document.getElementById('ep-name')||{}).value||'').trim();
+  const cat = ((document.getElementById('ep-cat')||{}).value||p.cat);
+  const owner = ((document.getElementById('ep-owner')||{}).value||p.owner);
+  const due = ((document.getElementById('ep-due')||{}).value||'').trim() || '—';
+  const desc = ((document.getElementById('ep-desc')||{}).value||'').trim();
+  if(!code||!name){ alert2('請輸入產品編號及項目簡介。'); return; }
+  const before = { code:p.code, name:p.name, cat:p.cat, owner:p.owner, due:p.due, desc:p.desc||'' };
+  const changes = [];
+  if(before.code!==code) changes.push('編號 '+before.code+' → '+code);
+  if(before.name!==name) changes.push('簡介');
+  if(before.cat!==cat) changes.push('類別 '+before.cat+' → '+cat);
+  if(before.owner!==owner) changes.push('負責人 '+userName(before.owner)+' → '+userName(owner));
+  if(before.due!==due) changes.push('完成日 '+before.due+' → '+due);
+  if(before.desc!==desc) changes.push('詳細內容');
+  if(!changes.length){ closeModal(); alert2('沒有變更。'); return; }
+  if(!Array.isArray(p.revisions)) p.revisions = [];
+  p.revisions.unshift({
+    time: nowStr(),
+    by: currentUser.id,
+    byName: currentUser.name,
+    summary: changes.join('；'),
+    snapshot: before
+  });
+  if(p.revisions.length>30) p.revisions = p.revisions.slice(0,30);
+  p.code = code; p.name = name; p.cat = cat; p.owner = owner; p.due = due; p.desc = desc;
+  addProjLog(p,'編輯項目資料', changes.join('；'));
+  persistProjects();
+  closeModal();
+  render();
+  alert2('已儲存項目資料，並保留修改前版本摘要。');
+}
+function askProjectLifecycle(pid){
+  if(!isAdmin()){ alert2('只有系統管理員可以變更項目狀態。'); return; }
+  const p = projects.find(x=>x.id===pid);
+  if(!p) return;
+  const cur = p.status||'進行中';
+  showModal(`<h3>暫停／取消／封存項目</h3>
+    <p style="font-size:13px;color:#666;margin-bottom:8px">目前狀態：<b>${escHtml(projStatus(p))}</b>。請選擇操作並填寫原因（必填）。</p>
+    <label>操作</label>
+    <select id="pl-act">
+      <option value="暫停"${cur==='暫停'?' selected':''}>暫停（可稍後恢復）</option>
+      <option value="已取消"${cur==='已取消'?' selected':''}>取消項目</option>
+      <option value="已封存"${cur==='已封存'?' selected':''}>封存項目</option>
+    </select>
+    <label>原因（必填）</label>
+    <textarea id="pl-reason" placeholder="例如：物料未到／客戶取消／已完成歸檔">${escHtml(p.statusReason||'')}</textarea>
+    <div class="actions">
+      <button class="btn sm gray" onclick="closeModal()">返回</button>
+      <button class="btn sm red" onclick="applyProjectLifecycle('${pid}')">確認變更</button>
+    </div>`);
+}
+function applyProjectLifecycle(pid){
+  if(!isAdmin()){ alert2('只有系統管理員可以變更項目狀態。'); return; }
+  const p = projects.find(x=>x.id===pid);
+  if(!p) return;
+  const act = ((document.getElementById('pl-act')||{}).value||'').trim();
+  const reason = ((document.getElementById('pl-reason')||{}).value||'').trim();
+  if(['暫停','已取消','已封存'].indexOf(act)<0){ alert2('請選擇有效操作。'); return; }
+  if(!reason){ alert2('請填寫原因。'); return; }
+  const prev = p.status || '進行中';
+  p.status = act;
+  p.statusReason = reason;
+  p.statusChangedAt = nowStr();
+  p.statusChangedBy = currentUser.id;
+  addProjLog(p, act==='暫停'?'暫停項目':(act==='已取消'?'取消項目':'封存項目'), (prev!==act?(prev+' → '+act+'｜'):'')+reason);
+  persistProjects();
+  closeModal();
+  render();
+  alert2('項目已設為「'+act+'」。');
+}
+function resumeProject(pid){
+  if(!isAdmin()){ alert2('只有系統管理員可以恢復項目。'); return; }
+  const p = projects.find(x=>x.id===pid);
+  if(!p) return;
+  if(p.status!=='暫停'){ alert2('只有「暫停」中的項目可以恢復。'); return; }
+  showModal(`<h3>恢復項目進行？</h3>
+    <p style="font-size:14px">「${escHtml(p.code)}｜${escHtml(p.name)}」將由暫停恢復為可推進狀態。</p>
+    <label>備註（選填）</label><textarea id="pl-resume-note" placeholder="可留空"></textarea>
+    <div class="actions">
+      <button class="btn sm gray" onclick="closeModal()">取消</button>
+      <button class="btn sm green" onclick="confirmResumeProject('${pid}')">確認恢復</button>
+    </div>`);
+}
+function confirmResumeProject(pid){
+  const p = projects.find(x=>x.id===pid);
+  if(!p || !isAdmin()) return;
+  const note = ((document.getElementById('pl-resume-note')||{}).value||'').trim();
+  p.status = '進行中';
+  p.statusReason = note || '';
+  p.statusChangedAt = nowStr();
+  p.statusChangedBy = currentUser.id;
+  addProjLog(p,'恢復項目', note || '暫停 → 進行中');
+  persistProjects();
+  closeModal();
+  render();
+}
+function exportProjectsCsv(type){
+  const list = projects.filter(p=>p.type===type);
+  const header = ['建立日期','產品編號','項目簡介','類別','類型','目前階段','狀態','完成進度%','負責人','預計完成','項目詳細'];
+  const rows = list.map(p=>[
+    p.created||'', p.code||'', p.name||'', p.cat||'',
+    p.type==='dev'?'開發及生產':'補貨',
+    currentStage(p), projStatus(p), String(projProgress(p)),
+    userName(p.owner), p.due||'', (p.desc||'').replace(/\r?\n/g,' ')
+  ]);
+  const esc = v=>{
+    const s = String(v==null?'':v);
+    if(/[",\n\r]/.test(s)) return '"'+s.replace(/"/g,'""')+'"';
+    return s;
+  };
+  const csv = '\uFEFF'+[header].concat(rows).map(r=>r.map(esc).join(',')).join('\r\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  const stamp = dailyTodayStr ? dailyTodayStr() : new Date().toISOString().slice(0,10);
+  a.href = URL.createObjectURL(blob);
+  a.download = (type==='dev'?'開發及生產':'補貨')+'_項目_'+stamp+'.csv';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  addModuleLog(type==='rep'?'replenishment':'production','匯出資料','CSV｜'+list.length+' 筆');
 }
 
 /* ── 工作流程分頁 ── */
 function tabFlow(p){
   const curName = currentStage(p);
-  return p.stages.map((s,i)=>{
+  const lockedBanner = isProjectLocked(p)
+    ? `<div class="info-banner" style="margin-bottom:12px">🔒 項目「${escHtml(p.status)}」中，無法推進階段。${p.status==='暫停'&&isAdmin()?' 可於概覽按「恢復進行」。':''}</div>`
+    : '';
+  return lockedBanner + p.stages.map((s,i)=>{
     const done = stageDone(s);
     const isCur = s.name===curName && !done;
     const mine = canOperateStage(p,s);
     let numCls = done?'done':isCur?'current':'';
     let actions = '';
-    if(!isAdmin() && s.handler===currentUser.id){
+    if(isProjectLocked(p)){
+      // 鎖定時不顯示推進按鈕
+    } else if(!isAdmin() && s.handler===currentUser.id){
       if(['未開始','待處理'].includes(s.status)) actions += `<button class="btn sm" onclick="stageAction('${p.id}',${i},'start')">開始處理</button>`;
       if(['進行中','需要修改'].includes(s.status)) actions += `<button class="btn green sm" onclick="stageAction('${p.id}',${i},'submit')">提交確認</button>`;
       if(!done) actions += `<button class="btn purple sm" onclick="askUpload('${p.id}',${i})">上載文件／圖片</button>
         <button class="btn gray sm" onclick="askContent('${p.id}',${i})">填寫工作內容</button>`;
     }
-    if(isAdmin()){
+    else if(isAdmin()){
       if(s.status==='待確認') actions += `<button class="btn green sm" onclick="stageAction('${p.id}',${i},'confirm')">✓ 確認完成</button>
         <button class="btn red sm" onclick="askReturn('${p.id}',${i})">退回修改</button>`;
       if(!done && s.status!=='待確認') actions += `<button class="btn purple sm" onclick="askSkip('${p.id}',${i})">跳過（直接下一階段）</button>`;
@@ -1530,6 +1703,7 @@ function stageAction(pid, idx, act){
   if(isManager()){ alert2('一般管理層只可監督查看，不可推進階段。'); return; }
   if(['confirm','reopen'].includes(act) && !isAdmin()){ alert2('只有系統管理員可以確認或重開。'); return; }
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法推進階段。'); return; }
   if(act==='start'){ s.status='進行中'; addProjLog(p,'開始處理', s.name+' → 進行中'); }
   if(act==='submit'){ s.status='待確認'; s.returnReason=''; addProjLog(p,'提交確認', s.name+' → 待確認'); }
   if(act==='confirm'){ s.status='已完成'; s.completedAt=todayStr(); addProjLog(p,'確認完成', s.name+'｜經手人：'+userName(s.handler)); }
@@ -1538,6 +1712,8 @@ function stageAction(pid, idx, act){
 }
 function askReturn(pid, idx){
   if(!isAdmin()){ alert2('只有系統管理員可以退回修改。'); return; }
+  const p0 = projects.find(x=>x.id===pid);
+  if(isProjectLocked(p0)){ alert2('項目已「'+p0.status+'」，無法退回。'); return; }
   showModal(`<h3>退回修改</h3><label>退回原因（必填）</label><input type="text" id="m-reason" placeholder="請輸入退回原因">
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
     <button class="btn red sm" onclick="doReturn('${pid}',${idx})">確認退回</button></div>`);
@@ -1546,12 +1722,15 @@ function doReturn(pid, idx){
   const r = document.getElementById('m-reason').value.trim();
   if(!r){ alert2('請填寫退回原因。'); return; }
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法退回。'); return; }
   s.status='需要修改'; s.returnReason=r;
   addProjLog(p,'退回修改', s.name+'｜原因：'+r);
   closeModal(); render();
 }
 function askSkip(pid, idx){
   if(!isAdmin()){ alert2('只有系統管理員可以跳過階段。'); return; }
+  const p0 = projects.find(x=>x.id===pid);
+  if(isProjectLocked(p0)){ alert2('項目已「'+p0.status+'」，無法跳過。'); return; }
   showModal(`<h3>跳過此階段（直接下一階段）</h3>
     <p style="font-size:13px;color:#888">例如：沿用上一批最終確認樣板，產品規格沒有修改。</p>
     <label>跳過原因（必填）</label><input type="text" id="m-reason" placeholder="請輸入原因">
@@ -1562,6 +1741,7 @@ function doSkip(pid, idx){
   const r = document.getElementById('m-reason').value.trim();
   if(!r){ alert2('請填寫跳過原因。'); return; }
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法跳過。'); return; }
   s.status='直接下一階段'; s.skipReason=r; s.completedAt=todayStr();
   addProjLog(p,'跳過階段', s.name+'｜原因：'+r);
   closeModal(); render();
@@ -1569,9 +1749,10 @@ function doSkip(pid, idx){
 function askReassign(pid, idx){
   if(!isAdmin()){ alert2('只有系統管理員可以重新分配經手人。'); return; }
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法重新分配。'); return; }
   showModal(`<h3>重新分配經手人</h3>
     <p style="font-size:13px">階段：<b>${s.name}</b>｜現時經手人：<b>${userName(s.handler)}</b></p>
-    <label>新經手人</label><select id="m-handler">${users.filter(u=>u.role==='personal').map(u=>`<option value="${u.id}" ${u.id===s.handler?'selected':''}>${u.name}（${u.dept}）</option>`).join('')}</select>
+    <label>新經手人</label><select id="m-handler">${projectAssigneeOpts(s.handler)}</select>
     <label>更改原因（必填）</label><input type="text" id="m-reason" placeholder="請輸入原因">
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
     <button class="btn sm" onclick="doReassign('${pid}',${idx})">確認更改</button></div>`);
@@ -1581,25 +1762,29 @@ function doReassign(pid, idx){
   const nh = document.getElementById('m-handler').value;
   if(!r){ alert2('請填寫更改原因。'); return; }
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法重新分配。'); return; }
   addProjLog(p,'更改經手人', s.name+'：'+userName(s.handler)+' → '+userName(nh)+'｜原因：'+r+'（系統已通知原有及新經手人）');
   s.handler = nh;
   closeModal(); render();
 }
 function askContent(pid, idx){
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法更新工作內容。'); return; }
   showModal(`<h3>填寫工作內容</h3><p style="font-size:13px">階段：<b>${s.name}</b></p>
-    <label>工作內容</label><textarea id="m-content">${s.content||''}</textarea>
+    <label>工作內容</label><textarea id="m-content">${escHtml(s.content||'')}</textarea>
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
     <button class="btn sm" onclick="doContent('${pid}',${idx})">儲存</button></div>`);
 }
 function doContent(pid, idx){
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法更新工作內容。'); return; }
   s.content = document.getElementById('m-content').value.trim();
   addProjLog(p,'更新工作內容', s.name);
   closeModal(); render();
 }
 function askUpload(pid, idx){
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法上載文件。'); return; }
   showModal(`<h3>上載文件／圖片</h3><p style="font-size:13px">階段：<b>${s.name}</b>｜支援 JPG、PNG、PDF、Word、Excel、ZIP 等</p>
     <label>選擇檔案</label><input type="file" id="m-file">
     <label>或只輸入檔案名稱</label><input type="text" id="m-fname" placeholder="例如：技術規格單V3.xlsx">
@@ -1608,6 +1793,7 @@ function askUpload(pid, idx){
 }
 async function doUpload(pid, idx){
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法上載文件。'); return; }
   const fi = document.getElementById('m-file');
   const picked = fi.files && fi.files[0] ? fi.files[0] : null;
   let name = picked ? picked.name : document.getElementById('m-fname').value.trim();
