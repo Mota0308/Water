@@ -483,6 +483,31 @@ async function persistProjectsNow(){
     body: JSON.stringify(slimProjectsPayload())
   });
 }
+/** 以雲端 users 為主，並併入本機有、雲端沒有的賬號（避免離線建立後遺失） */
+function applyUsersFromCloud(cloudUsers){
+  const localCopy = (users||[]).map(normalizeUser).filter(Boolean);
+  let needUpload = false;
+  if(Array.isArray(cloudUsers) && cloudUsers.length){
+    users = cloudUsers.map(normalizeUser).filter(Boolean);
+    ensureAdminUser();
+    const have = {};
+    users.forEach(function(u){ have[String(u.login||'').toLowerCase()] = true; });
+    localCopy.forEach(function(u){
+      const key = String(u.login||'').toLowerCase();
+      if(!key || key==='admin' || have[key]) return;
+      users.push(u);
+      have[key] = true;
+      needUpload = true;
+    });
+  } else {
+    users = localCopy.length ? localCopy : users;
+    ensureAdminUser();
+    needUpload = true;
+  }
+  if(ensureAdminUser()) needUpload = true;
+  saveUsersLocal();
+  return needUpload;
+}
 function scheduleDailyCloudSave(){
   if(!apiEnabled || !dailyStateCache) return;
   clearTimeout(dailySaveTimer);
@@ -547,29 +572,15 @@ async function initCloud(){
 
     const ps = await apiFetch('/api/projects');
     let projectsDirty = false;
-    if(Array.isArray(ps.projects) && ps.projects.length){
-      projects = ps.projects;
-      if(typeof ps.projSeq === 'number') projSeq = ps.projSeq;
-      if(ps.moduleLogs && typeof ps.moduleLogs === 'object') moduleLogs = ps.moduleLogs;
-      if(purgeSampleProjects()) projectsDirty = true;
-      if(purgeSampleModuleLogs()) projectsDirty = true;
-      if(Array.isArray(ps.users) && ps.users.length){
-        users = ps.users;
-        if(ensureAdminUser()){
-          saveUsersLocal();
-          projectsDirty = true;
-        }
-      } else {
-        loadUsersLocal();
-        ensureAdminUser();
-        projectsDirty = true;
-      }
-    } else {
-      projects = [];
-      projSeq = 1;
-      ensureAdminUser();
-      projectsDirty = true;
-    }
+    // 項目可為空陣列；users 仍必須從同一份雲端文件讀取（先前空項目會漏讀 users）
+    if(Array.isArray(ps.projects)) projects = ps.projects;
+    else projects = [];
+    if(typeof ps.projSeq === 'number') projSeq = ps.projSeq;
+    else if(!projects.length) projSeq = 1;
+    if(ps.moduleLogs && typeof ps.moduleLogs === 'object') moduleLogs = ps.moduleLogs;
+    if(applyUsersFromCloud(ps.users)) projectsDirty = true;
+    if(purgeSampleProjects()) projectsDirty = true;
+    if(purgeSampleModuleLogs()) projectsDirty = true;
     if(projectsDirty) await persistProjectsNow();
     await loadNotifications();
   }catch(e){
@@ -988,7 +999,7 @@ function selectedStaffRegions(){
   return Array.from(document.querySelectorAll('.staff-region:checked')).map(function(cb){ return cb.value; })
     .filter(function(x,i,a){ return STAFF_REGIONS.indexOf(x)>=0 && a.indexOf(x)===i; });
 }
-function submitCreateStaff(){
+async function submitCreateStaff(){
   if(!canCreateEmployee()){ alert2('沒有權限創建員工。'); return; }
   const login = ((document.getElementById('staff-login')||{}).value||'').trim();
   let name = ((document.getElementById('staff-name')||{}).value||'').trim();
@@ -1022,7 +1033,17 @@ function submitCreateStaff(){
   });
   users.push(nu);
   saveUsersLocal();
-  persistProjects();
+  let syncNote = '';
+  if(apiEnabled){
+    try{
+      await persistProjectsNow();
+      syncNote = '<br><span style="color:#2e7d32">已同步到 MongoDB，其他裝置可用此賬號登入。</span>';
+    }catch(e){
+      syncNote = '<br><span style="color:#c62828">雲端同步失敗：'+escHtml(e.message||e)+'。目前只存在本機瀏覽器。</span>';
+    }
+  } else {
+    syncNote = '<br><span style="color:#ef6c00">目前為本機模式（未連 MongoDB），其他裝置無法登入此賬號。請確認 Railway 已設定 MONGODB_URI。</span>';
+  }
   addModuleLog('push','創建員工', position+'｜'+login+'｜'+(regions.length?regions.join('、'):'無地區'));
   const copyText = '賬號：'+login+'\n密碼：'+pw+'\n職位：'+position+'\n地區：'+(regions.length?regions.join('、'):'—');
   showModal(`<h3>✅ 已建立員工</h3>
@@ -1031,6 +1052,7 @@ function submitCreateStaff(){
       初始密碼：<b>${escHtml(pw)}</b><br>
       職位：<b>${escHtml(position)}</b><br>
       地區：<b>${escHtml(regions.length?regions.join('、'):'—')}</b>
+      ${syncNote}
     </p>
     <div class="actions">
       <button class="btn sm gray" onclick="closeModal()">關閉</button>
