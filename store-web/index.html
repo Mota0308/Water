@@ -1057,7 +1057,6 @@ var STORE_UNITS=['觀塘','荔枝角','灣仔','屯門','國內倉'];
 var PRIORITIES=['高','中','低'];
 var dailyUnitFilter='全部';
 var dailyProgressUnit=null;
-var dailyRecordsFilter='全部';
 var dailyStateCache=null;
 
 function dailyTodayStr(){
@@ -1770,30 +1769,18 @@ function vDailyRecurring(user){
 function vDailyRecords(user){
   ensureDailySeed();
   var s=loadDailyState();
-  var list=s.works.filter(function(w){ return w.status==='done'; });
-  if(dailyCanManage(user)){
-    if(dailyRecordsFilter!=='全部'&&dailyRecordsFilter!=='mine'){
-      list=list.filter(function(w){ return w.unit===dailyRecordsFilter; });
-    }
-  }else{
-    list=list.filter(function(w){ return w.completedBy===dailyUserId(user); });
-  }
-  list=list.sort(function(a,b){ return String(b.completedAt||'').localeCompare(String(a.completedAt||'')); });
-  var filter='';
-  if(dailyCanManage(user)){
-    filter='<select onchange="dailyRecordsFilter=this.value;render()">'+
-      ['全部'].concat(STORE_UNITS).map(function(u){
-        return '<option value="'+u+'"'+(dailyRecordsFilter===u?' selected':'')+'>'+u+'</option>';
-      }).join('')+'</select>';
-  }
-  var rows=!list.length?'<p style="color:#888">暫無完成記錄。</p>':
-    '<div class="table-wrap"><table><thead><tr><th>工作</th><th>單位</th><th>類型</th><th>完成人</th><th>完成時間</th></tr></thead><tbody>'+
+  var uid=dailyUserId(user);
+  var list=s.works.filter(function(w){
+    return w.status==='done' && w.completedBy===uid;
+  }).sort(function(a,b){ return String(b.completedAt||'').localeCompare(String(a.completedAt||'')); });
+  var rows=!list.length?'<p style="color:#888">暫無你的完成記錄。</p>':
+    '<div class="table-wrap"><table><thead><tr><th>工作</th><th>單位</th><th>類型</th><th>完成時間</th></tr></thead><tbody>'+
     list.map(function(w){
       return '<tr><td><b>'+dailyEsc(w.title)+'</b></td><td>'+dailyEsc(w.unit)+'</td><td>'+dailyKindTag(w)+'</td>'+
-        '<td>'+dailyEsc(w.completedByName||'—')+'</td><td style="font-size:12px">'+dailyEsc(w.completedAt||'—')+'</td></tr>';
+        '<td style="font-size:12px">'+dailyEsc(w.completedAt||'—')+'</td></tr>';
     }).join('')+'</tbody></table></div>';
-  return '<div class="card"><h2>📋 '+(dailyCanManage(user)?'完成記錄':'我的完成記錄')+'</h2>'+
-    (filter?'<div class="filters">'+filter+'</div>':'')+rows+'</div>';
+  return '<div class="card"><h2>📋 我的完成記錄</h2>'+
+    '<p style="color:#666;font-size:13px;margin-bottom:10px">只顯示你本人剔選完成的工作。</p>'+rows+'</div>';
 }
 function vDailyOpLogs(user){
   if(!dailyCanManage(user)){
