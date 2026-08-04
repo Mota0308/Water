@@ -1,8 +1,12 @@
-# 店鋪員工系統（靜態示範）
+# 店鋪員工系統（靜態前端）
 
-正式產品入口：在瀏覽器開啟 [`index.html`](./index.html)。
+正式產品入口：[`index.html`](./index.html)。
 
-舊 Next.js／Mongo 應用已移至 [`../archive/store-app`](../archive/store-app) 作唯讀參考。
+本機可直接開檔，或由上層 `server/`（Express）一併提供前端與 Google Drive API。
+
+部署到 Railway + Drive 請看：[../DEPLOY-RAILWAY-DRIVE.md](../DEPLOY-RAILWAY-DRIVE.md)
+
+舊 Next.js／Mongo 應用在 [`../archive/store-app`](../archive/store-app)。
 
 ## 示範賬號
 
@@ -17,6 +21,5 @@
 | 經手人 郭sir | kwok | 1234 |
 | 國內倉個人 | wh.staff | Staff123! |
 
-每日工作資料存在瀏覽器 `localStorage`（鍵：`store-web-daily-v2`；會清除舊 v1）。生產／補貨示範為記憶體種子，重整會重置。
-
-每日模組已對齊計劃書 Part 1 主路徑：剔選完成、逾期、跨單位唯讀明細、突發／恆常編輯停用取消、門市結算（國內倉無結算）、我的記錄。
+有設定 Drive 時：每日／項目資料寫入 Drive 的 `daily.json`／`projects.json`，附件上傳為 Drive 檔案。  
+未設定時：退回瀏覽器 `localStorage`＋記憶體種子（示範模式）。

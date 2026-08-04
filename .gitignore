@@ -5,10 +5,12 @@
 **/coverage/
 **/*.tsbuildinfo
 
-# env
+# env / secrets
 **/.env
 **/.env.local
 **/.env.*.local
+**/service-account*.json
+**/*credentials*.json
 
 # local extract / binaries
 _docx_extract/

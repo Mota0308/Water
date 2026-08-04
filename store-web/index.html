@@ -299,6 +299,135 @@ let moduleLogs = { daily: [], production: [], replenishment: [] };
 let currentUser = null, currentModule = 'production', currentView = 'home', currentProject = null, currentTab = 'overview', commentFilter = '全部';
 let listType = 'dev', fCat='全部', fStatus='全部', fKw='';
 
+/* ═══════════ Cloud API（Google Drive via Node） ═══════════ */
+let apiEnabled = false;
+let apiReady = false;
+let apiBase = (typeof window !== 'undefined' && window.STORE_API_BASE) ? String(window.STORE_API_BASE).replace(/\/$/, '') : '';
+let projectsSaveTimer = null;
+let dailySaveTimer = null;
+function apiUrl(path){ return apiBase + path; }
+async function apiFetch(path, opts){
+  const r = await fetch(apiUrl(path), opts);
+  if(!r.ok){
+    let msg = r.statusText;
+    try{ const j = await r.json(); msg = j.error || msg; }catch(_){ try{ msg = await r.text(); }catch(__){} }
+    throw new Error(msg || ('HTTP '+r.status));
+  }
+  const ct = r.headers.get('content-type')||'';
+  if(ct.includes('application/json')) return r.json();
+  return r;
+}
+function slimFileRef(f){
+  if(!f || typeof f !== 'object') return f;
+  if(f.driveFileId){
+    return { name:f.name, by:f.by, time:f.time, ver:f.ver, latest:f.latest, driveFileId:f.driveFileId, mimeType:f.mimeType };
+  }
+  if(f.dataUrl && String(f.dataUrl).length > 250000){
+    return { name:f.name, by:f.by, time:f.time, ver:f.ver, latest:f.latest, omitted:true };
+  }
+  return f;
+}
+function slimProjectsPayload(){
+  const cloned = JSON.parse(JSON.stringify({ projects, projSeq, moduleLogs, users }));
+  (cloned.projects||[]).forEach(p=>{
+    if(p.coverFileId && p.coverUrl && String(p.coverUrl).startsWith('data:')) p.coverUrl = apiUrl('/api/files/'+p.coverFileId);
+    (p.files||[]).forEach((f,i)=>{ p.files[i] = slimFileRef(f); });
+    (p.stages||[]).forEach(s=>{
+      if(Array.isArray(s.files)) s.files = s.files.map(slimFileRef);
+    });
+    (p.comments||[]).forEach(c=>{
+      if(c.file && typeof c.file === 'object') c.file = slimFileRef(c.file);
+    });
+  });
+  return cloned;
+}
+function slimDailyPayload(state){
+  const cloned = JSON.parse(JSON.stringify(state));
+  (cloned.works||[]).forEach(w=>{
+    if(Array.isArray(w.attachments)) w.attachments = w.attachments.map(slimFileRef);
+  });
+  return cloned;
+}
+function persistProjects(){
+  if(!apiEnabled) return;
+  clearTimeout(projectsSaveTimer);
+  projectsSaveTimer = setTimeout(function(){ persistProjectsNow().catch(function(e){ console.warn('persist projects', e); }); }, 700);
+}
+async function persistProjectsNow(){
+  if(!apiEnabled) return;
+  await apiFetch('/api/projects', {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(slimProjectsPayload())
+  });
+}
+function scheduleDailyCloudSave(){
+  if(!apiEnabled || !dailyStateCache) return;
+  clearTimeout(dailySaveTimer);
+  dailySaveTimer = setTimeout(function(){
+    apiFetch('/api/daily', {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(slimDailyPayload(dailyStateCache))
+    }).catch(function(e){ console.warn('persist daily', e); });
+  }, 700);
+}
+async function cloudUploadFile(file){
+  if(!apiEnabled){
+    return { name:file.name, dataUrl: await readFileAsDataUrl(file) };
+  }
+  const fd = new FormData();
+  fd.append('file', file);
+  const j = await apiFetch('/api/files', { method:'POST', body: fd });
+  return {
+    name: j.name || file.name,
+    driveFileId: j.id,
+    mimeType: j.mimeType,
+    dataUrl: apiUrl('/api/files/'+j.id)
+  };
+}
+async function cloudUploadDataUrl(name, dataUrl){
+  if(!apiEnabled) return { name:name, dataUrl:dataUrl };
+  const blob = await (await fetch(dataUrl)).blob();
+  const file = new File([blob], name || 'file.bin', { type: blob.type || 'application/octet-stream' });
+  return cloudUploadFile(file);
+}
+function fileHref(f){
+  if(!f) return '#';
+  if(typeof f === 'string') return demoFileDataUrl(f);
+  if(f.driveFileId) return apiUrl('/api/files/'+f.driveFileId);
+  return f.dataUrl || demoFileDataUrl(f.name || 'file.txt');
+}
+async function initCloud(){
+  apiReady = false;
+  try{
+    const health = await apiFetch('/api/health');
+    apiEnabled = !!health.driveConfigured;
+    if(!apiEnabled){
+      console.warn('API up but Drive not configured; using local/demo data.');
+      apiReady = true;
+      return;
+    }
+    const daily = await apiFetch('/api/daily');
+    dailyStateCache = dailyNormalizeState(daily);
+    try{ localStorage.setItem(DAILY_KEY, JSON.stringify(dailyStateCache)); }catch(e){}
+
+    const ps = await apiFetch('/api/projects');
+    if(Array.isArray(ps.projects) && ps.projects.length){
+      projects = ps.projects;
+      if(typeof ps.projSeq === 'number') projSeq = ps.projSeq;
+      if(ps.moduleLogs && typeof ps.moduleLogs === 'object') moduleLogs = ps.moduleLogs;
+      if(Array.isArray(ps.users) && ps.users.length) users = ps.users;
+    } else {
+      await persistProjectsNow();
+    }
+  }catch(e){
+    console.warn('Cloud init failed, fallback to local demo:', e);
+    apiEnabled = false;
+  }
+  apiReady = true;
+}
+
 /* ═══════════ 工具 ═══════════ */
 function nowStr(){ const d=new Date(); return d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日 '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
 function todayStr(){ const d=new Date(); return d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日'; }
@@ -311,6 +440,7 @@ function addModuleLog(mod, action, detail){
     action,
     detail: detail || ''
   });
+  persistProjects();
 }
 /** @deprecated use addModuleLog — kept for call sites; scopes to currentModule */
 function addSysLog(action, detail){ addModuleLog(currentModule || 'daily', action, detail); }
@@ -360,13 +490,17 @@ function demoFileDataUrl(name){
 function ensureFilePayload(f){
   if(!f) return f;
   if(typeof f==='string') return {name:f, dataUrl:demoFileDataUrl(f)};
+  if(f.driveFileId){
+    f.dataUrl = apiUrl('/api/files/'+f.driveFileId);
+    return f;
+  }
   if(!f.dataUrl) f.dataUrl = demoFileDataUrl(f.name||'file.txt');
   return f;
 }
 function fileLinkHtml(fileOrName, label){
   const f = ensureFilePayload(typeof fileOrName==='string'?{name:fileOrName}:fileOrName);
   const name = f.name||'附件';
-  const href = f.dataUrl||demoFileDataUrl(name);
+  const href = fileHref(f);
   return `<a class="file-link" href="${href}" download="${name.replace(/"/g,'')}" target="_blank" rel="noopener">${label||('📎 '+name)}</a>`;
 }
 function mentionCandidates(q){
@@ -449,8 +583,9 @@ function doLogin(){
   const p = document.getElementById('login-pw').value;
   const user = users.find(x=>x.login===u && x.pw===p);
   const err = document.getElementById('login-err');
-  if(!user){ err.textContent='登入名稱或密碼錯誤，請重試或聯絡管理層。'; err.style.display='block'; return; }
-  err.style.display='none'; currentUser = user;
+  if(!apiReady){ err.style.color='#c62828'; err.textContent='資料儲存仍在初始化，請稍候再登入。'; err.style.display='block'; return; }
+  if(!user){ err.style.color='#c62828'; err.textContent='登入名稱或密碼錯誤，請重試或聯絡管理層。'; err.style.display='block'; return; }
+  err.style.display='none'; err.style.color=''; currentUser = user;
   document.getElementById('page-login').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
   document.getElementById('top-user').textContent = user.role==='system_admin' ? '👑 '+user.name+'（系統管理員）' : (user.role==='manager' ? '🧭 '+user.name+'（一般管理層）' : '👤 '+user.name+'｜'+roleLabel(user));
@@ -510,6 +645,7 @@ function render(){
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
   afterProjectChatRender();
+  persistProjects();
 }
 function go(v){
   currentView=v; currentProject=null;
@@ -845,15 +981,15 @@ async function doUpload(pid, idx){
   const picked = fi.files && fi.files[0] ? fi.files[0] : null;
   let name = picked ? picked.name : document.getElementById('m-fname').value.trim();
   if(!name){ alert2('請選擇檔案或輸入檔案名稱。'); return; }
-  let dataUrl = demoFileDataUrl(name);
-  if(picked){
-    try { dataUrl = await readFileAsDataUrl(picked); }
-    catch(e){ alert2('讀取檔案失敗，請重試。'); return; }
-  }
+  let uploaded;
+  try{
+    if(picked) uploaded = await cloudUploadFile(picked);
+    else uploaded = { name, dataUrl: demoFileDataUrl(name) };
+  }catch(e){ alert2('上載失敗：'+(e.message||e)); return; }
   s.files.forEach(f=>f.latest=false);
   const ver = 'V'+(s.files.length+1);
-  s.files.push({name, by:currentUser.id, time:nowStr(), ver, latest:true, dataUrl});
-  addProjLog(p,'上載文件', s.name+'｜'+name+'（'+ver+'）');
+  s.files.push({name:uploaded.name||name, by:currentUser.id, time:nowStr(), ver, latest:true, dataUrl:uploaded.dataUrl, driveFileId:uploaded.driveFileId, mimeType:uploaded.mimeType});
+  addProjLog(p,'上載文件', s.name+'｜'+(uploaded.name||name)+'（'+ver+'）');
   closeModal(); render();
 }
 
@@ -868,7 +1004,7 @@ function tabFiles(p){
       <span class="tag s-pending">${f.stage}</span><span class="tag dept">${f.ver||''}</span>
       ${f.latest?'<span class="latest-badge">最新版本</span>':''}
       <span class="fmeta">上載人：${userName(f.by)}｜${f.time}</span>
-      <a class="btn gray sm" style="display:inline-block;text-decoration:none;color:#fff" href="${f.dataUrl}" download="${(f.name||'file').replace(/"/g,'')}" target="_blank" rel="noopener">下載</a>
+      <a class="btn gray sm" style="display:inline-block;text-decoration:none;color:#fff" href="${fileHref(f)}" download="${(f.name||'file').replace(/"/g,'')}" target="_blank" rel="noopener">下載</a>
     </div>`).join('') : '<p style="color:#888">此項目暫無文件。</p>'}`;
 }
 
@@ -932,8 +1068,9 @@ async function postComment(pid){
   if(fi.files && fi.files[0]){
     const picked = fi.files[0];
     try {
-      file = {name:picked.name, dataUrl: await readFileAsDataUrl(picked)};
-    } catch(e){ alert2('讀取附件失敗，請重試。'); return; }
+      const up = await cloudUploadFile(picked);
+      file = {name:up.name||picked.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType};
+    } catch(e){ alert2('讀取／上載附件失敗：'+(e.message||e)); return; }
   }
   p.comments.unshift({by:currentUser.id, time:nowStr(), stage, text, file, removed:false, removedBy:null, replies:[]});
   addProjLog(p,'發表留言', stage+'｜'+text.slice(0,30)+(text.length>30?'…':''));
@@ -1119,13 +1256,25 @@ async function createProject(){
   const due = document.getElementById('np-due').value || '—';
   const stages = (type==='dev'?DEV_STAGES:REP_STAGES);
   const handlers = [...document.querySelectorAll('.np-handler')].map(s=>s.value);
-  const files = npDraftFiles.map((f,i)=>({
-    name:f.name, dataUrl:f.dataUrl, by:currentUser.id, time:nowStr(),
-    ver:'V'+(i+1), latest:i===npDraftFiles.length-1
-  }));
+  let coverUrl = null, coverFileId = null;
+  let files = [];
+  try{
+    if(npCoverDraft){
+      const up = await cloudUploadDataUrl(npCoverDraft.name, npCoverDraft.dataUrl);
+      coverUrl = up.dataUrl; coverFileId = up.driveFileId || null;
+    }
+    for(let i=0;i<npDraftFiles.length;i++){
+      const f = npDraftFiles[i];
+      const up = await cloudUploadDataUrl(f.name, f.dataUrl);
+      files.push({
+        name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType,
+        by:currentUser.id, time:nowStr(), ver:'V'+(i+1), latest:i===npDraftFiles.length-1
+      });
+    }
+  }catch(e){ alert2('上傳封面／附件失敗：'+(e.message||e)); return; }
   const p = {
     id:'P'+String(projSeq++).padStart(3,'0'), type, code, name, cat, icon:type==='dev'?'🆕':'🔄',
-    coverUrl: npCoverDraft ? npCoverDraft.dataUrl : null,
+    coverUrl, coverFileId,
     owner, createdBy:currentUser.id, created:todayStr(), due, desc, status:'進行中',
     files: files,
     stages: stages.map((s,i)=>mkStage(s, handlers[i], i===0?'待處理':'未開始')),
@@ -1136,6 +1285,7 @@ async function createProject(){
   addProjLog(p,'分配經手人','全部階段已分配（相關經手人將收到系統通知）');
   if(files.length) addProjLog(p,'上載文件','建立項目｜'+files.map(f=>f.name).join('、'));
   npDraftFiles=[]; npCoverDraft=null;
+  persistProjects();
   showModal(`<h3>✅ 已建立項目</h3><p>「${code}｜${name}」已建立，共 ${stages.length} 個階段${files.length?'，附件 '+files.length+' 個':''}。</p>
     <div class="actions"><button class="btn sm" onclick="closeModal();openProject('${p.id}','files')">查看文件及圖片</button>
     <button class="btn gray sm" onclick="closeModal();openProject('${p.id}','flow')">查看工作流程</button></div>`);
@@ -1218,6 +1368,7 @@ function addDailyOpLog(action, detail){
 function saveDailyState(next){
   dailyStateCache=dailyNormalizeState(next||dailyStateCache||dailyBaseState());
   try{ localStorage.setItem(DAILY_KEY,JSON.stringify(dailyStateCache)); }catch(e){}
+  scheduleDailyCloudSave();
   return dailyStateCache;
 }
 function loadDailyState(){
@@ -1579,9 +1730,10 @@ async function dailySubmitCompleteWithFiles(id){
   try{
     for(var i=0;i<input.files.length;i++){
       var f=input.files[i];
-      files.push({name:f.name, dataUrl:await readFileAsDataUrl(f), by:dailyUserId(currentUser), time:dailyNowStr()});
+      var up=await cloudUploadFile(f);
+      files.push({name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType, by:dailyUserId(currentUser), time:dailyNowStr()});
     }
-  }catch(e){ return alert2('讀取檔案失敗，請重試。'); }
+  }catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
   var ok=completeDailyWork(id,currentUser,true,{attachments:files});
   closeModal();
   if(!ok){ alert2('無法完成此工作。'); return; }
@@ -1605,9 +1757,10 @@ async function dailySubmitAddFiles(id){
   try{
     for(var i=0;i<input.files.length;i++){
       var f=input.files[i];
-      files.push({name:f.name, dataUrl:await readFileAsDataUrl(f), by:dailyUserId(currentUser), time:dailyNowStr()});
+      var up=await cloudUploadFile(f);
+      files.push({name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType, by:dailyUserId(currentUser), time:dailyNowStr()});
     }
-  }catch(e){ return alert2('讀取檔案失敗，請重試。'); }
+  }catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
   var ok=addAttachmentsToWork(id,files,currentUser);
   closeModal();
   if(!ok){ alert2('無法補傳附件。'); return; }
@@ -1744,7 +1897,7 @@ function dailyDownloadAttach(workId,idx){
   if(!w||!Array.isArray(w.attachments)||!w.attachments[idx]) return;
   var f=w.attachments[idx];
   var a=document.createElement('a');
-  a.href=f.dataUrl; a.download=f.name||('file-'+idx); a.target='_blank'; a.rel='noopener';
+  a.href=fileHref(f); a.download=f.name||('file-'+idx); a.target='_blank'; a.rel='noopener';
   document.body.appendChild(a); a.click(); a.remove();
 }
 function dailyAttachHtml(w,user,readonly){
@@ -1876,13 +2029,13 @@ async function dailySubmitProject(pid,idx){
   try{
     for(var i=0;i<input.files.length;i++){
       var f=input.files[i];
-      var dataUrl=await readFileAsDataUrl(f);
+      var up=await cloudUploadFile(f);
       s.files.forEach(function(x){ x.latest=false; });
       var ver='V'+(s.files.length+1);
-      s.files.push({name:f.name, by:currentUser.id, time:nowStr(), ver:ver, latest:true, dataUrl:dataUrl});
-      addProjLog(p,'上載文件', s.name+'｜'+f.name+'（'+ver+'）');
+      s.files.push({name:up.name||f.name, by:currentUser.id, time:nowStr(), ver:ver, latest:true, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType});
+      addProjLog(p,'上載文件', s.name+'｜'+(up.name||f.name)+'（'+ver+'）');
     }
-  }catch(e){ return alert2('讀取檔案失敗，請重試。'); }
+  }catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
   if(['未開始','待處理'].includes(s.status)){
     s.status='進行中';
     addProjLog(p,'開始處理', s.name+' → 進行中');
@@ -2037,6 +2190,26 @@ document.getElementById('login-pw').addEventListener('keydown', e=>{ if(e.key===
 // 建立項目頁初始化階段列表
 const _go = go;
 go = function(v){ _go(v); if(v==='addProject') setTimeout(renderNpStages, 0); };
+
+(async function bootCloud(){
+  const err = document.getElementById('login-err');
+  if(err){
+    err.style.display = 'block';
+    err.textContent = '正在連接資料儲存（Google Drive）…';
+  }
+  await initCloud();
+  if(err){
+    if(apiEnabled){
+      err.style.display = 'block';
+      err.style.color = '#2e7d32';
+      err.textContent = '已連接 Google Drive 資料儲存。請登入。';
+    } else {
+      err.style.display = 'block';
+      err.style.color = '#8d6e00';
+      err.textContent = '未連接 Drive（本機示範模式）。部署後請設定服務帳戶環境變數。';
+    }
+  }
+})();
 </script>
 
 
