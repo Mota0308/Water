@@ -191,15 +191,9 @@
     <div class="login-err" id="login-err"></div>
     <button class="btn" style="width:100%" onclick="doLogin()">登入</button>
     <div class="demo-accounts">
-      <b>示範賬號：</b>
+      <b>預設賬號：</b>
       <div>系統管理員：admin / admin</div>
-      <div>一般管理層：manager / Manager123!</div>
-      <div>觀塘個人：kt.staff / Staff123!</div>
-      <div>屯門個人：tm.staff / Staff123!</div>
-      <div>經手人 Ann：ann / 1234（觀塘）</div>
-      <div>經手人 Coey：coey / 1234（荔枝角）</div>
-      <div>經手人 郭sir：kwok / 1234（灣仔）</div>
-      <div>國內倉個人：wh.staff / Staff123!</div>
+      <div style="margin-top:6px;color:#666">其他員工請由管理員在「推送通知 → 創建員工」新增；初始密碼為賬號最後四位。</div>
     </div>
   </div>
 </div>
@@ -230,27 +224,74 @@ const DEV_STAGES = ['企劃選材','技術規格單','打版','樣本修改與�
 const REP_STAGES = ['銷售分析','打版','樣本修改與確認','量產準備','倉存與物流','陳列銷售'];
 const CATEGORIES = ['成人保暖衣','兒童保暖衣','成人抓毛','兒童抓毛','成人膠衣','兒童膠衣','成人泳裝','兒童泳裝','防曬用品','游水用品','防水袋','其他'];
 
-let users = [
-  {id:'adm', login:'admin', pw:'admin', name:'系統管理員', dept:'管理層', role:'system_admin', unit:null, active:true},
-  {id:'mgr', login:'manager', pw:'Manager123!', name:'一般管理層', dept:'管理層', role:'manager', unit:null, active:true},
-  {id:'kt', login:'kt.staff', pw:'Staff123!', name:'觀塘同事', dept:'觀塘', role:'personal', unit:'觀塘', active:true},
-  {id:'tm', login:'tm.staff', pw:'Staff123!', name:'屯門同事', dept:'屯門', role:'personal', unit:'屯門', active:true},
-  {id:'kwok', login:'kwok', pw:'1234', name:'郭sir', dept:'企劃／管理', role:'personal', unit:'灣仔', active:true},
-  {id:'ann',  login:'ann',  pw:'1234', name:'Ann',  dept:'生產部', role:'personal', unit:'觀塘', active:true},
-  {id:'coey', login:'coey', pw:'1234', name:'Coey', dept:'銷售／生產', role:'personal', unit:'荔枝角', active:true},
-  {id:'wh', login:'wh.staff', pw:'Staff123!', name:'國內倉同事', dept:'國內倉', role:'personal', unit:'國內倉', active:true},
-];
+const USERS_KEY = 'store-web-users-v1';
+const STAFF_REGIONS = ['觀塘','荔枝角','灣仔','屯門','國內倉'];
+const SEED_ADMIN = {id:'adm', login:'admin', pw:'admin', name:'系統管理員', dept:'管理層', role:'system_admin', position:'系統管理員', unit:null, units:[], active:true};
+let users = [Object.assign({}, SEED_ADMIN)];
+let userSeq = 1;
 function isAdmin(){ return currentUser && currentUser.role==='system_admin'; }
 function isManager(){ return currentUser && currentUser.role==='manager'; }
 function isPersonal(){ return currentUser && currentUser.role==='personal'; }
 function canWriteProduction(){ return isAdmin(); }
+function canCreateEmployee(){ return !!(currentUser && (currentUser.role==='system_admin' || currentUser.role==='manager')); }
+function userUnits(u){
+  if(!u) return [];
+  if(Array.isArray(u.units) && u.units.length){
+    return u.units.filter(function(x,i,a){ return STAFF_REGIONS.indexOf(x)>=0 && a.indexOf(x)===i; });
+  }
+  if(u.unit && STAFF_REGIONS.indexOf(u.unit)>=0) return [u.unit];
+  if(u.fixedUnit && STAFF_REGIONS.indexOf(u.fixedUnit)>=0) return [u.fixedUnit];
+  return [];
+}
+function normalizeUser(u){
+  if(!u || typeof u!=='object') return u;
+  const out = Object.assign({}, u);
+  let units = userUnits(out);
+  out.units = units;
+  out.unit = units[0] || null;
+  if(!out.position){
+    if(out.login==='admin' || out.role==='system_admin') out.position = out.login==='admin' ? '系統管理員' : '經理';
+    else if(out.role==='manager') out.position = '主管';
+    else out.position = '員工';
+  }
+  if(out.position==='經理' || out.position==='主管') out.role = 'system_admin';
+  else if(out.position==='員工') out.role = 'personal';
+  if(typeof out.active==='undefined') out.active = true;
+  if(!out.dept) out.dept = units.join('、') || (out.position==='員工'?'—':'管理層');
+  return out;
+}
+function ensureAdminUser(){
+  users = (users||[]).map(normalizeUser).filter(Boolean);
+  if(!users.some(function(u){ return u.login==='admin'; })){
+    users.unshift(Object.assign({}, SEED_ADMIN));
+  }
+  let maxN = 0;
+  users.forEach(function(u){
+    const m = String(u.id||'').match(/^u(\d+)$/);
+    if(m) maxN = Math.max(maxN, parseInt(m[1],10));
+  });
+  if(maxN >= userSeq) userSeq = maxN + 1;
+}
+function loadUsersLocal(){
+  try{
+    const j = JSON.parse(localStorage.getItem(USERS_KEY)||'null');
+    if(Array.isArray(j) && j.length) users = j;
+  }catch(e){}
+  ensureAdminUser();
+}
+function saveUsersLocal(){
+  ensureAdminUser();
+  try{ localStorage.setItem(USERS_KEY, JSON.stringify(users)); }catch(e){}
+}
 function roleLabel(u){
-  if(u.role==='system_admin') return '系統管理員';
-  if(u.role==='manager') return '一般管理層';
-  return (u.unit||u.dept||'個人');
+  if(!u) return '—';
+  const pos = u.position || (u.role==='system_admin'?'系統管理員':(u.role==='manager'?'主管':'員工'));
+  const units = userUnits(u);
+  if(units.length) return pos+'｜'+units.join('、');
+  return pos;
 }
 const userName = id => users.find(u=>u.id===id)?.name || '—';
-const userDept = id => users.find(u=>u.id===id)?.dept || '';
+const userDept = id => { const u=users.find(x=>x.id===id); return u?(u.dept||userUnits(u).join('、')||''):''; };
 
 /* 狀態定義 */
 const ST = {
@@ -384,6 +425,7 @@ function slimFileRef(f){
   return f;
 }
 function slimProjectsPayload(){
+  ensureAdminUser();
   const cloned = JSON.parse(JSON.stringify({ projects, projSeq, moduleLogs, users }));
   (cloned.projects||[]).forEach(p=>{
     if(p.coverFileId && p.coverUrl && String(p.coverUrl).startsWith('data:')) p.coverUrl = apiUrl('/api/files/'+p.coverFileId);
@@ -461,6 +503,7 @@ async function initCloud(){
     apiEnabled = !!(health.mongoConfigured || health.configured || health.driveConfigured);
     if(!apiEnabled){
       console.warn('API up but MongoDB not configured; using local/demo data.');
+      loadUsersLocal();
       apiReady = true;
       return;
     }
@@ -473,14 +516,24 @@ async function initCloud(){
       projects = ps.projects;
       if(typeof ps.projSeq === 'number') projSeq = ps.projSeq;
       if(ps.moduleLogs && typeof ps.moduleLogs === 'object') moduleLogs = ps.moduleLogs;
-      if(Array.isArray(ps.users) && ps.users.length) users = ps.users;
+      if(Array.isArray(ps.users) && ps.users.length){
+        users = ps.users;
+        ensureAdminUser();
+      } else {
+        // 專案已在雲端但尚無 users：寫入預設 admin（不清除既有其他集合）
+        loadUsersLocal();
+        ensureAdminUser();
+        await persistProjectsNow();
+      }
     } else {
+      ensureAdminUser();
       await persistProjectsNow();
     }
     await loadNotifications();
   }catch(e){
     console.warn('Cloud init failed, fallback to local demo:', e);
     apiEnabled = false;
+    loadUsersLocal();
     loadNotificationsLocal();
   }
   apiReady = true;
@@ -687,7 +740,8 @@ async function markNotifRead(id){
 }
 function pushRecipientCandidates(){
   if(!currentUser) return [];
-  return users.filter(u => u.active && u.id !== currentUser.id);
+  ensureAdminUser();
+  return users.filter(u => u.active!==false && u.id !== currentUser.id);
 }
 function togglePushRecipients(on){
   document.querySelectorAll('#push-recipients input[type=checkbox]').forEach(cb=>{ cb.checked = !!on; });
@@ -818,6 +872,154 @@ function vPushNotify(){
     </div>
     <button type="button" class="btn green" onclick="confirmSendPush()">送出推送</button>
   </div>`;
+}
+
+/* ═══════════ 創建員工 ═══════════ */
+function passwordFromLogin(login){
+  const s = String(login||'');
+  return s.length>=4 ? s.slice(-4) : '';
+}
+function staffListRowsHtml(){
+  ensureAdminUser();
+  return users.map(function(u){
+    const sys = u.login==='admin' ? ' <span class="tag dept">系統帳</span>' : '';
+    const units = userUnits(u);
+    return '<tr>'+
+      '<td>'+escHtml(u.login||'')+sys+'</td>'+
+      '<td>'+escHtml(u.name||'')+'</td>'+
+      '<td>'+escHtml(u.position||roleLabel(u))+'</td>'+
+      '<td>'+escHtml(units.length?units.join('、'):'—')+'</td>'+
+      '<td>'+(u.active===false?'停用':'啟用')+'</td>'+
+      '</tr>';
+  }).join('');
+}
+function vCreateStaff(){
+  if(!canCreateEmployee()){
+    return '<div class="card"><h2>👤 創建員工</h2><p>只有經理／主管／系統管理員可以創建員工。</p></div>';
+  }
+  const regionChecks = STAFF_REGIONS.map(function(r){
+    return '<label class="rc-item"><input type="checkbox" class="staff-region" value="'+r+'"> '+r+'</label>';
+  }).join('');
+  return `<div class="card">
+    <h2>👤 創建員工</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:8px">輸入登入賬號（至少 4 碼）；初始密碼自動為賬號最後四位。顯示名稱可留空。</p>
+    <label>登入賬號（必填）</label>
+    <input type="text" id="staff-login" placeholder="例如 ann.wong" autocomplete="off" oninput="staffPreviewPw()">
+    <label>顯示名稱（選填）</label>
+    <input type="text" id="staff-name" placeholder="留空則使用登入賬號">
+    <label>初始密碼（自動）</label>
+    <input type="text" id="staff-pw-preview" value="" readonly style="background:#f5f5f5;color:#555">
+    <p id="staff-pw-hint" style="font-size:12px;color:#888;margin:4px 0 0">輸入賬號後顯示最後四位。</p>
+    <label>職位</label>
+    <select id="staff-position">
+      <option value="經理">經理（等同管理員權限，可創建員工）</option>
+      <option value="主管">主管（第一版權限與經理相同）</option>
+      <option value="員工" selected>員工</option>
+    </select>
+    <label>隸屬地區（可多選；員工至少選 1 個，經理／主管可不選）</label>
+    <div class="recipient-box" style="max-height:180px">${regionChecks}</div>
+    <button type="button" class="btn green" onclick="submitCreateStaff()">建立員工</button>
+  </div>
+  <div class="card">
+    <h3>員工列表</h3>
+    <p style="font-size:12px;color:#888;margin-bottom:8px">第一版僅供查看，暫不支援編輯／停用。</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>賬號</th><th>顯示名稱</th><th>職位</th><th>地區</th><th>狀態</th></tr></thead>
+      <tbody id="staff-list-body">${staffListRowsHtml()}</tbody>
+    </table></div>
+  </div>`;
+}
+function staffPreviewPw(){
+  const login = ((document.getElementById('staff-login')||{}).value||'').trim();
+  const pwEl = document.getElementById('staff-pw-preview');
+  const hint = document.getElementById('staff-pw-hint');
+  const pw = passwordFromLogin(login);
+  if(pwEl) pwEl.value = pw || '';
+  if(hint){
+    hint.textContent = login.length && login.length<4
+      ? '賬號至少需要 4 個字元。'
+      : (pw ? ('初始密碼將為：'+pw) : '輸入賬號後顯示最後四位。');
+    hint.style.color = login.length && login.length<4 ? '#c62828' : '#888';
+  }
+}
+function selectedStaffRegions(){
+  return Array.from(document.querySelectorAll('.staff-region:checked')).map(function(cb){ return cb.value; })
+    .filter(function(x,i,a){ return STAFF_REGIONS.indexOf(x)>=0 && a.indexOf(x)===i; });
+}
+function submitCreateStaff(){
+  if(!canCreateEmployee()){ alert2('沒有權限創建員工。'); return; }
+  const login = ((document.getElementById('staff-login')||{}).value||'').trim();
+  let name = ((document.getElementById('staff-name')||{}).value||'').trim();
+  const position = ((document.getElementById('staff-position')||{}).value||'員工').trim();
+  const regions = selectedStaffRegions();
+  if(!login){ alert2('請輸入登入賬號。'); return; }
+  if(login.length<4){ alert2('登入賬號至少需要 4 個字元。'); return; }
+  if(login.toLowerCase()==='admin'){ alert2('不可建立系統帳 admin。'); return; }
+  if(['經理','主管','員工'].indexOf(position)<0){ alert2('請選擇有效職位。'); return; }
+  if(position==='員工' && !regions.length){ alert2('員工必須至少選擇 1 個隸屬地區。'); return; }
+  ensureAdminUser();
+  if(users.some(function(u){ return String(u.login||'').toLowerCase()===login.toLowerCase(); })){
+    alert2('此登入賬號已存在，請換一個。');
+    return;
+  }
+  if(!name) name = login;
+  const pw = passwordFromLogin(login);
+  const role = position==='員工' ? 'personal' : 'system_admin';
+  const id = 'u'+String(userSeq++);
+  const nu = normalizeUser({
+    id: id,
+    login: login,
+    pw: pw,
+    name: name,
+    position: position,
+    role: role,
+    units: regions,
+    unit: regions[0]||null,
+    dept: regions.join('、') || (position==='員工'?'—':'管理層'),
+    active: true
+  });
+  users.push(nu);
+  saveUsersLocal();
+  persistProjects();
+  addModuleLog('push','創建員工', position+'｜'+login+'｜'+(regions.length?regions.join('、'):'無地區'));
+  const copyText = '賬號：'+login+'\n密碼：'+pw+'\n職位：'+position+'\n地區：'+(regions.length?regions.join('、'):'—');
+  showModal(`<h3>✅ 已建立員工</h3>
+    <p style="font-size:14px;line-height:1.7">
+      賬號：<b>${escHtml(login)}</b><br>
+      初始密碼：<b>${escHtml(pw)}</b><br>
+      職位：<b>${escHtml(position)}</b><br>
+      地區：<b>${escHtml(regions.length?regions.join('、'):'—')}</b>
+    </p>
+    <div class="actions">
+      <button class="btn sm gray" onclick="closeModal()">關閉</button>
+      <button class="btn sm green" onclick="copyStaffCreds(${JSON.stringify(copyText)})">複製賬號與密碼</button>
+    </div>`);
+  const loginEl = document.getElementById('staff-login');
+  const nameEl = document.getElementById('staff-name');
+  if(loginEl) loginEl.value = '';
+  if(nameEl) nameEl.value = '';
+  document.querySelectorAll('.staff-region').forEach(function(cb){ cb.checked=false; });
+  staffPreviewPw();
+  const body = document.getElementById('staff-list-body');
+  if(body) body.innerHTML = staffListRowsHtml();
+  else render();
+}
+async function copyStaffCreds(text){
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    alert2('已複製到剪貼簿。');
+  }catch(e){
+    alert2('複製失敗，請手動選取密碼。');
+  }
 }
 
 /* ═══════════ 工具 ═══════════ */
@@ -973,14 +1175,22 @@ function afterProjectChatRender(){
 function doLogin(){
   const u = document.getElementById('login-user').value.trim();
   const p = document.getElementById('login-pw').value;
-  const user = users.find(x=>x.login===u && x.pw===p);
+  ensureAdminUser();
+  const user = users.find(x=>x.login===u && x.pw===p && x.active!==false);
   const err = document.getElementById('login-err');
   if(!apiReady){ err.style.color='#c62828'; err.textContent='資料儲存仍在初始化，請稍候再登入。'; err.style.display='block'; return; }
   if(!user){ err.style.color='#c62828'; err.textContent='登入名稱或密碼錯誤，請重試或聯絡管理層。'; err.style.display='block'; return; }
-  err.style.display='none'; err.style.color=''; currentUser = user;
+  err.style.display='none'; err.style.color=''; currentUser = normalizeUser(user);
   document.getElementById('page-login').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
-  document.getElementById('top-user').textContent = user.role==='system_admin' ? '👑 '+user.name+'（系統管理員）' : (user.role==='manager' ? '🧭 '+user.name+'（一般管理層）' : '👤 '+user.name+'｜'+roleLabel(user));
+  const pos = currentUser.position || '';
+  if(currentUser.role==='system_admin'){
+    document.getElementById('top-user').textContent = '👑 '+currentUser.name+'（'+(pos||'系統管理員')+'）';
+  } else if(currentUser.role==='manager'){
+    document.getElementById('top-user').textContent = '🧭 '+currentUser.name+'（'+(pos||'主管')+'）';
+  } else {
+    document.getElementById('top-user').textContent = '👤 '+currentUser.name+'｜'+roleLabel(currentUser);
+  }
   currentModule = 'daily'; currentView='dailyToday'; currentProject=null;
   ensureDailySeed(); generateRecurringForToday();
   addDailyOpLog('登入系統','進入每日工作流程');
@@ -1026,6 +1236,7 @@ function render(){
     if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
   } else if(currentModule==='push'){
     items = [['pushNotify','撰寫推送']];
+    if(canCreateEmployee()) items.push(['createStaff','創建員工']);
   } else {
     items = [['home','首頁'],['repList','項目列表'],['myTasks','我的工作']];
     if(isAdmin()) items.push(['addProject','建立項目']);
@@ -1040,7 +1251,8 @@ function render(){
     dailyUnit:()=>vDailyUnit(currentUser), dailyRecords:()=>vDailyRecords(currentUser),
     dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser),
     dailyOpLogs:()=>vDailyOpLogs(currentUser),
-    pushNotify: vPushNotify
+    pushNotify: vPushNotify,
+    createStaff: vCreateStaff
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
   afterProjectChatRender();
@@ -1051,7 +1263,7 @@ function go(v){
   currentView=v; currentProject=null;
   if(v==='devList'){ listType='dev'; currentModule='production'; }
   if(v==='repList'){ listType='rep'; currentModule='replenishment'; }
-  if(v==='pushNotify'){ currentModule='push'; }
+  if(v==='pushNotify' || v==='createStaff'){ currentModule='push'; }
   fCat='全部'; fStatus='全部'; fKw='';
   render();
 }
@@ -1741,7 +1953,9 @@ function dailyTodayStr(){
 function dailyNowStr(){ return typeof nowStr==='function'?nowStr():new Date().toLocaleString('zh-HK'); }
 function dailyUserId(user){ user=user||currentUser; return user?String(user.id):'system'; }
 function dailyUserName(user){ user=user||currentUser; return user?user.name:'系統'; }
-function dailyUserUnit(user){ user=user||currentUser; return user?(user.unit||user.fixedUnit||null):null; }
+function dailyUserUnits(user){ user=user||currentUser; return userUnits(user); }
+function dailyUserUnit(user){ const us=dailyUserUnits(user); return us[0]||null; }
+function dailyUserInUnit(user, unit){ return dailyUserUnits(user).indexOf(unit)>=0; }
 function dailyCanManage(user){ user=user||currentUser; return !!(user&&(user.role==='system_admin'||user.role==='manager')); }
 function dailyId(prefix){ return prefix+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7); }
 function dailyEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];}); }
@@ -1896,7 +2110,7 @@ function canTickWork(w,user){
   if(!w||!user||w.status==='cancelled') return false;
   if(dailyCanManage(user)) return true;
   if(user.role!=='personal') return false;
-  return w.unit===dailyUserUnit(user);
+  return dailyUserInUnit(user, w.unit);
 }
 function completeDailyWork(id,user,checked,opts){
   user=user||currentUser;
@@ -2046,8 +2260,8 @@ function getTodayWorksForUser(user){
   if(dailyCanManage(user)){
     if(dailyUnitFilter!=='全部') list=list.filter(function(w){ return w.unit===dailyUnitFilter; });
   }else{
-    var unit=dailyUserUnit(user);
-    list=list.filter(function(w){ return w.unit===unit; });
+    var units=dailyUserUnits(user);
+    list=list.filter(function(w){ return units.indexOf(w.unit)>=0; });
   }
   return list.sort(function(a,b){
     var po={高:0,中:1,低:2};
@@ -2473,7 +2687,8 @@ function vDailyToday(user){
       return '<option value="'+u+'"'+(dailyUnitFilter===u?' selected':'')+'>'+u+'</option>';
     }).join('')+'</select>';
   }else{
-    filter='<span class="tag dept">所屬單位：'+dailyEsc(dailyUserUnit(user)||'—')+'</span>';
+    var myUnits=dailyUserUnits(user);
+    filter='<span class="tag dept">所屬單位：'+dailyEsc(myUnits.length?myUnits.join('、'):'—')+'</span>';
   }
   return '<div class="card"><h2>🗓️ 今日工作｜'+dailyEsc(todayStr())+'</h2>'+
     '<div class="stats">'+
@@ -2508,7 +2723,7 @@ function vDailyUnit(user){
   ensureDailySeed();
   var unit=dailyProgressUnit||STORE_UNITS[0];
   var p=workCountsForUnit(unit);
-  var mine=dailyUserUnit(user)===unit;
+  var mine=dailyUserInUnit(user, unit);
   var readonly=!dailyCanManage(user)&&!mine;
   return '<div class="card"><h2>📍 '+dailyEsc(unit)+' 工作明細</h2>'+
     '<div class="stats">'+
@@ -2603,8 +2818,13 @@ go = function(v){ _go(v); if(v==='addProject') setTimeout(renderNpStages, 0); };
     err.style.display = 'block';
     err.textContent = '正在連接資料儲存（MongoDB）…';
   }
+  loadUsersLocal();
   await initCloud();
-  if(!apiEnabled) loadNotificationsLocal();
+  ensureAdminUser();
+  if(!apiEnabled){
+    loadUsersLocal();
+    loadNotificationsLocal();
+  }
   refreshMailboxUi();
   if(err){
     if(apiEnabled){
