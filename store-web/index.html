@@ -144,9 +144,9 @@
   .login-card h1 { font-size:18px; color:#37474f; text-align:center; margin-bottom:4px; }
   .login-card .sub { text-align:center; color:#888; font-size:12px; margin-bottom:16px; }
   .login-err { color:#c62828; font-size:13px; margin-top:8px; display:none; }
-  .demo-accounts { margin-top:16px; font-size:12px; color:#666; background:#f7f9fc; border-radius:8px; padding:12px; }
-  .demo-accounts b { color:#37474f; }
-  .demo-accounts div { padding:2px 0; }
+  .login-hint { margin-top:16px; font-size:12px; color:#666; background:#f7f9fc; border-radius:8px; padding:12px; }
+  .login-hint b { color:#37474f; }
+  .login-hint div { padding:2px 0; }
 
   .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; z-index:99; padding:16px; }
   .modal { background:#fff; border-radius:12px; padding:22px; max-width:420px; width:100%; max-height:85vh; overflow-y:auto; }
@@ -192,7 +192,7 @@
     <input type="password" id="login-pw" placeholder="請輸入密碼">
     <div class="login-err" id="login-err"></div>
     <button class="btn" style="width:100%" onclick="doLogin()">登入</button>
-    <div class="demo-accounts">
+    <div class="login-hint">
       <b>預設賬號：</b>
       <div>系統管理員：admin / admin</div>
       <div style="margin-top:6px;color:#666">其他員工請由管理員以「創建員工」新增；初始密碼為賬號最後四位。</div>
@@ -335,15 +335,17 @@ let projSeq = 1;
 let moduleLogs = { daily: [], production: [], replenishment: [] };
 const SAMPLE_PROJECT_IDS = ['P001','P002','P003'];
 const SAMPLE_PROJECT_CODES = ['WS-999','WS-888','WS-777'];
+const SAMPLE_PROJECT_NAMES = ['成人日本光皮長短','1mm兒童抓毛上衣','兒童防曬套裝'];
 const SAMPLE_DAILY_TITLES = ['整理今日到貨箱單','更新門市陳列清單','逾期示範：昨夜未完成點貨'];
 const SAMPLE_TPL_TITLES = ['門市巡檢','倉存點算'];
-const SAMPLE_LOG_RE = /WS-999|WS-888|WS-777|逾期示範|門市巡檢|倉存點算|整理今日到貨|更新門市陳列/;
+const SAMPLE_LOG_RE = /WS-999|WS-888|WS-777|逾期示範|門市巡檢|倉存點算|整理今日到貨|更新門市陳列|成人日本光皮|兒童抓毛上衣|兒童防曬套裝/;
 function purgeSampleProjects(){
   const before = projects.length;
   projects = (projects||[]).filter(function(p){
     if(!p) return false;
     if(SAMPLE_PROJECT_IDS.indexOf(p.id)>=0) return false;
     if(SAMPLE_PROJECT_CODES.indexOf(p.code)>=0) return false;
+    if(SAMPLE_PROJECT_NAMES.indexOf(p.name)>=0) return false;
     return true;
   });
   let maxN = 0;
@@ -372,6 +374,7 @@ function purgeSampleDailyState(s){
   s = s || loadDailyState();
   const wBefore = (s.works||[]).length;
   const tBefore = (s.recurringTemplates||[]).length;
+  const logBefore = (s.opLogs||[]).length;
   s.works = (s.works||[]).filter(function(w){
     if(!w) return false;
     if(SAMPLE_DAILY_TITLES.indexOf(w.title)>=0) return false;
@@ -381,7 +384,11 @@ function purgeSampleDailyState(s){
   s.recurringTemplates = (s.recurringTemplates||[]).filter(function(t){
     return t && SAMPLE_TPL_TITLES.indexOf(t.title)<0;
   });
-  return (s.works.length!==wBefore) || (s.recurringTemplates.length!==tBefore);
+  s.opLogs = (s.opLogs||[]).filter(function(l){
+    const blob = String((l&&l.detail)||'') + '|' + String((l&&l.action)||'');
+    return !SAMPLE_LOG_RE.test(blob);
+  });
+  return (s.works.length!==wBefore) || (s.recurringTemplates.length!==tBefore) || (s.opLogs.length!==logBefore);
 }
 let notifications = [];
 let notifSeq = 1;
@@ -490,9 +497,9 @@ async function cloudUploadDataUrl(name, dataUrl){
 }
 function fileHref(f){
   if(!f) return '#';
-  if(typeof f === 'string') return demoFileDataUrl(f);
+  if(typeof f === 'string') return '#';
   if(f.driveFileId) return apiUrl('/api/files/'+f.driveFileId);
-  return f.dataUrl || demoFileDataUrl(f.name || 'file.txt');
+  return f.dataUrl || '#';
 }
 async function initCloud(){
   apiReady = false;
@@ -500,7 +507,7 @@ async function initCloud(){
     const health = await apiFetch('/api/health');
     apiEnabled = !!(health.mongoConfigured || health.configured || health.driveConfigured);
     if(!apiEnabled){
-      console.warn('API up but MongoDB not configured; using local/demo data.');
+      console.warn('API up but MongoDB not configured; using local mode.');
       loadUsersLocal();
       apiReady = true;
       return;
@@ -1103,18 +1110,13 @@ function canOperateStage(p, s){
 function fmtMention(text){
   return String(text||'').replace(/@([^\s@，,。]+)/g,'<span class="mention">@$1</span>');
 }
-function demoFileDataUrl(name){
-  const body = '檔案：'+name+'\n建立時間：'+nowStr();
-  return 'data:text/plain;charset=utf-8,'+encodeURIComponent(body);
-}
 function ensureFilePayload(f){
   if(!f) return f;
-  if(typeof f==='string') return {name:f, dataUrl:demoFileDataUrl(f)};
+  if(typeof f==='string') return {name:f};
   if(f.driveFileId){
     f.dataUrl = apiUrl('/api/files/'+f.driveFileId);
     return f;
   }
-  if(!f.dataUrl) f.dataUrl = demoFileDataUrl(f.name||'file.txt');
   return f;
 }
 function fileLinkHtml(fileOrName, label){
@@ -1783,7 +1785,6 @@ function askUpload(pid, idx){
   if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法上載文件。'); return; }
   showModal(`<h3>上載文件／圖片</h3><p style="font-size:13px">階段：<b>${s.name}</b>｜支援 JPG、PNG、PDF、Word、Excel、ZIP 等</p>
     <label>選擇檔案</label><input type="file" id="m-file">
-    <label>或只輸入檔案名稱</label><input type="text" id="m-fname" placeholder="例如：技術規格單V3.xlsx">
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
     <button class="btn purple sm" onclick="doUpload('${pid}',${idx})">上載</button></div>`);
 }
@@ -1792,12 +1793,11 @@ async function doUpload(pid, idx){
   if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法上載文件。'); return; }
   const fi = document.getElementById('m-file');
   const picked = fi.files && fi.files[0] ? fi.files[0] : null;
-  let name = picked ? picked.name : document.getElementById('m-fname').value.trim();
-  if(!name){ alert2('請選擇檔案或輸入檔案名稱。'); return; }
+  if(!picked){ alert2('請選擇要上載的檔案。'); return; }
+  let name = picked.name;
   let uploaded;
   try{
-    if(picked) uploaded = await cloudUploadFile(picked);
-    else uploaded = { name, dataUrl: demoFileDataUrl(name) };
+    uploaded = await cloudUploadFile(picked);
   }catch(e){ alert2('上載失敗：'+(e.message||e)); return; }
   s.files.forEach(f=>f.latest=false);
   const ver = 'V'+(s.files.length+1);
@@ -2138,7 +2138,7 @@ function vSysLogs(){
 }
 
 /* ═══════════ Part 1 每日工作流程（localStorage v2） ═══════════ */
-var DAILY_KEY='store-web-daily-v4';
+var DAILY_KEY='store-web-daily-v5';
 var FIXED_UNITS=['觀塘','荔枝角','灣仔','屯門'];
 var STORE_UNITS=['觀塘','荔枝角','灣仔','屯門','國內倉'];
 var PRIORITIES=['高','中','低'];
@@ -2282,7 +2282,12 @@ function syncOpenRecurringFromTemplate(t){
   saveDailyState(s);
 }
 function ensureDailySeed(){
-  try{ localStorage.removeItem('store-web-daily-v1'); localStorage.removeItem('store-web-daily-v2'); localStorage.removeItem('store-web-daily-v3'); }catch(e){}
+  try{
+    localStorage.removeItem('store-web-daily-v1');
+    localStorage.removeItem('store-web-daily-v2');
+    localStorage.removeItem('store-web-daily-v3');
+    localStorage.removeItem('store-web-daily-v4');
+  }catch(e){}
   var s=loadDailyState();
   purgeSampleDailyState(s);
   s.recurringTemplates.forEach(function(t){ if(typeof t.requireAttachment==='undefined') t.requireAttachment=false; });
@@ -2624,7 +2629,7 @@ function dailyCreateRecurring(){
   if(!dailyCanManage(currentUser)) return alert2('只有管理層可以建立恆常任務。');
   showModal(
     '<h3>🔁 建立恆常任務</h3>'+
-    '<label>標題</label><input id="d-title" type="text" placeholder="例如：門市巡檢">'+
+    '<label>標題</label><input id="d-title" type="text" placeholder="輸入工作標題">'+
     '<label>內容</label><textarea id="d-content" placeholder="工作說明"></textarea>'+
     '<label>優先級</label>'+prioritySelectHtml('中')+
     '<label>適用單位（可多選）</label><div class="card" style="padding:10px">'+unitChecksHtml()+'</div>'+

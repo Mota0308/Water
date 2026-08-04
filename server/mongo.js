@@ -10,6 +10,8 @@ export function mongoConfigured() {
   return !!process.env.MONGODB_URI;
 }
 
+let samplePurgeDone = false;
+
 export async function connectMongo() {
   if (db) return db;
   if (!process.env.MONGODB_URI) {
@@ -23,7 +25,126 @@ export async function connectMongo() {
   await db.collection('projects').createIndex({ _id: 1 });
   await db.collection('notifications').createIndex({ _id: 1 });
   console.log('MongoDB connected:', DB_NAME);
+  if (!samplePurgeDone) {
+    samplePurgeDone = true;
+    try {
+      await purgeSampleDataOnce();
+    } catch (e) {
+      console.warn('Sample purge skipped:', e.message || e);
+    }
+  }
   return db;
+}
+
+const SAMPLE_PROJECT_IDS = new Set(['P001', 'P002', 'P003']);
+const SAMPLE_PROJECT_CODES = new Set(['WS-999', 'WS-888', 'WS-777']);
+const SAMPLE_PROJECT_NAMES = new Set(['成人日本光皮長短', '1mm兒童抓毛上衣', '兒童防曬套裝']);
+const SAMPLE_DAILY_TITLES = new Set(['整理今日到貨箱單', '更新門市陳列清單', '逾期示範：昨夜未完成點貨']);
+const SAMPLE_TPL_TITLES = new Set(['門市巡檢', '倉存點算']);
+const LEGACY_DEMO_LOGINS = new Set(['manager', 'kt.staff', 'tm.staff', 'kwok', 'ann', 'coey', 'wh.staff']);
+const LEGACY_DEMO_IDS = new Set(['mgr', 'kt', 'tm', 'kwok', 'ann', 'coey', 'wh']);
+const SAMPLE_LOG_RE = /WS-999|WS-888|WS-777|逾期示範|門市巡檢|倉存點算|整理今日到貨|更新門市陳列|成人日本光皮|兒童抓毛上衣|兒童防曬套裝/;
+
+/** 啟動時清掉示範種子（保留 admin 與之後新建的真實資料）。呼叫前須已連上 db。 */
+export async function purgeSampleDataOnce() {
+  if (!db) throw new Error('Mongo not connected');
+  let changed = false;
+
+  const projDoc = await projectsCol().findOne({ _id: 'main' });
+  if (projDoc) {
+    const projects = Array.isArray(projDoc.projects) ? projDoc.projects : [];
+    const nextProjects = projects.filter((p) => {
+      if (!p) return false;
+      if (SAMPLE_PROJECT_IDS.has(p.id)) return false;
+      if (SAMPLE_PROJECT_CODES.has(p.code)) return false;
+      if (SAMPLE_PROJECT_NAMES.has(p.name)) return false;
+      return true;
+    });
+    let users = Array.isArray(projDoc.users) ? projDoc.users : [];
+    users = users.filter((u) => {
+      if (!u) return false;
+      if (u.login === 'admin' || u.id === 'adm') return true;
+      if (LEGACY_DEMO_LOGINS.has(String(u.login || '').toLowerCase())) return false;
+      if (LEGACY_DEMO_IDS.has(u.id)) return false;
+      return true;
+    });
+    if (!users.some((u) => u.login === 'admin')) {
+      users.unshift({
+        id: 'adm',
+        login: 'admin',
+        pw: 'admin',
+        name: '系統管理員',
+        dept: '管理層',
+        role: 'system_admin',
+        position: '系統管理員',
+        unit: null,
+        units: [],
+        active: true,
+      });
+    }
+    const moduleLogs = projDoc.moduleLogs && typeof projDoc.moduleLogs === 'object' ? { ...projDoc.moduleLogs } : {};
+    for (const mod of ['daily', 'production', 'replenishment']) {
+      if (!Array.isArray(moduleLogs[mod])) continue;
+      moduleLogs[mod] = moduleLogs[mod].filter((l) => {
+        const blob = `${(l && l.detail) || ''}|${(l && l.action) || ''}`;
+        return !SAMPLE_LOG_RE.test(blob);
+      });
+    }
+    if (
+      nextProjects.length !== projects.length ||
+      users.length !== (projDoc.users || []).length ||
+      JSON.stringify(moduleLogs) !== JSON.stringify(projDoc.moduleLogs || {})
+    ) {
+      let projSeq = typeof projDoc.projSeq === 'number' ? projDoc.projSeq : 1;
+      let maxN = 0;
+      nextProjects.forEach((p) => {
+        const m = String(p.id || '').match(/^P(\d+)$/);
+        if (m) maxN = Math.max(maxN, parseInt(m[1], 10));
+      });
+      if (maxN >= projSeq) projSeq = maxN + 1;
+      await saveProjectsState({
+        projects: nextProjects,
+        projSeq,
+        moduleLogs,
+        users,
+      });
+      changed = true;
+    }
+  }
+
+  const dailyDoc = await dailyCol().findOne({ _id: 'main' });
+  if (dailyDoc) {
+    const works = Array.isArray(dailyDoc.works) ? dailyDoc.works : [];
+    const tpls = Array.isArray(dailyDoc.recurringTemplates) ? dailyDoc.recurringTemplates : [];
+    const opLogs = Array.isArray(dailyDoc.opLogs) ? dailyDoc.opLogs : [];
+    const nextWorks = works.filter(
+      (w) =>
+        w &&
+        !SAMPLE_DAILY_TITLES.has(w.title) &&
+        String(w.title || '').indexOf('逾期示範') < 0
+    );
+    const nextTpls = tpls.filter((t) => t && !SAMPLE_TPL_TITLES.has(t.title));
+    const nextLogs = opLogs.filter((l) => {
+      const blob = `${(l && l.detail) || ''}|${(l && l.action) || ''}`;
+      return !SAMPLE_LOG_RE.test(blob);
+    });
+    if (
+      nextWorks.length !== works.length ||
+      nextTpls.length !== tpls.length ||
+      nextLogs.length !== opLogs.length
+    ) {
+      await saveDaily({
+        version: dailyDoc.version || 2,
+        works: nextWorks,
+        recurringTemplates: nextTpls,
+        opLogs: nextLogs,
+      });
+      changed = true;
+    }
+  }
+
+  if (changed) console.log('Purged leftover sample/demo seed data from MongoDB.');
+  return changed;
 }
 
 function dailyCol() {

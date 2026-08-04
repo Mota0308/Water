@@ -197,7 +197,7 @@ async function main() {
       console.error('Server will start but /api/* will error until URI/network is fixed.');
     }
   } else {
-    console.warn('MONGODB_URI not set — demo mode (no cloud persist).');
+    console.warn('MONGODB_URI not set — local mode (no cloud persist).');
   }
   app.listen(port, () => {
     console.log(`store-web server on http://localhost:${port}`);
