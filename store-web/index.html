@@ -8,6 +8,11 @@
   .hidden { display:none !important; }
   .container { max-width:1000px; margin:0 auto; padding:12px; }
 
+  .app-chrome {
+    position:sticky; top:0; z-index:90;
+    background:#f0f2f5;
+    box-shadow:0 2px 10px rgba(0,0,0,.12);
+  }
   .topbar { background:#37474f; color:#fff; padding:10px 16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; position:relative; }
   .topbar .brand-wrap { display:flex; align-items:center; gap:10px; flex-wrap:wrap; position:relative; }
   .topbar .brand { font-weight:bold; font-size:15px; }
@@ -21,8 +26,8 @@
     background:#c62828; color:#fff; font-size:11px; font-weight:bold; line-height:1;
   }
   .mailbox-panel {
-    display:none; position:absolute; top:calc(100% + 6px); left:0; z-index:80;
-    width:min(420px, calc(100vw - 24px)); max-height:70vh; overflow:auto;
+    display:none; position:absolute; top:calc(100% + 6px); left:0; z-index:95;
+    width:min(420px, calc(100vw - 24px)); max-height:min(70vh, calc(100vh - 120px)); overflow:auto;
     background:#fff; color:#333; border-radius:10px;
     box-shadow:0 8px 28px rgba(0,0,0,.22); border:1px solid #dde3ea;
   }
@@ -202,19 +207,21 @@
 
 <!-- ═══════════ 主系統 ═══════════ -->
 <div id="app" class="hidden">
-  <div class="topbar">
-    <div class="brand-wrap">
-      <div class="brand">🏭 店鋪員工系統</div>
-      <button type="button" class="mailbox-btn" id="mailbox-btn" onclick="toggleMailbox(event)">信箱通知<span id="mailbox-badge" class="mailbox-badge hidden">0</span></button>
-      <div id="mailbox-panel" class="mailbox-panel" onclick="event.stopPropagation()">
-        <div class="mb-head">信箱通知</div>
-        <div id="mailbox-list"><p style="padding:16px;color:#888;font-size:13px">登入後可查看通知。</p></div>
+  <div class="app-chrome">
+    <div class="topbar">
+      <div class="brand-wrap">
+        <div class="brand">🏭 店鋪員工系統</div>
+        <button type="button" class="mailbox-btn" id="mailbox-btn" onclick="toggleMailbox(event)">信箱通知<span id="mailbox-badge" class="mailbox-badge hidden">0</span></button>
+        <div id="mailbox-panel" class="mailbox-panel" onclick="event.stopPropagation()">
+          <div class="mb-head">信箱通知</div>
+          <div id="mailbox-list"><p style="padding:16px;color:#888;font-size:13px">登入後可查看通知。</p></div>
+        </div>
       </div>
+      <div class="userinfo"><span id="top-user"></span><button onclick="logout()">登出</button></div>
     </div>
-    <div class="userinfo"><span id="top-user"></span><button onclick="logout()">登出</button></div>
+    <div class="module-nav" id="module-nav"></div>
+    <div class="nav" id="nav"></div>
   </div>
-  <div class="module-nav" id="module-nav"></div>
-  <div class="nav" id="nav"></div>
   <div class="container" id="main"></div>
 </div>
 
