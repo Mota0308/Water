@@ -1753,17 +1753,16 @@ function askReassign(pid, idx){
   showModal(`<h3>重新分配經手人</h3>
     <p style="font-size:13px">階段：<b>${s.name}</b>｜現時經手人：<b>${userName(s.handler)}</b></p>
     <label>新經手人</label><select id="m-handler">${projectAssigneeOpts(s.handler)}</select>
-    <label>更改原因（必填）</label><input type="text" id="m-reason" placeholder="請輸入原因">
+    <label>更改原因（選填）</label><input type="text" id="m-reason" placeholder="可留空">
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
     <button class="btn sm" onclick="doReassign('${pid}',${idx})">確認更改</button></div>`);
 }
 function doReassign(pid, idx){
   const r = document.getElementById('m-reason').value.trim();
   const nh = document.getElementById('m-handler').value;
-  if(!r){ alert2('請填寫更改原因。'); return; }
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
   if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法重新分配。'); return; }
-  addProjLog(p,'更改經手人', s.name+'：'+userName(s.handler)+' → '+userName(nh)+'｜原因：'+r+'（系統已通知原有及新經手人）');
+  addProjLog(p,'更改經手人', s.name+'：'+userName(s.handler)+' → '+userName(nh)+(r?'｜原因：'+r:'')+'（系統已通知原有及新經手人）');
   s.handler = nh;
   closeModal(); render();
 }
