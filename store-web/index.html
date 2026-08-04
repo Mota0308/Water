@@ -1566,15 +1566,15 @@ function askProjectLifecycle(pid){
   if(!p) return;
   const cur = p.status||'進行中';
   showModal(`<h3>暫停／取消／封存項目</h3>
-    <p style="font-size:13px;color:#666;margin-bottom:8px">目前狀態：<b>${escHtml(projStatus(p))}</b>。請選擇操作並填寫原因（必填）。</p>
+    <p style="font-size:13px;color:#666;margin-bottom:8px">目前狀態：<b>${escHtml(projStatus(p))}</b>。請選擇操作；原因可留空。</p>
     <label>操作</label>
     <select id="pl-act">
       <option value="暫停"${cur==='暫停'?' selected':''}>暫停（可稍後恢復）</option>
       <option value="已取消"${cur==='已取消'?' selected':''}>取消項目</option>
       <option value="已封存"${cur==='已封存'?' selected':''}>封存項目</option>
     </select>
-    <label>原因（必填）</label>
-    <textarea id="pl-reason" placeholder="例如：物料未到／客戶取消／已完成歸檔">${escHtml(p.statusReason||'')}</textarea>
+    <label>原因（選填）</label>
+    <textarea id="pl-reason" placeholder="可留空，例如：物料未到／客戶取消／已完成歸檔">${escHtml(p.statusReason||'')}</textarea>
     <div class="actions">
       <button class="btn sm gray" onclick="closeModal()">返回</button>
       <button class="btn sm red" onclick="applyProjectLifecycle('${pid}')">確認變更</button>
@@ -1587,13 +1587,12 @@ function applyProjectLifecycle(pid){
   const act = ((document.getElementById('pl-act')||{}).value||'').trim();
   const reason = ((document.getElementById('pl-reason')||{}).value||'').trim();
   if(['暫停','已取消','已封存'].indexOf(act)<0){ alert2('請選擇有效操作。'); return; }
-  if(!reason){ alert2('請填寫原因。'); return; }
   const prev = p.status || '進行中';
   p.status = act;
   p.statusReason = reason;
   p.statusChangedAt = nowStr();
   p.statusChangedBy = currentUser.id;
-  addProjLog(p, act==='暫停'?'暫停項目':(act==='已取消'?'取消項目':'封存項目'), (prev!==act?(prev+' → '+act+'｜'):'')+reason);
+  addProjLog(p, act==='暫停'?'暫停項目':(act==='已取消'?'取消項目':'封存項目'), (prev!==act?(prev+' → '+act):'')+(reason?'｜'+reason:''));
   persistProjects();
   closeModal();
   render();
@@ -1714,17 +1713,16 @@ function askReturn(pid, idx){
   if(!isAdmin()){ alert2('只有系統管理員可以退回修改。'); return; }
   const p0 = projects.find(x=>x.id===pid);
   if(isProjectLocked(p0)){ alert2('項目已「'+p0.status+'」，無法退回。'); return; }
-  showModal(`<h3>退回修改</h3><label>退回原因（必填）</label><input type="text" id="m-reason" placeholder="請輸入退回原因">
+  showModal(`<h3>退回修改</h3><label>退回原因（選填）</label><input type="text" id="m-reason" placeholder="可留空">
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
     <button class="btn red sm" onclick="doReturn('${pid}',${idx})">確認退回</button></div>`);
 }
 function doReturn(pid, idx){
   const r = document.getElementById('m-reason').value.trim();
-  if(!r){ alert2('請填寫退回原因。'); return; }
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
   if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法退回。'); return; }
   s.status='需要修改'; s.returnReason=r;
-  addProjLog(p,'退回修改', s.name+'｜原因：'+r);
+  addProjLog(p,'退回修改', s.name+(r?'｜原因：'+r:''));
   closeModal(); render();
 }
 function askSkip(pid, idx){
@@ -1733,17 +1731,16 @@ function askSkip(pid, idx){
   if(isProjectLocked(p0)){ alert2('項目已「'+p0.status+'」，無法跳過。'); return; }
   showModal(`<h3>跳過此階段（直接下一階段）</h3>
     <p style="font-size:13px;color:#888">例如：沿用上一批最終確認樣板，產品規格沒有修改。</p>
-    <label>跳過原因（必填）</label><input type="text" id="m-reason" placeholder="請輸入原因">
+    <label>跳過原因（選填）</label><input type="text" id="m-reason" placeholder="可留空">
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
     <button class="btn purple sm" onclick="doSkip('${pid}',${idx})">確認跳過</button></div>`);
 }
 function doSkip(pid, idx){
   const r = document.getElementById('m-reason').value.trim();
-  if(!r){ alert2('請填寫跳過原因。'); return; }
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
   if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法跳過。'); return; }
   s.status='直接下一階段'; s.skipReason=r; s.completedAt=todayStr();
-  addProjLog(p,'跳過階段', s.name+'｜原因：'+r);
+  addProjLog(p,'跳過階段', s.name+(r?'｜原因：'+r:''));
   closeModal(); render();
 }
 function askReassign(pid, idx){
