@@ -8,10 +8,52 @@
   .hidden { display:none !important; }
   .container { max-width:1000px; margin:0 auto; padding:12px; }
 
-  .topbar { background:#37474f; color:#fff; padding:10px 16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
+  .topbar { background:#37474f; color:#fff; padding:10px 16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; position:relative; }
+  .topbar .brand-wrap { display:flex; align-items:center; gap:10px; flex-wrap:wrap; position:relative; }
   .topbar .brand { font-weight:bold; font-size:15px; }
   .topbar .userinfo { font-size:13px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .topbar button { background:#fff; color:#37474f; border:none; padding:5px 12px; border-radius:6px; cursor:pointer; font-size:13px; }
+  .mailbox-btn { display:inline-flex; align-items:center; gap:6px; background:#546e7a !important; color:#fff !important; }
+  .mailbox-btn:hover { background:#607d8b !important; }
+  .mailbox-badge {
+    display:inline-flex; align-items:center; justify-content:center;
+    min-width:18px; height:18px; padding:0 5px; border-radius:9px;
+    background:#c62828; color:#fff; font-size:11px; font-weight:bold; line-height:1;
+  }
+  .mailbox-panel {
+    display:none; position:absolute; top:calc(100% + 6px); left:0; z-index:80;
+    width:min(420px, calc(100vw - 24px)); max-height:70vh; overflow:auto;
+    background:#fff; color:#333; border-radius:10px;
+    box-shadow:0 8px 28px rgba(0,0,0,.22); border:1px solid #dde3ea;
+  }
+  .mailbox-panel.open { display:block; }
+  .mailbox-panel .mb-head {
+    position:sticky; top:0; background:#f7f9fc; border-bottom:1px solid #e5e9f0;
+    padding:12px 14px; font-weight:bold; color:#37474f; z-index:1;
+  }
+  .mailbox-item {
+    border-bottom:1px solid #eee; padding:12px 14px; display:flex; flex-direction:column; gap:6px;
+  }
+  .mailbox-item.unread { background:#f3f8ff; }
+  .mailbox-item .mb-meta { display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:12px; color:#777; }
+  .mailbox-item .mb-title { font-weight:bold; font-size:14px; color:#37474f; }
+  .mailbox-item .mb-body { font-size:13px; white-space:pre-wrap; color:#444; }
+  .mailbox-item .mb-foot { display:flex; justify-content:flex-end; margin-top:4px; }
+  .mailbox-item .mb-read-done {
+    font-size:12px; color:#78909c; padding:5px 10px; border:1px solid #cfd8dc; border-radius:6px; background:#f5f7fa;
+  }
+  .tag.n-cat{background:#e3f2fd;color:#1565c0}
+  .tag.n-pri-normal{background:#eceff1;color:#546e7a}
+  .tag.n-pri-important{background:#fff3e0;color:#ef6c00}
+  .tag.n-pri-urgent{background:#ffebee;color:#c62828}
+  .recipient-box {
+    border:1px solid #ccd4de; border-radius:8px; padding:10px; max-height:220px; overflow:auto; background:#fafbfc;
+  }
+  .recipient-box .rc-tools { display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+  .recipient-box label.rc-item {
+    display:flex; align-items:center; gap:8px; margin:0; padding:6px 4px; font-size:13px; color:#333; cursor:pointer;
+  }
+  .recipient-box label.rc-item input { width:auto; }
 
   .module-nav { display:flex; gap:6px; background:#eceff1; padding:8px 12px; overflow-x:auto; border-bottom:1px solid #ddd; }
   .module-nav button { border:none; background:#fff; padding:8px 14px; border-radius:20px; cursor:pointer; white-space:nowrap; font-size:14px; font-weight:600; color:#37474f; }
@@ -165,7 +207,14 @@
 <!-- ═══════════ 主系統 ═══════════ -->
 <div id="app" class="hidden">
   <div class="topbar">
-    <div class="brand">🏭 店鋪員工系統</div>
+    <div class="brand-wrap">
+      <div class="brand">🏭 店鋪員工系統</div>
+      <button type="button" class="mailbox-btn" id="mailbox-btn" onclick="toggleMailbox(event)">信箱通知<span id="mailbox-badge" class="mailbox-badge hidden">0</span></button>
+      <div id="mailbox-panel" class="mailbox-panel" onclick="event.stopPropagation()">
+        <div class="mb-head">信箱通知</div>
+        <div id="mailbox-list"><p style="padding:16px;color:#888;font-size:13px">登入後可查看通知。</p></div>
+      </div>
+    </div>
     <div class="userinfo"><span id="top-user"></span><button onclick="logout()">登出</button></div>
   </div>
   <div class="module-nav" id="module-nav"></div>
@@ -295,6 +344,12 @@ let projects = [
 ];
 let projSeq = 4;
 let moduleLogs = { daily: [], production: [], replenishment: [] };
+let notifications = [];
+let notifSeq = 1;
+const NOTIF_KEY = 'store-web-notifications-v1';
+const NOTIF_CATEGORIES = ['補貨','價錢更新','緊急通知','一般通知'];
+const NOTIF_PRIORITIES = ['一般','重要','緊急'];
+let mailboxOpen = false;
 
 let currentUser = null, currentModule = 'production', currentView = 'home', currentProject = null, currentTab = 'overview', commentFilter = '全部';
 let listType = 'dev', fCat='全部', fStatus='全部', fKw='';
@@ -421,11 +476,266 @@ async function initCloud(){
     } else {
       await persistProjectsNow();
     }
+    await loadNotifications();
   }catch(e){
     console.warn('Cloud init failed, fallback to local demo:', e);
     apiEnabled = false;
+    loadNotificationsLocal();
   }
   apiReady = true;
+}
+
+/* ═══════════ 信箱／推送通知 ═══════════ */
+function loadNotificationsLocal(){
+  try{
+    const raw = localStorage.getItem(NOTIF_KEY);
+    if(!raw){ notifications = []; notifSeq = 1; return; }
+    const j = JSON.parse(raw);
+    notifications = Array.isArray(j.notifications) ? j.notifications : [];
+    notifSeq = typeof j.notifSeq === 'number' ? j.notifSeq : 1;
+  }catch(e){
+    notifications = [];
+    notifSeq = 1;
+  }
+}
+function saveNotificationsLocal(){
+  try{ localStorage.setItem(NOTIF_KEY, JSON.stringify({ notifications, notifSeq })); }catch(e){}
+}
+async function loadNotifications(){
+  if(!apiEnabled){
+    loadNotificationsLocal();
+    refreshMailboxUi();
+    return;
+  }
+  try{
+    const ns = await apiFetch('/api/notifications');
+    notifications = Array.isArray(ns.notifications) ? ns.notifications : [];
+    notifSeq = typeof ns.notifSeq === 'number' ? ns.notifSeq : 1;
+  }catch(e){
+    console.warn('load notifications', e);
+  }
+  refreshMailboxUi();
+}
+function myMailboxItems(){
+  if(!currentUser) return [];
+  const uid = currentUser.id;
+  const mine = notifications.filter(n => (n.recipients||[]).some(r => r.userId === uid));
+  const unread = [];
+  const read = [];
+  mine.forEach(n=>{
+    const rec = (n.recipients||[]).find(r => r.userId === uid);
+    if(rec && !rec.read) unread.push(n); else read.push(n);
+  });
+  const byNewest = (a,b)=> (b.createdAtMs||0) - (a.createdAtMs||0);
+  unread.sort(byNewest);
+  read.sort(byNewest);
+  return unread.concat(read);
+}
+function unreadCount(){
+  if(!currentUser) return 0;
+  const uid = currentUser.id;
+  return notifications.filter(n => (n.recipients||[]).some(r => r.userId===uid && !r.read)).length;
+}
+function notifPriorityTag(p){
+  const cls = p==='緊急' ? 'n-pri-urgent' : (p==='重要' ? 'n-pri-important' : 'n-pri-normal');
+  return `<span class="tag ${cls}">${p||'一般'}</span>`;
+}
+function refreshMailboxUi(){
+  const badge = document.getElementById('mailbox-badge');
+  const list = document.getElementById('mailbox-list');
+  if(!badge || !list) return;
+  const n = unreadCount();
+  if(n > 0){
+    badge.textContent = n > 99 ? '99+' : String(n);
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+  if(!currentUser){
+    list.innerHTML = '<p style="padding:16px;color:#888;font-size:13px">登入後可查看通知。</p>';
+    return;
+  }
+  const items = myMailboxItems();
+  if(!items.length){
+    list.innerHTML = '<p style="padding:16px;color:#888;font-size:13px">暫無通知。</p>';
+    return;
+  }
+  const uid = currentUser.id;
+  list.innerHTML = items.map(item=>{
+    const rec = (item.recipients||[]).find(r => r.userId === uid);
+    const isRead = !!(rec && rec.read);
+    const title = item.title || (item.content||'').slice(0,40) || '（無標題）';
+    const readBtn = isRead
+      ? `<span class="mb-read-done">已讀</span>`
+      : `<button type="button" class="btn sm green" onclick="markNotifRead('${item.id}')">已讀</button>`;
+    return `<div class="mailbox-item ${isRead?'':'unread'}">
+      <div class="mb-meta">
+        <span class="tag n-cat">${item.category||'一般通知'}</span>
+        ${notifPriorityTag(item.priority)}
+        <span>${item.createdAt||''}</span>
+        <span>來自 ${item.fromName||'—'}</span>
+      </div>
+      <div class="mb-title">${escHtml(title)}</div>
+      <div class="mb-body">${escHtml(item.content||'')}</div>
+      <div class="mb-foot">${readBtn}</div>
+    </div>`;
+  }).join('');
+}
+function escHtml(s){
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+async function toggleMailbox(ev){
+  if(ev) ev.stopPropagation();
+  mailboxOpen = !mailboxOpen;
+  const panel = document.getElementById('mailbox-panel');
+  if(!panel) return;
+  if(mailboxOpen){
+    panel.classList.add('open');
+    await loadNotifications();
+  } else {
+    panel.classList.remove('open');
+  }
+}
+function closeMailbox(){
+  mailboxOpen = false;
+  const panel = document.getElementById('mailbox-panel');
+  if(panel) panel.classList.remove('open');
+}
+async function markNotifRead(id){
+  if(!currentUser) return;
+  const uid = currentUser.id;
+  if(apiEnabled){
+    try{
+      await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/read', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ userId: uid })
+      });
+      await loadNotifications();
+    }catch(e){
+      alert2('標為已讀失敗：'+e.message);
+    }
+    return;
+  }
+  const item = notifications.find(n => n.id === id);
+  if(!item) return;
+  const rec = (item.recipients||[]).find(r => r.userId === uid);
+  if(rec && !rec.read){
+    rec.read = true;
+    rec.readAt = nowStr();
+    saveNotificationsLocal();
+  }
+  refreshMailboxUi();
+}
+function pushRecipientCandidates(){
+  if(!currentUser) return [];
+  return users.filter(u => u.active && u.id !== currentUser.id);
+}
+function togglePushRecipients(on){
+  document.querySelectorAll('#push-recipients input[type=checkbox]').forEach(cb=>{ cb.checked = !!on; });
+}
+function selectedPushRecipientIds(){
+  return Array.from(document.querySelectorAll('#push-recipients input[type=checkbox]:checked')).map(cb => cb.value);
+}
+function confirmSendPush(){
+  const category = (document.getElementById('push-cat')||{}).value || '一般通知';
+  const priority = (document.getElementById('push-pri')||{}).value || '一般';
+  const title = ((document.getElementById('push-title')||{}).value || '').trim();
+  const content = ((document.getElementById('push-content')||{}).value || '').trim();
+  const recipientIds = selectedPushRecipientIds();
+  if(!content){ alert2('請填寫訊息內容。'); return; }
+  if(!recipientIds.length){ alert2('請至少選擇一位收件人。'); return; }
+  showModal(`<h3>確認推送通知</h3>
+    <p style="font-size:14px;line-height:1.6">
+      類別：<b>${escHtml(category)}</b><br>
+      優先程度：<b>${escHtml(priority)}</b><br>
+      收件人數：<b>${recipientIds.length}</b>
+    </p>
+    <div class="actions">
+      <button class="btn sm gray" onclick="closeModal()">取消</button>
+      <button class="btn sm green" onclick="closeModal(); sendPushNotification()">確認送出</button>
+    </div>`);
+}
+async function sendPushNotification(){
+  const category = (document.getElementById('push-cat')||{}).value || '一般通知';
+  const priority = (document.getElementById('push-pri')||{}).value || '一般';
+  const title = ((document.getElementById('push-title')||{}).value || '').trim();
+  const content = ((document.getElementById('push-content')||{}).value || '').trim();
+  const recipientIds = selectedPushRecipientIds();
+  if(!content || !recipientIds.length || !currentUser) return;
+  const payload = {
+    category, priority, title, content,
+    fromUserId: currentUser.id,
+    fromName: currentUser.name,
+    recipientIds,
+    createdAt: nowStr(),
+    createdAtMs: Date.now()
+  };
+  try{
+    if(apiEnabled){
+      await apiFetch('/api/notifications', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      });
+      await loadNotifications();
+    } else {
+      const id = 'N' + String(notifSeq).padStart(3,'0');
+      notifSeq += 1;
+      notifications.unshift({
+        id,
+        category, priority, title, content,
+        fromUserId: currentUser.id,
+        fromName: currentUser.name,
+        createdAt: payload.createdAt,
+        createdAtMs: payload.createdAtMs,
+        recipients: recipientIds.map(userId => ({ userId, read:false, readAt:null }))
+      });
+      saveNotificationsLocal();
+      refreshMailboxUi();
+    }
+    const titleEl = document.getElementById('push-title');
+    const contentEl = document.getElementById('push-content');
+    if(titleEl) titleEl.value = '';
+    if(contentEl) contentEl.value = '';
+    togglePushRecipients(false);
+    const catEl = document.getElementById('push-cat');
+    const priEl = document.getElementById('push-pri');
+    if(catEl) catEl.value = '一般通知';
+    if(priEl) priEl.value = '一般';
+    alert2('已推送通知給 '+recipientIds.length+' 位用戶。');
+  }catch(e){
+    alert2('推送失敗：'+e.message);
+  }
+}
+function vPushNotify(){
+  const cands = pushRecipientCandidates();
+  const catOpts = NOTIF_CATEGORIES.map(c=>`<option value="${c}"${c==='一般通知'?' selected':''}>${c}</option>`).join('');
+  const priOpts = NOTIF_PRIORITIES.map(p=>`<option value="${p}"${p==='一般'?' selected':''}>${p}</option>`).join('');
+  const rows = cands.length
+    ? cands.map(u=>`<label class="rc-item"><input type="checkbox" value="${u.id}"> ${escHtml(u.name)} <span style="color:#888">（${escHtml(roleLabel(u))}）</span></label>`).join('')
+    : '<p style="color:#888;font-size:13px;margin:0">目前沒有可選收件人。</p>';
+  return `<div class="card">
+    <h2>📢 推送通知</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:8px">填寫內容並選擇收件人，送出後對方可在「信箱通知」查看並標為已讀。</p>
+    <label>通知類別</label>
+    <select id="push-cat">${catOpts}</select>
+    <label>優先程度</label>
+    <select id="push-pri">${priOpts}</select>
+    <label>標題（選填）</label>
+    <input type="text" id="push-title" placeholder="簡短標題，可留空">
+    <label>訊息內容（必填）</label>
+    <textarea id="push-content" placeholder="輸入要推送的內容" style="min-height:110px"></textarea>
+    <label>收件人（可多選）</label>
+    <div class="recipient-box" id="push-recipients">
+      <div class="rc-tools">
+        <button type="button" class="btn sm gray" onclick="togglePushRecipients(true)">全選</button>
+        <button type="button" class="btn sm gray" onclick="togglePushRecipients(false)">取消全選</button>
+      </div>
+      ${rows}
+    </div>
+    <button type="button" class="btn green" onclick="confirmSendPush()">送出推送</button>
+  </div>`;
 }
 
 /* ═══════════ 工具 ═══════════ */
@@ -592,7 +902,7 @@ function doLogin(){
   currentModule = 'daily'; currentView='dailyToday'; currentProject=null;
   ensureDailySeed(); generateRecurringForToday();
   addDailyOpLog('登入系統','進入每日工作流程');
-  render();
+  loadNotifications().then(function(){ render(); }).catch(function(){ render(); });
 }
 function logout(){
   if(currentModule==='daily' && typeof addDailyOpLog==='function'){
@@ -601,6 +911,8 @@ function logout(){
     addModuleLog(currentModule||'daily','登出系統','');
   }
   currentUser=null;
+  closeMailbox();
+  refreshMailboxUi();
   document.getElementById('app').classList.add('hidden');
   document.getElementById('page-login').classList.remove('hidden');
   document.getElementById('login-pw').value='';
@@ -609,15 +921,17 @@ function logout(){
 /* ═══════════ 導航及渲染 ═══════════ */
 function setModule(m){
   currentModule = m; currentProject=null;
+  closeMailbox();
   if(m==='daily'){ currentView='dailyToday'; ensureDailySeed(); generateRecurringForToday(); }
   else if(m==='production'){ currentView='home'; listType='dev'; }
+  else if(m==='push'){ currentView='pushNotify'; }
   else { currentView='home'; listType='rep'; }
   fCat='全部'; fStatus='全部'; fKw='';
   render();
 }
 function render(){
   const modNav = document.getElementById('module-nav');
-  const modules = [['daily','📅 每日工作流程'],['production','📐 開發及生產'],['replenishment','🔄 補貨']];
+  const modules = [['daily','📅 每日工作流程'],['production','📐 開發及生產'],['replenishment','🔄 補貨'],['push','📢 推送通知']];
   modNav.innerHTML = modules.map(([k,l])=>`<button class="${currentModule===k?'active':''}" onclick="setModule('${k}')">${l}</button>`).join('');
   const nav = document.getElementById('nav');
   let items = [];
@@ -628,6 +942,8 @@ function render(){
     items = [['home','首頁'],['devList','項目列表'],['myTasks','我的工作']];
     if(isAdmin()) items.push(['addProject','建立項目']);
     if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
+  } else if(currentModule==='push'){
+    items = [['pushNotify','撰寫推送']];
   } else {
     items = [['home','首頁'],['repList','項目列表'],['myTasks','我的工作']];
     if(isAdmin()) items.push(['addProject','建立項目']);
@@ -641,16 +957,19 @@ function render(){
     dailyToday:()=>vDailyToday(currentUser), dailyProgress:()=>vDailyProgress(currentUser),
     dailyUnit:()=>vDailyUnit(currentUser), dailyRecords:()=>vDailyRecords(currentUser),
     dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser),
-    dailyOpLogs:()=>vDailyOpLogs(currentUser)
+    dailyOpLogs:()=>vDailyOpLogs(currentUser),
+    pushNotify: vPushNotify
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
   afterProjectChatRender();
+  refreshMailboxUi();
   persistProjects();
 }
 function go(v){
   currentView=v; currentProject=null;
   if(v==='devList'){ listType='dev'; currentModule='production'; }
   if(v==='repList'){ listType='rep'; currentModule='replenishment'; }
+  if(v==='pushNotify'){ currentModule='push'; }
   fCat='全部'; fStatus='全部'; fKw='';
   render();
 }
@@ -2187,6 +2506,11 @@ function closeModal(){ document.getElementById('modal-bg').classList.add('hidden
 function alert2(msg){ showModal(`<h3>提示</h3><p style="font-size:14px">${msg}</p><div class="actions"><button class="btn sm" onclick="closeModal()">確定</button></div>`); }
 document.getElementById('modal-bg').addEventListener('click', e=>{ if(e.target.id==='modal-bg') closeModal(); });
 document.getElementById('login-pw').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+document.addEventListener('click', function(e){
+  if(!mailboxOpen) return;
+  const wrap = document.querySelector('.brand-wrap');
+  if(wrap && !wrap.contains(e.target)) closeMailbox();
+});
 // 建立項目頁初始化階段列表
 const _go = go;
 go = function(v){ _go(v); if(v==='addProject') setTimeout(renderNpStages, 0); };
@@ -2198,6 +2522,8 @@ go = function(v){ _go(v); if(v==='addProject') setTimeout(renderNpStages, 0); };
     err.textContent = '正在連接資料儲存（MongoDB）…';
   }
   await initCloud();
+  if(!apiEnabled) loadNotificationsLocal();
+  refreshMailboxUi();
   if(err){
     if(apiEnabled){
       err.style.display = 'block';

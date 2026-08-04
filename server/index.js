@@ -11,6 +11,9 @@ import {
   saveDaily,
   getProjectsState,
   saveProjectsState,
+  getNotificationsState,
+  createNotification,
+  markNotificationRead,
   uploadFile,
   downloadFile,
 } from './mongo.js';
@@ -110,6 +113,41 @@ app.put('/api/projects', requireDb, async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/notifications', requireDb, async (_req, res) => {
+  try {
+    res.json(await getNotificationsState());
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/notifications', requireDb, async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({ error: 'JSON body required' });
+    }
+    const item = await createNotification(req.body);
+    res.json(item);
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/notifications/:id/read', requireDb, async (req, res) => {
+  try {
+    const userId = String(req.body?.userId || '');
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const item = await markNotificationRead(req.params.id, userId);
+    res.json(item);
+  } catch (e) {
+    console.error(e);
+    const msg = String(e.message || e);
+    res.status(msg === 'Notification not found' ? 404 : 400).json({ error: msg });
   }
 });
 

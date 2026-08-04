@@ -21,6 +21,7 @@ export async function connectMongo() {
   bucket = new GridFSBucket(db, { bucketName: 'uploads' });
   await db.collection('daily').createIndex({ _id: 1 });
   await db.collection('projects').createIndex({ _id: 1 });
+  await db.collection('notifications').createIndex({ _id: 1 });
   console.log('MongoDB connected:', DB_NAME);
   return db;
 }
@@ -31,9 +32,13 @@ function dailyCol() {
 function projectsCol() {
   return db.collection('projects');
 }
+function notificationsCol() {
+  return db.collection('notifications');
+}
 
 const EMPTY_DAILY = { version: 2, works: [], recurringTemplates: [], opLogs: [] };
 const EMPTY_PROJECTS = { projects: null, projSeq: null, moduleLogs: null, users: null };
+const EMPTY_NOTIFICATIONS = { notifications: [], notifSeq: 1 };
 
 export async function getDaily() {
   await connectMongo();
@@ -63,6 +68,77 @@ export async function saveProjectsState(data) {
   const payload = { ...data, _id: 'main', updatedAt: new Date() };
   await projectsCol().replaceOne({ _id: 'main' }, payload, { upsert: true });
   return { ok: true };
+}
+
+export async function getNotificationsState() {
+  await connectMongo();
+  const doc = await notificationsCol().findOne({ _id: 'main' });
+  if (!doc) return { ...EMPTY_NOTIFICATIONS };
+  const { _id, updatedAt, ...rest } = doc;
+  return {
+    notifications: Array.isArray(rest.notifications) ? rest.notifications : [],
+    notifSeq: typeof rest.notifSeq === 'number' ? rest.notifSeq : 1,
+  };
+}
+
+export async function saveNotificationsState(data) {
+  await connectMongo();
+  const payload = {
+    notifications: Array.isArray(data?.notifications) ? data.notifications : [],
+    notifSeq: typeof data?.notifSeq === 'number' ? data.notifSeq : 1,
+    _id: 'main',
+    updatedAt: new Date(),
+  };
+  await notificationsCol().replaceOne({ _id: 'main' }, payload, { upsert: true });
+  return { ok: true };
+}
+
+export async function createNotification(input) {
+  await connectMongo();
+  const state = await getNotificationsState();
+  const recipientIds = Array.isArray(input?.recipientIds)
+    ? [...new Set(input.recipientIds.map(String).filter(Boolean))]
+    : [];
+  if (!recipientIds.length) throw new Error('recipientIds required');
+  const content = String(input?.content || '').trim();
+  if (!content) throw new Error('content required');
+  const id = 'N' + String(state.notifSeq).padStart(3, '0');
+  const now = new Date();
+  const createdAt =
+    input?.createdAt ||
+    `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const item = {
+    id,
+    category: String(input?.category || '一般通知'),
+    priority: String(input?.priority || '一般'),
+    title: String(input?.title || '').trim(),
+    content,
+    fromUserId: String(input?.fromUserId || ''),
+    fromName: String(input?.fromName || ''),
+    createdAt,
+    createdAtMs: Number(input?.createdAtMs) || now.getTime(),
+    recipients: recipientIds.map((userId) => ({ userId, read: false, readAt: null })),
+  };
+  state.notifications.unshift(item);
+  state.notifSeq = (state.notifSeq || 1) + 1;
+  await saveNotificationsState(state);
+  return item;
+}
+
+export async function markNotificationRead(id, userId) {
+  await connectMongo();
+  const state = await getNotificationsState();
+  const item = state.notifications.find((n) => n.id === id);
+  if (!item) throw new Error('Notification not found');
+  const rec = (item.recipients || []).find((r) => r.userId === userId);
+  if (!rec) throw new Error('Not a recipient');
+  if (!rec.read) {
+    const now = new Date();
+    rec.read = true;
+    rec.readAt = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    await saveNotificationsState(state);
+  }
+  return item;
 }
 
 export async function uploadFile({ buffer, filename, mimeType }) {
