@@ -345,7 +345,18 @@ const SAMPLE_PROJECT_CODES = ['WS-999','WS-888','WS-777'];
 const SAMPLE_PROJECT_NAMES = ['成人日本光皮長短','1mm兒童抓毛上衣','兒童防曬套裝'];
 const SAMPLE_DAILY_TITLES = ['整理今日到貨箱單','更新門市陳列清單','逾期示範：昨夜未完成點貨'];
 const SAMPLE_TPL_TITLES = ['門市巡檢','倉存點算'];
-const SAMPLE_LOG_RE = /WS-999|WS-888|WS-777|逾期示範|門市巡檢|倉存點算|整理今日到貨|更新門市陳列|成人日本光皮|兒童抓毛上衣|兒童防曬套裝/;
+const SAMPLE_LOG_RE = /WS-999|WS-888|WS-777|逾期示範|門市巡檢|倉存點算|整理今日到貨|更新門市陳列|成人日本光皮|兒童抓毛上衣|兒童防曬套裝|每日結算/;
+function isSampleDailyWork(w){
+  if(!w) return true;
+  if(SAMPLE_DAILY_TITLES.indexOf(w.title)>=0) return true;
+  if(String(w.title||'').indexOf('逾期示範')>=0) return true;
+  if(w.kind==='settlement' && /每日結算$/.test(String(w.title||''))) return true;
+  if(SAMPLE_TPL_TITLES.indexOf(w.title)>=0) return true;
+  return false;
+}
+function isSampleDailyTemplate(t){
+  return !t || SAMPLE_TPL_TITLES.indexOf(t.title)>=0;
+}
 function purgeSampleProjects(){
   const before = projects.length;
   projects = (projects||[]).filter(function(p){
@@ -382,14 +393,15 @@ function purgeSampleDailyState(s){
   const wBefore = (s.works||[]).length;
   const tBefore = (s.recurringTemplates||[]).length;
   const logBefore = (s.opLogs||[]).length;
-  s.works = (s.works||[]).filter(function(w){
-    if(!w) return false;
-    if(SAMPLE_DAILY_TITLES.indexOf(w.title)>=0) return false;
-    if(String(w.title||'').indexOf('逾期示範')>=0) return false;
-    return true;
+  const removedTplIds = {};
+  (s.recurringTemplates||[]).forEach(function(t){
+    if(isSampleDailyTemplate(t)) removedTplIds[t.id]=true;
   });
-  s.recurringTemplates = (s.recurringTemplates||[]).filter(function(t){
-    return t && SAMPLE_TPL_TITLES.indexOf(t.title)<0;
+  s.recurringTemplates = (s.recurringTemplates||[]).filter(function(t){ return !isSampleDailyTemplate(t); });
+  s.works = (s.works||[]).filter(function(w){
+    if(isSampleDailyWork(w)) return false;
+    if(w.templateId && removedTplIds[w.templateId]) return false;
+    return true;
   });
   s.opLogs = (s.opLogs||[]).filter(function(l){
     const blob = String((l&&l.detail)||'') + '|' + String((l&&l.action)||'');
@@ -2145,7 +2157,7 @@ function vSysLogs(){
 }
 
 /* ═══════════ Part 1 每日工作流程（localStorage v2） ═══════════ */
-var DAILY_KEY='store-web-daily-v5';
+var DAILY_KEY='store-web-daily-v6';
 var FIXED_UNITS=['觀塘','荔枝角','灣仔','屯門'];
 var STORE_UNITS=['觀塘','荔枝角','灣仔','屯門','國內倉'];
 var PRIORITIES=['高','中','低'];
@@ -2238,24 +2250,11 @@ function workCountsForUnit(unit){
   var pct=total?Math.round(done/total*100):0;
   return {unit:unit,total:total,done:done,open:total-done,overdue:overdue,pct:pct,items:items};
 }
-function dailyEnsureSettlements(s){
-  var today=dailyTodayStr();
-  FIXED_UNITS.forEach(function(unit){
-    var w=s.works.find(function(x){ return x.kind==='settlement'&&x.unit===unit&&x.dueDate===today&&x.status!=='cancelled'; });
-    if(!w){
-      s.works.push(mkWork({
-        id:'settle_'+unit+'_'+today,
-        title:unit+' 每日結算',
-        content:'完成門市當日結算相關檢查。',
-        unit:unit, kind:'settlement', status:'open', dueDate:today, priority:'高'
-      }));
-    }
-  });
-  // 國內倉永不保留結算
-  s.works=s.works.filter(function(w){ return !(w.kind==='settlement'&&w.unit==='國內倉'); });
-}
 function generateRecurringForToday(){
   var s=loadDailyState(), today=dailyTodayStr();
+  // 不再自動植入「每日結算」示範工作
+  s.works=(s.works||[]).filter(function(w){ return !isSampleDailyWork(w); });
+  s.recurringTemplates=(s.recurringTemplates||[]).filter(function(t){ return !isSampleDailyTemplate(t); });
   s.recurringTemplates.forEach(function(t){
     if(!t||!t.active) return;
     (t.units||[]).forEach(function(unit){
@@ -2272,7 +2271,6 @@ function generateRecurringForToday(){
       }
     });
   });
-  dailyEnsureSettlements(s);
   return saveDailyState(s);
 }
 function syncOpenRecurringFromTemplate(t){
@@ -2294,6 +2292,7 @@ function ensureDailySeed(){
     localStorage.removeItem('store-web-daily-v2');
     localStorage.removeItem('store-web-daily-v3');
     localStorage.removeItem('store-web-daily-v4');
+    localStorage.removeItem('store-web-daily-v5');
   }catch(e){}
   var s=loadDailyState();
   purgeSampleDailyState(s);
@@ -2452,6 +2451,23 @@ function editTemplate(id,data,user){
   syncOpenRecurringFromTemplate(t);
   generateRecurringForToday();
   addDailyOpLog('編輯恆常任務', t.title+'｜單位：'+(t.units||[]).join('、')+(t.requireAttachment?'｜需附件':''));
+  return true;
+}
+function deleteTemplate(id,user){
+  if(!dailyCanManage(user||currentUser)) return false;
+  var s=loadDailyState();
+  var t=s.recurringTemplates.find(function(x){ return x.id===id; });
+  if(!t) return false;
+  var title=t.title;
+  s.recurringTemplates=s.recurringTemplates.filter(function(x){ return x.id!==id; });
+  s.works.forEach(function(w){
+    if(w.kind==='recurring'&&w.templateId===id&&w.status==='open'){
+      w.status='cancelled';
+      w.updatedAt=dailyNowStr();
+    }
+  });
+  saveDailyState(s);
+  addDailyOpLog('刪除恆常任務', title);
   return true;
 }
 function getTodayWorksForUser(user){
@@ -2942,17 +2958,35 @@ function vDailyNew(user){
     '<button class="btn" onclick="dailyCreateAdhoc()">🛠️ 建立突發工作</button> '+
     '<button class="btn gray" onclick="goDailyView(\'recurring\')">前往恆常任務</button></div>';
 }
+function askDeleteTemplate(id){
+  if(!dailyCanManage(currentUser)) return alert2('只有管理層可以刪除恆常任務。');
+  var t=loadDailyState().recurringTemplates.find(function(x){return x.id===id;});
+  if(!t) return;
+  showModal('<h3>刪除恆常任務？</h3>'+
+    '<p style="font-size:14px;line-height:1.6">確定刪除「<b>'+dailyEsc(t.title)+'</b>」？<br>今日尚未完成、由此任務產生的工作會一併取消；已完成記錄仍保留。</p>'+
+    '<div class="actions">'+
+    '<button class="btn sm gray" onclick="closeModal()">取消</button>'+
+    '<button class="btn sm red" onclick="confirmDeleteTemplate(\''+id+'\')">確認刪除</button>'+
+    '</div>');
+}
+function confirmDeleteTemplate(id){
+  closeModal();
+  if(!deleteTemplate(id,currentUser)) return alert2('刪除失敗。');
+  render();
+  alert2('已刪除恆常任務。');
+}
 function vDailyRecurring(user){
   ensureDailySeed();
   var list=loadDailyState().recurringTemplates;
-  var rows=!list.length?'<p style="color:#888">暫無恆常任務。</p>':
+  var rows=!list.length?'<p style="color:#888">暫無恆常任務。請按上方按鈕建立。</p>':
     '<div class="table-wrap"><table><thead><tr><th>任務</th><th>單位</th><th>優先</th><th>附件</th><th>狀態</th>'+(dailyCanManage(user)?'<th>管理</th>':'')+'</tr></thead><tbody>'+
     list.map(function(t){
       var admin=dailyCanManage(user)
         ?('<button class="btn gray sm" onclick="dailyEditTemplate(\''+t.id+'\')">編輯</button> '+
           (t.active
             ?'<button class="btn warn sm" onclick="dailyToggleTemplate(\''+t.id+'\',false)">停用</button>'
-            :'<button class="btn green sm" onclick="dailyToggleTemplate(\''+t.id+'\',true)">啟用</button>'))
+            :'<button class="btn green sm" onclick="dailyToggleTemplate(\''+t.id+'\',true)">啟用</button>')+
+          ' <button class="btn red sm" onclick="askDeleteTemplate(\''+t.id+'\')">刪除</button>')
         :'';
       return '<tr><td><b>'+dailyEsc(t.title)+'</b>'+(t.content?'<div style="font-size:12px;color:#777">'+dailyEsc(t.content)+'</div>':'')+'</td>'+
         '<td>'+dailyEsc((t.units||[]).join('、'))+'</td><td>'+priorityTag(t.priority||'中')+'</td>'+
