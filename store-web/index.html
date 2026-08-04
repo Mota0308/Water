@@ -1050,6 +1050,9 @@ function vAddProject(){
   const staffOpts = users.filter(u=>u.role==='personal').map(u=>`<option value="${u.id}">${u.name}（${u.dept}）</option>`).join('');
   setTimeout(()=>{ renderNpStages(); npRenderCoverPreview(); npRenderFileList(); },0);
   return `<div class="card"><h2>➕ 建立新項目</h2>
+    <label>項目封面圖片（選填）</label>
+    <input type="file" id="np-cover" accept="image/*" onchange="npOnCoverPick(this)">
+    <div id="np-cover-preview">${npCoverPreviewHtml()}</div>
     <label>項目類型</label>
     <select id="np-type" onchange="renderNpStages()">
       <option value="dev">開發及生產（7個階段）</option>
@@ -1061,9 +1064,6 @@ function vAddProject(){
     <label>項目詳細內容（支援分行）</label><textarea id="np-desc" placeholder="• 要求一&#10;• 要求二"></textarea>
     <label>項目負責人</label><select id="np-owner">${staffOpts}</select>
     <label>預計完成日期</label><input type="date" id="np-due">
-    <label>項目封面圖片（選填）</label>
-    <input type="file" id="np-cover" accept="image/*" onchange="npOnCoverPick(this)">
-    <div id="np-cover-preview">${npCoverPreviewHtml()}</div>
     <label>項目附件（可多次添加、可多選）</label>
     <input type="file" id="np-files" multiple onchange="npOnFilesPick(this)">
     <p style="font-size:12px;color:#888;margin:4px 0 0">附件會顯示在項目「文件及圖片」，標籤為「建立項目」。封面只用於列表／標題縮圖，不進文件列表。</p>
