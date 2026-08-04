@@ -260,8 +260,25 @@ function normalizeUser(u){
   if(!out.dept) out.dept = units.join('、') || (out.position==='員工'?'—':'管理層');
   return out;
 }
+/** 舊示範帳（會從名單移除；admin 與之後「創建員工」新增的帳保留） */
+const LEGACY_DEMO_LOGINS = ['manager','kt.staff','tm.staff','kwok','ann','coey','wh.staff'];
+const LEGACY_DEMO_IDS = ['mgr','kt','tm','kwok','ann','coey','wh'];
+function purgeLegacyDemoUsers(){
+  const before = (users||[]).length;
+  users = (users||[]).filter(function(u){
+    if(!u) return false;
+    if(u.login==='admin' || u.id==='adm') return true;
+    const login = String(u.login||'').toLowerCase();
+    if(LEGACY_DEMO_LOGINS.indexOf(login)>=0) return false;
+    if(LEGACY_DEMO_IDS.indexOf(u.id)>=0) return false;
+    return true;
+  });
+  return users.length !== before;
+}
 function ensureAdminUser(){
+  const before = JSON.stringify(users||[]);
   users = (users||[]).map(normalizeUser).filter(Boolean);
+  purgeLegacyDemoUsers();
   if(!users.some(function(u){ return u.login==='admin'; })){
     users.unshift(Object.assign({}, SEED_ADMIN));
   }
@@ -271,13 +288,14 @@ function ensureAdminUser(){
     if(m) maxN = Math.max(maxN, parseInt(m[1],10));
   });
   if(maxN >= userSeq) userSeq = maxN + 1;
+  return before !== JSON.stringify(users);
 }
 function loadUsersLocal(){
   try{
     const j = JSON.parse(localStorage.getItem(USERS_KEY)||'null');
     if(Array.isArray(j) && j.length) users = j;
   }catch(e){}
-  ensureAdminUser();
+  if(ensureAdminUser()) saveUsersLocal();
 }
 function saveUsersLocal(){
   ensureAdminUser();
@@ -518,9 +536,12 @@ async function initCloud(){
       if(ps.moduleLogs && typeof ps.moduleLogs === 'object') moduleLogs = ps.moduleLogs;
       if(Array.isArray(ps.users) && ps.users.length){
         users = ps.users;
-        ensureAdminUser();
+        if(ensureAdminUser()){
+          saveUsersLocal();
+          await persistProjectsNow(); // 清掉雲端舊示範帳
+        }
       } else {
-        // 專案已在雲端但尚無 users：寫入預設 admin（不清除既有其他集合）
+        // 專案已在雲端但尚無 users：寫入預設 admin
         loadUsersLocal();
         ensureAdminUser();
         await persistProjectsNow();
@@ -1217,6 +1238,7 @@ function setModule(m){
   if(m==='daily'){ currentView='dailyToday'; ensureDailySeed(); generateRecurringForToday(); }
   else if(m==='production'){ currentView='home'; listType='dev'; }
   else if(m==='push'){ currentView='pushNotify'; }
+  else if(m==='createStaff'){ currentView='createStaff'; }
   else { currentView='home'; listType='rep'; }
   fCat='全部'; fStatus='全部'; fKw='';
   render();
@@ -1224,6 +1246,7 @@ function setModule(m){
 function render(){
   const modNav = document.getElementById('module-nav');
   const modules = [['daily','📅 每日工作流程'],['production','📐 開發及生產'],['replenishment','🔄 補貨'],['push','📢 推送通知']];
+  if(canCreateEmployee()) modules.push(['createStaff','👤 創建員工']);
   modNav.innerHTML = modules.map(([k,l])=>`<button class="${currentModule===k?'active':''}" onclick="setModule('${k}')">${l}</button>`).join('');
   const nav = document.getElementById('nav');
   let items = [];
@@ -1236,7 +1259,8 @@ function render(){
     if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
   } else if(currentModule==='push'){
     items = [['pushNotify','撰寫推送']];
-    if(canCreateEmployee()) items.push(['createStaff','創建員工']);
+  } else if(currentModule==='createStaff'){
+    items = [];
   } else {
     items = [['home','首頁'],['repList','項目列表'],['myTasks','我的工作']];
     if(isAdmin()) items.push(['addProject','建立項目']);
@@ -1244,6 +1268,7 @@ function render(){
   }
   const subActive = (k)=> currentView===k || (currentView==='project' && ((k==='devList'&&currentModule==='production')||(k==='repList'&&currentModule==='replenishment')));
   nav.innerHTML = items.map(([k,l])=>`<button class="${subActive(k)?'active':''}" onclick="go('${k}')">${l}</button>`).join('');
+  nav.style.display = items.length ? '' : 'none';
   const views = {
     home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : vHomeFiltered('dev'),
     devList:()=>vList('dev'), repList:()=>vList('rep'), myTasks:vMyTasks, addProject:vAddProject, sysLogs:vSysLogs, project:vProject,
@@ -1263,7 +1288,8 @@ function go(v){
   currentView=v; currentProject=null;
   if(v==='devList'){ listType='dev'; currentModule='production'; }
   if(v==='repList'){ listType='rep'; currentModule='replenishment'; }
-  if(v==='pushNotify' || v==='createStaff'){ currentModule='push'; }
+  if(v==='pushNotify'){ currentModule='push'; }
+  if(v==='createStaff'){ currentModule='createStaff'; }
   fCat='全部'; fStatus='全部'; fKw='';
   render();
 }
