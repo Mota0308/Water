@@ -402,9 +402,9 @@ async function initCloud(){
   apiReady = false;
   try{
     const health = await apiFetch('/api/health');
-    apiEnabled = !!health.driveConfigured;
+    apiEnabled = !!(health.mongoConfigured || health.configured || health.driveConfigured);
     if(!apiEnabled){
-      console.warn('API up but Drive not configured; using local/demo data.');
+      console.warn('API up but MongoDB not configured; using local/demo data.');
       apiReady = true;
       return;
     }
@@ -2195,18 +2195,18 @@ go = function(v){ _go(v); if(v==='addProject') setTimeout(renderNpStages, 0); };
   const err = document.getElementById('login-err');
   if(err){
     err.style.display = 'block';
-    err.textContent = '正在連接資料儲存（Google Drive）…';
+    err.textContent = '正在連接資料儲存（MongoDB）…';
   }
   await initCloud();
   if(err){
     if(apiEnabled){
       err.style.display = 'block';
       err.style.color = '#2e7d32';
-      err.textContent = '已連接 Google Drive 資料儲存。請登入。';
+      err.textContent = '已連接 MongoDB 資料儲存。請登入。';
     } else {
       err.style.display = 'block';
       err.style.color = '#8d6e00';
-      err.textContent = '未連接 Drive（本機示範模式）。部署後請設定服務帳戶環境變數。';
+      err.textContent = '未連接 MongoDB（本機示範模式）。請設定 MONGODB_URI。';
     }
   }
 })();

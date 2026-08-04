@@ -2,9 +2,9 @@
 
 正式產品入口：[`index.html`](./index.html)。
 
-本機可直接開檔，或由上層 `server/`（Express）一併提供前端與 Google Drive API。
+本機可直接開檔，或由上層 `server/`（Express）一併提供前端與 MongoDB API。
 
-部署到 Railway + Drive 請看：[../DEPLOY-RAILWAY-DRIVE.md](../DEPLOY-RAILWAY-DRIVE.md)
+部署到 Railway + MongoDB Atlas（Compass 可查看）請看：[../DEPLOY-MONGODB.md](../DEPLOY-MONGODB.md)
 
 舊 Next.js／Mongo 應用在 [`../archive/store-app`](../archive/store-app)。
 
@@ -21,5 +21,5 @@
 | 經手人 郭sir | kwok | 1234 |
 | 國內倉個人 | wh.staff | Staff123! |
 
-有設定 Drive 時：每日／項目資料寫入 Drive 的 `daily.json`／`projects.json`，附件上傳為 Drive 檔案。  
+有設定 `MONGODB_URI` 時：每日／項目寫入 MongoDB，附件存 GridFS（Compass 可看）。  
 未設定時：退回瀏覽器 `localStorage`＋記憶體種子（示範模式）。

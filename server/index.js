@@ -5,20 +5,20 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import {
-  driveConfigured,
+  mongoConfigured,
+  connectMongo,
   getDaily,
   saveDaily,
   getProjectsState,
   saveProjectsState,
   uploadFile,
   downloadFile,
-} from './drive.js';
+} from './mongo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const webRoot = path.join(root, 'store-web');
 
-// Local .env loader (no dependency). Railway injects env vars directly.
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return;
   const text = fs.readFileSync(filePath, 'utf8');
@@ -51,21 +51,25 @@ app.use(express.json({ limit: '8mb' }));
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
-    driveConfigured: driveConfigured(),
-    folderId: process.env.GOOGLE_DRIVE_FOLDER_ID || null,
+    configured: mongoConfigured(),
+    mongoConfigured: mongoConfigured(),
+    // keep old key so older frontend builds still work
+    driveConfigured: mongoConfigured(),
+    storage: mongoConfigured() ? 'mongodb' : null,
+    db: process.env.MONGODB_DB || 'store_employee',
   });
 });
 
-function requireDrive(_req, res, next) {
-  if (!driveConfigured()) {
+function requireDb(_req, res, next) {
+  if (!mongoConfigured()) {
     return res.status(503).json({
-      error: 'Drive not configured. Set GOOGLE_SERVICE_ACCOUNT_JSON and GOOGLE_DRIVE_FOLDER_ID.',
+      error: 'MongoDB not configured. Set MONGODB_URI (and optional MONGODB_DB).',
     });
   }
   next();
 }
 
-app.get('/api/daily', requireDrive, async (_req, res) => {
+app.get('/api/daily', requireDb, async (_req, res) => {
   try {
     res.json(await getDaily());
   } catch (e) {
@@ -74,7 +78,7 @@ app.get('/api/daily', requireDrive, async (_req, res) => {
   }
 });
 
-app.put('/api/daily', requireDrive, async (req, res) => {
+app.put('/api/daily', requireDb, async (req, res) => {
   try {
     if (!req.body || typeof req.body !== 'object') {
       return res.status(400).json({ error: 'JSON body required' });
@@ -87,7 +91,7 @@ app.put('/api/daily', requireDrive, async (req, res) => {
   }
 });
 
-app.get('/api/projects', requireDrive, async (_req, res) => {
+app.get('/api/projects', requireDb, async (_req, res) => {
   try {
     res.json(await getProjectsState());
   } catch (e) {
@@ -96,7 +100,7 @@ app.get('/api/projects', requireDrive, async (_req, res) => {
   }
 });
 
-app.put('/api/projects', requireDrive, async (req, res) => {
+app.put('/api/projects', requireDb, async (req, res) => {
   try {
     if (!req.body || typeof req.body !== 'object') {
       return res.status(400).json({ error: 'JSON body required' });
@@ -109,7 +113,7 @@ app.put('/api/projects', requireDrive, async (req, res) => {
   }
 });
 
-app.post('/api/files', requireDrive, upload.single('file'), async (req, res) => {
+app.post('/api/files', requireDb, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'file field required' });
     const saved = await uploadFile({
@@ -124,11 +128,15 @@ app.post('/api/files', requireDrive, upload.single('file'), async (req, res) => 
   }
 });
 
-app.get('/api/files/:id', requireDrive, async (req, res) => {
+app.get('/api/files/:id', requireDb, async (req, res) => {
   try {
     const { stream, name, mimeType } = await downloadFile(req.params.id);
     res.setHeader('Content-Type', mimeType);
     res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`);
+    stream.on('error', (err) => {
+      console.error(err);
+      if (!res.headersSent) res.status(404).json({ error: 'File not found' });
+    });
     stream.pipe(res);
   } catch (e) {
     console.error(e);
@@ -142,7 +150,21 @@ app.get('*', (req, res, next) => {
   res.sendFile(path.join(webRoot, 'index.html'));
 });
 
-app.listen(port, () => {
-  console.log(`store-web server on http://localhost:${port}`);
-  console.log(`Drive configured: ${driveConfigured()}`);
-});
+async function main() {
+  if (mongoConfigured()) {
+    try {
+      await connectMongo();
+    } catch (e) {
+      console.error('MongoDB connect failed:', e.message || e);
+      console.error('Server will start but /api/* will error until URI/network is fixed.');
+    }
+  } else {
+    console.warn('MONGODB_URI not set — demo mode (no cloud persist).');
+  }
+  app.listen(port, () => {
+    console.log(`store-web server on http://localhost:${port}`);
+    console.log(`Mongo configured: ${mongoConfigured()}`);
+  });
+}
+
+main();
