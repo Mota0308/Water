@@ -1233,7 +1233,7 @@ function completeDailyWork(id,user,checked,opts){
   if(checked){
     if(!canTickWork(w,user)) return false;
     if(w.status==='done') return true;
-    if(w.requireAttachment && w.kind==='recurring'){
+    if(w.requireAttachment){
       var incoming=Array.isArray(opts.attachments)?opts.attachments:[];
       if(incoming.length) w.attachments=w.attachments.concat(incoming);
       if(!w.attachments.length) return false;
@@ -1307,14 +1307,16 @@ function createAdhocWork(data,user){
   var units=(data.units||[]).filter(function(u,i,a){ return STORE_UNITS.indexOf(u)>=0&&a.indexOf(u)===i; });
   if(!title||!units.length) return false;
   var s=loadDailyState();
+  var requireAttachment=!!data.requireAttachment;
   units.forEach(function(unit){
     s.works.push(mkWork({
       title:title, content:content, unit:unit, kind:'adhoc',
-      dueDate:dueDate, priority:priority, createdBy:dailyUserId(user)
+      dueDate:dueDate, priority:priority, createdBy:dailyUserId(user),
+      requireAttachment:requireAttachment, attachments:[]
     }));
   });
   saveDailyState(s);
-  addDailyOpLog('建立突發工作', title+'｜單位：'+units.join('、')+'｜期限 '+dueDate);
+  addDailyOpLog('建立突發工作', title+'｜單位：'+units.join('、')+'｜期限 '+dueDate+(requireAttachment?'｜需附件':''));
   return true;
 }
 function createRecurringTemplate(data,user){
@@ -1411,7 +1413,7 @@ function dailyToggle(id,el){
   if(!w){ el.checked=!el.checked; return; }
   if(el.checked){
     // 要完成：需附件的恆常任務先開上傳窗，成功前不打勾
-    if(w.requireAttachment && w.kind==='recurring'){
+    if(w.requireAttachment){
       el.checked=false;
       dailyAskCompleteWithFiles(id);
       return;
@@ -1441,7 +1443,7 @@ function dailyAskCompleteWithFiles(id){
   if(!w) return;
   showModal(
     '<h3>上傳附件後完成</h3>'+
-    '<p style="font-size:13px;color:#555">恆常任務「'+dailyEsc(w.title)+'」需要上傳至少 1 個附件（格式不限，可多選）。上傳成功後才會剔選完成。</p>'+
+    '<p style="font-size:13px;color:#555">「'+dailyEsc(w.title)+'」需要上傳至少 1 個附件（格式不限，可多選）。上傳成功後才會剔選完成。</p>'+
     '<label>選擇檔案</label><input type="file" id="d-complete-files" multiple>'+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'+
     '<button class="btn sm" onclick="dailySubmitCompleteWithFiles(\''+id+'\')">上傳並完成</button></div>'
@@ -1523,6 +1525,8 @@ function dailyCreateAdhoc(){
     '<label>完成期限</label><input id="d-due" type="date" value="'+dailyTodayStr()+'">'+
     '<label>優先級</label>'+prioritySelectHtml('中')+
     '<label>適用單位（可多選）</label><div class="card" style="padding:10px">'+unitChecksHtml()+'</div>'+
+    '<label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="d-require-attach"> 完成時需要上傳附件</label>'+
+    '<p style="font-size:12px;color:#888;margin-top:4px">勾選後，員工剔選完成前必須先上傳至少 1 個附件（格式不限）。</p>'+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitAdhoc()">建立</button></div>'
   );
 }
@@ -1531,9 +1535,10 @@ function dailySubmitAdhoc(){
   var content=document.getElementById('d-content').value||'';
   var due=document.getElementById('d-due').value||dailyTodayStr();
   var priority=document.getElementById('d-priority').value;
+  var requireAttachment=!!(document.getElementById('d-require-attach')||{}).checked;
   var units=[].slice.call(document.querySelectorAll('#modal-content .d-unit:checked')).map(function(x){return x.value;});
   if(!title||!units.length) return alert2('請輸入標題並選擇至少一個單位。');
-  createAdhocWork({title:title,content:content,dueDate:due,priority:priority,units:units},currentUser);
+  createAdhocWork({title:title,content:content,dueDate:due,priority:priority,units:units,requireAttachment:requireAttachment},currentUser);
   closeModal(); render();
 }
 function dailyCreateRecurring(){
@@ -1623,7 +1628,7 @@ function dailyAttachHtml(w,user,readonly){
   var files=Array.isArray(w.attachments)?w.attachments:[];
   var can=canTickWork(w,user);
   var bits=[];
-  if(w.requireAttachment&&w.kind==='recurring'){
+  if(w.requireAttachment){
     bits.push('<span class="tag" style="background:#fff3e0;color:#e65100">需附件</span>');
   }
   if(files.length){
@@ -1656,7 +1661,7 @@ function dailyWorkRows(list,user,opts){
             :'<input type="checkbox" checked disabled title="已完成（不可操作其他單位）">';
         }else{
           tick=can
-            ?'<input type="checkbox" onchange="dailyToggle(\''+w.id+'\',this)" title="'+(w.requireAttachment&&w.kind==='recurring'?'需先上傳附件':'剔選完成')+'">'
+            ?'<input type="checkbox" onchange="dailyToggle(\''+w.id+'\',this)" title="'+(w.requireAttachment?'需先上傳附件':'剔選完成')+'">'
             :'<input type="checkbox" disabled title="不可操作">';
         }
       }
@@ -1705,13 +1710,8 @@ function vDailyProgress(user){
   var progress=getUnitProgress();
   var cards=STORE_UNITS.map(function(unit){
     var p=progress[unit];
-    var settleNote=unit==='國內倉'
-      ?'<span class="tag s-na">無每日結算</span>'
-      :(p.items.some(function(w){return w.kind==='settlement'&&w.status==='done';})
-        ?'<span class="tag s-done">結算已完成</span>'
-        :'<span class="tag s-wait">結算未完成</span>');
     return '<div class="card" style="cursor:pointer" onclick="openDailyUnit(\''+unit+'\')">'+
-      '<h3>'+unit+' '+settleNote+'</h3>'+
+      '<h3>'+unit+'</h3>'+
       '<div class="stats">'+
       '<div class="stat"><div class="num">'+p.total+'</div><div class="lbl">總數</div></div>'+
       '<div class="stat"><div class="num green">'+p.done+'</div><div class="lbl">已完成</div></div>'+
