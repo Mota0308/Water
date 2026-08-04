@@ -1216,15 +1216,15 @@ function completeDailyWork(id,user,checked){
     saveDailyState(s);
     addDailyOpLog(w.kind==='settlement'?'完成結算':'完成工作', w.unit+'｜'+w.title);
   }else{
-    // 只有管理層可重開（取消剔選）
-    if(!dailyCanManage(user)) return false;
+    // 可剔選該工作的人可再取消剔選（重開）
+    if(!canTickWork(w,user)) return false;
     w.status='open';
     w.completedAt=null;
     w.completedBy=null;
     w.completedByName=null;
     w.updatedAt=dailyNowStr();
     saveDailyState(s);
-    addDailyOpLog('重新開啟工作', w.unit+'｜'+w.title);
+    addDailyOpLog('取消完成／重開工作', w.unit+'｜'+w.title);
   }
   return true;
 }
@@ -1359,7 +1359,7 @@ function setDailyUnitFilter(unit){ dailyUnitFilter=unit||'全部'; render(); }
 function openDailyUnit(unit){ dailyProgressUnit=unit; currentModule='daily'; currentView='dailyUnit'; render(); }
 function dailyToggle(id,el){
   var ok=completeDailyWork(id,currentUser,!!el.checked);
-  if(!ok){ el.checked=!el.checked; alert2(dailyCanManage(currentUser)?'無法更新此工作。':'你只能剔選自己所屬單位的工作，且不可自行取消剔選。'); return; }
+  if(!ok){ el.checked=!el.checked; alert2('無法更新此工作。你只能操作自己所屬單位的工作。'); return; }
   render();
 }
 function dailyReopen(id){
@@ -1486,12 +1486,12 @@ function dailyWorkRows(list,user,opts){
       var tick='';
       if(!readonly){
         if(w.status==='done'){
-          tick=dailyCanManage(user)
-            ?'<input type="checkbox" checked onchange="dailyToggle(\''+w.id+'\',this)" title="取消剔選＝重開">'
-            :'<input type="checkbox" checked disabled title="已完成（個人不可取消）">';
+          tick=can
+            ?'<input type="checkbox" checked onchange="dailyToggle(\''+w.id+'\',this)" title="再點一下可取消完成">'
+            :'<input type="checkbox" checked disabled title="已完成（不可操作其他單位）">';
         }else{
           tick=can
-            ?'<input type="checkbox" onchange="dailyToggle(\''+w.id+'\',this)">'
+            ?'<input type="checkbox" onchange="dailyToggle(\''+w.id+'\',this)" title="剔選完成">'
             :'<input type="checkbox" disabled title="不可操作">';
         }
       }
