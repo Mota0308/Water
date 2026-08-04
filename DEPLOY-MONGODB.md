@@ -43,16 +43,30 @@ Compass：New Connection → 貼同一條 `MONGODB_URI` → Connect
 | `projects` | `_id: "main"` 項目／用戶／操作記錄 |
 | `uploads.files` / `uploads.chunks` | GridFS 附件 |
 
-## Railway
+## Railway（專案 `friendly-surprise`／服務 `desirable-balance`）
 
-Variables：
+**Root Directory 必須是 repo 根目錄**（同時有 `package.json`、`store-web/`、`server/`），不要選 `store-web` 或 `server` 子資料夾。  
+Start command：`npm start`（已寫在根目錄 `package.json` 與 `railway.toml`）。
+
+### 第一次連 GitHub 並部署
+
+1. 把本機專案推到 GitHub（根目錄含 `store-web` + `server`）
+2. Railway → 專案 **friendly-surprise** → 服務 **desirable-balance**
+3. **Settings** → **Source** → Connect GitHub repository（選這個 repo）
+4. **Root Directory**：留空或 `/`（不要填 `store-web`）
+5. **Build**：Nixpacks／預設即可  
+6. **Custom Start Command**（若有欄位）：`npm start`
+7. **Variables** 新增：
 
 | 變數 | 說明 |
 |------|------|
 | `MONGODB_URI` | Atlas 連線字串 |
 | `MONGODB_DB` | 可選，預設 `store_employee` |
 
-Deploy 後用 Railway 網域開啟前端。
+8. 按 **Deploy**
+9. **Settings → Networking → Generate Domain**（目前 Unexposed 時必須做）
+
+健康檢查：`https://你的網域/api/health` 應回 `"mongoConfigured": true`。
 
 ## API（不變）
 

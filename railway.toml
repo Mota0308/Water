@@ -1,0 +1,9 @@
+# Deploy from repo ROOT (contains store-web/ + server/ + package.json)
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "npm start"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
