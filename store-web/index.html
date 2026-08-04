@@ -1070,7 +1070,7 @@ function vAddProject(){
     <div id="np-file-list">${npFileListHtml()}</div>
     <h3 style="margin-top:16px">各階段經手人分配（可暫時保留未分配）</h3>
     <div id="np-stages"></div>
-    <button class="btn" onclick="createProject()">建立項目</button>
+    <button class="btn" onclick="askCreateProject()">建立項目</button>
   </div>`;
 }
 function renderNpStages(){
@@ -1084,6 +1084,28 @@ function renderNpStages(){
       <span style="min-width:140px;font-size:13px"><b>${i+1}. ${s}</b></span>
       <select class="np-handler" style="width:auto;font-size:13px;padding:6px">${staffOpts}</select>
     </div>`).join('');
+}
+function askCreateProject(){
+  if(!isAdmin()){ alert2('只有系統管理員可以建立項目。'); return; }
+  const type = document.getElementById('np-type').value;
+  const code = document.getElementById('np-code').value.trim();
+  const name = document.getElementById('np-name').value.trim();
+  if(!code||!name){ alert2('請輸入產品編號及項目簡介。'); return; }
+  const typeLabel = type==='dev'?'開發及生產':'補貨';
+  const stages = (type==='dev'?DEV_STAGES:REP_STAGES);
+  const coverNote = npCoverDraft ? '已選封面' : '無封面';
+  const fileNote = npDraftFiles.length ? ('附件 '+npDraftFiles.length+' 個') : '無附件';
+  showModal(
+    '<h3>確認建立項目？</h3>'+
+    '<p style="font-size:14px">即將建立：</p>'+
+    '<ul style="font-size:13px;line-height:1.7;margin:8px 0 12px 18px">'+
+      '<li>類型：'+typeLabel+'（'+stages.length+' 個階段）</li>'+
+      '<li>編號／簡介：<b>'+String(code).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))+'｜'+String(name).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))+'</b></li>'+
+      '<li>'+coverNote+'｜'+fileNote+'</li>'+
+    '</ul>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">返回修改</button>'+
+    '<button class="btn sm" onclick="createProject()">確認建立</button></div>'
+  );
 }
 async function createProject(){
   if(!isAdmin()){ alert2('只有系統管理員可以建立項目。'); return; }
