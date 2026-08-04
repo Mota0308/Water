@@ -570,20 +570,30 @@ function vHome(){
   </div>
   <div class="card"><h2>📂 全部項目</h2>${projTable(projects)}</div>`;
 }
-function getMyTasks(){
-  const out = [];
+function getProjectTodosForUser(user){
+  user=user||currentUser;
+  if(!user||user.role!=='personal') return [];
+  const out=[];
   projects.forEach(p=>{
     if(p.status==='已取消') return;
-    p.stages.forEach(s=>{
-      if(s.handler===currentUser.id && !stageDone(s) && ['進行中','待處理','需要修改','待確認','未開始'].includes(s.status)){
-        // 只顯示已經輪到或進行中嘅階段
-        const idx = p.stages.indexOf(s);
-        const prevDone = idx===0 || p.stages.slice(0,idx).every(stageDone);
-        if(prevDone || s.status!=='未開始') out.push({pid:p.id, pname:p.name, code:p.code, stage:s.name, deadline:s.deadline, status:s.status});
-      }
+    p.stages.forEach((s,idx)=>{
+      if(s.handler!==user.id||stageDone(s)) return;
+      if(!['進行中','待處理','需要修改','待確認','未開始'].includes(s.status)) return;
+      const prevDone=idx===0||p.stages.slice(0,idx).every(stageDone);
+      if(!(prevDone||s.status!=='未開始')) return;
+      out.push({
+        pid:p.id, idx:idx, pname:p.name, code:p.code, stage:s.name,
+        deadline:s.deadline, status:s.status, type:p.type,
+        content:s.content||'', files:s.files||[]
+      });
     });
   });
   return out;
+}
+function getMyTasks(){
+  return getProjectTodosForUser(currentUser).map(t=>({
+    pid:t.pid, pname:t.pname, code:t.code, stage:t.stage, deadline:t.deadline, status:t.status
+  }));
 }
 
 /* ═══════════ 項目列表 ═══════════ */
@@ -1645,12 +1655,10 @@ function dailyAttachHtml(w,user,readonly){
 function dailyWorkRows(list,user,opts){
   opts=opts||{};
   var readonly=!!opts.readonly;
-  if(!list.length) return '<p style="color:#888">沒有工作。</p>';
-  return '<div class="table-wrap"><table><thead><tr>'+
-    (readonly?'':'<th style="width:40px">剔選</th>')+
-    '<th>工作</th><th>單位</th><th>類型</th><th>優先</th><th>期限</th><th>狀態</th><th>完成資訊</th>'+
-    (dailyCanManage(user)&&!readonly?'<th>管理</th>':'')+
-    '</tr></thead><tbody>'+list.map(function(w){
+  var mirrors=opts.mirrors||[];
+  if(!list.length&&!mirrors.length) return '<p style="color:#888">沒有工作。</p>';
+  var showAdmin=dailyCanManage(user)&&!readonly;
+  var body=list.map(function(w){
       var can=canTickWork(w,user);
       var tick='';
       if(!readonly){
@@ -1668,7 +1676,7 @@ function dailyWorkRows(list,user,opts){
         ? dailyEsc(w.completedByName||'—')+'<div style="font-size:11px;color:#888">'+dailyEsc(w.completedAt||'')+'</div>'
         : '—';
       var admin='';
-      if(dailyCanManage(user)&&!readonly){
+      if(showAdmin){
         admin='<button class="btn gray sm" onclick="dailyEditWork(\''+w.id+'\')">編輯</button> ';
         if(w.status==='done') admin+='<button class="btn warn sm" onclick="dailyReopen(\''+w.id+'\')">重開</button> ';
         if(w.kind!=='settlement'&&w.status!=='cancelled') admin+='<button class="btn red sm" onclick="dailyCancelWork(\''+w.id+'\')">取消</button>';
@@ -1678,13 +1686,117 @@ function dailyWorkRows(list,user,opts){
         '<td><b>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+dailyAttachHtml(w,user,readonly)+'</td>'+
         '<td>'+dailyEsc(w.unit)+'</td><td>'+dailyKindTag(w)+'</td><td>'+priorityTag(w.priority)+'</td>'+
         '<td>'+dailyEsc(w.dueDate||'—')+'</td><td>'+dailyStatusTag(w)+'</td><td>'+doneInfo+'</td>'+
-        (dailyCanManage(user)&&!readonly?'<td><div class="actions-row">'+admin+'</div></td>':'')+
+        (showAdmin?'<td><div class="actions-row">'+admin+'</div></td>':'')+
         '</tr>';
-    }).join('')+'</tbody></table></div>';
+    }).join('');
+  body+=mirrors.map(function(t){ return dailyProjectMirrorRow(t,readonly); }).join('');
+  return '<div class="table-wrap"><table><thead><tr>'+
+    (readonly?'':'<th style="width:40px">剔選</th>')+
+    '<th>工作</th><th>單位</th><th>類型</th><th>優先</th><th>期限</th><th>狀態</th><th>完成資訊</th>'+
+    (showAdmin?'<th>管理</th>':'')+
+    '</tr></thead><tbody>'+body+'</tbody></table></div>';
+}
+function dailyProjectMirrorRow(t,readonly){
+  var submitted=t.status==='待確認';
+  var tick='';
+  if(!readonly){
+    tick=submitted
+      ?'<input type="checkbox" checked onchange="dailyToggleProject(\''+t.pid+'\','+t.idx+',this)" title="取消剔選＝撤回提交">'
+      :'<input type="checkbox" onchange="dailyToggleProject(\''+t.pid+'\','+t.idx+',this)" title="剔選＝上傳附件並提交確認">';
+  }
+  var typeLabel=t.type==='rep'?'補貨':'開發';
+  var title='['+typeLabel+'] '+t.code+'｜'+t.stage;
+  var extra=
+    (t.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(t.content)+'</div>':'')+
+    '<div style="margin-top:6px" class="actions-row">'+
+      '<button type="button" class="btn gray sm" onclick="askContent(\''+t.pid+'\','+t.idx+')">填寫工作內容</button> '+
+      '<button type="button" class="btn sm" onclick="openProject(\''+t.pid+'\',\'flow\')">查看項目</button>'+
+    '</div>'+
+    (t.files&&t.files.length?'<div style="font-size:11px;color:#888;margin-top:4px">已有附件 '+t.files.length+' 個（提交時仍須新上傳）</div>':'');
+  return '<tr>'+
+    (readonly?'':'<td>'+tick+'</td>')+
+    '<td><b>'+dailyEsc(title)+'</b><div style="font-size:12px;color:#777;margin-top:2px">'+dailyEsc(t.pname)+'</div>'+extra+'</td>'+
+    '<td>—</td><td>'+typeTag(t.type)+'</td><td>—</td>'+
+    '<td>'+dailyEsc(t.deadline||'—')+'</td><td>'+stTag(t.status)+'</td><td>—</td></tr>';
+}
+function dailyToggleProject(pid,idx,el){
+  if(isManager()){ el.checked=!el.checked; alert2('一般管理層不可推進階段。'); return; }
+  if(!isPersonal()&&!isAdmin()){ el.checked=!el.checked; return; }
+  var p=projects.find(function(x){ return x.id===pid; });
+  if(!p||!p.stages[idx]){ el.checked=!el.checked; return; }
+  var s=p.stages[idx];
+  if(s.handler!==currentUser.id&&!isAdmin()){ el.checked=!el.checked; alert2('此階段不是你的待辦。'); return; }
+  if(el.checked){
+    el.checked=false;
+    dailyAskProjectSubmit(pid,idx);
+    return;
+  }
+  el.checked=true;
+  showModal(
+    '<h3>撤回提交？</h3>'+
+    '<p style="font-size:14px">將「'+dailyEsc(p.code)+'｜'+dailyEsc(s.name)+'」由待確認撤回為進行中。</p>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">返回</button>'+
+    '<button class="btn red sm" onclick="dailyConfirmProjectWithdraw(\''+pid+'\','+idx+')">確認撤回</button></div>'
+  );
+}
+function dailyAskProjectSubmit(pid,idx){
+  var p=projects.find(function(x){ return x.id===pid; });
+  if(!p||!p.stages[idx]) return;
+  var s=p.stages[idx];
+  showModal(
+    '<h3>上傳附件後提交確認</h3>'+
+    '<p style="font-size:13px;color:#555">「'+dailyEsc(p.code)+'｜'+dailyEsc(s.name)+'」提交前必須<strong>新上傳</strong>至少 1 個附件（格式不限，可多選）。未開始的階段會自動開始處理。</p>'+
+    '<label>選擇檔案</label><input type="file" id="d-proj-files" multiple>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'+
+    '<button class="btn sm" onclick="dailySubmitProject(\''+pid+'\','+idx+')">上傳並提交</button></div>'
+  );
+}
+async function dailySubmitProject(pid,idx){
+  if(isManager()) return alert2('一般管理層不可推進階段。');
+  var p=projects.find(function(x){ return x.id===pid; });
+  if(!p||!p.stages[idx]) return;
+  var s=p.stages[idx];
+  if(s.handler!==currentUser.id&&!isAdmin()) return alert2('此階段不是你的待辦。');
+  var input=document.getElementById('d-proj-files');
+  if(!input||!input.files||!input.files.length) return alert2('請至少選擇 1 個附件。');
+  try{
+    for(var i=0;i<input.files.length;i++){
+      var f=input.files[i];
+      var dataUrl=await readFileAsDataUrl(f);
+      s.files.forEach(function(x){ x.latest=false; });
+      var ver='V'+(s.files.length+1);
+      s.files.push({name:f.name, by:currentUser.id, time:nowStr(), ver:ver, latest:true, dataUrl:dataUrl});
+      addProjLog(p,'上載文件', s.name+'｜'+f.name+'（'+ver+'）');
+    }
+  }catch(e){ return alert2('讀取檔案失敗，請重試。'); }
+  if(['未開始','待處理'].includes(s.status)){
+    s.status='進行中';
+    addProjLog(p,'開始處理', s.name+' → 進行中');
+  }
+  if(['進行中','需要修改'].includes(s.status)){
+    s.status='待確認';
+    s.returnReason='';
+    addProjLog(p,'提交確認', s.name+' → 待確認');
+  }else if(s.status!=='待確認'){
+    return alert2('目前狀態無法提交確認：'+s.status);
+  }
+  closeModal(); render();
+}
+function dailyConfirmProjectWithdraw(pid,idx){
+  if(isManager()){ closeModal(); return alert2('一般管理層不可推進階段。'); }
+  var p=projects.find(function(x){ return x.id===pid; });
+  if(!p||!p.stages[idx]){ closeModal(); return; }
+  var s=p.stages[idx];
+  if(s.handler!==currentUser.id&&!isAdmin()){ closeModal(); return alert2('此階段不是你的待辦。'); }
+  if(s.status!=='待確認'){ closeModal(); render(); return; }
+  s.status='進行中';
+  addProjLog(p,'撤回提交', s.name+'｜待確認 → 進行中');
+  closeModal(); render();
 }
 function vDailyToday(user){
   ensureDailySeed();
   var list=getTodayWorksForUser(user);
+  var mirrors=dailyCanManage(user)?[]:getProjectTodosForUser(user);
   var done=list.filter(function(w){return w.status==='done';}).length;
   var overdue=list.filter(isOverdue).length;
   var filter='';
@@ -1697,12 +1809,15 @@ function vDailyToday(user){
   }
   return '<div class="card"><h2>🗓️ 今日工作｜'+dailyEsc(todayStr())+'</h2>'+
     '<div class="stats">'+
-    '<div class="stat"><div class="num">'+list.length+'</div><div class="lbl">總數</div></div>'+
+    '<div class="stat"><div class="num">'+list.length+'</div><div class="lbl">門市工作</div></div>'+
     '<div class="stat"><div class="num green">'+done+'</div><div class="lbl">已完成</div></div>'+
     '<div class="stat"><div class="num orange">'+(list.length-done)+'</div><div class="lbl">未完成</div></div>'+
     '<div class="stat"><div class="num red">'+overdue+'</div><div class="lbl">逾期</div></div>'+
-    '</div><div class="filters" style="margin-top:12px">'+filter+'</div></div>'+
-    '<div class="card"><h3>工作清單（剔選完成）</h3>'+dailyWorkRows(list,user)+'</div>';
+    (mirrors.length?'<div class="stat"><div class="num blue">'+mirrors.length+'</div><div class="lbl">項目待辦</div></div>':'')+
+    '</div><div class="filters" style="margin-top:12px">'+filter+'</div>'+
+    (mirrors.length?'<p style="font-size:12px;color:#888;margin-top:8px">項目待辦（開發／補貨）顯示於下方清單，不計入上方門市完成統計。</p>':'')+
+    '</div>'+
+    '<div class="card"><h3>工作清單（剔選完成）</h3>'+dailyWorkRows(list,user,{mirrors:mirrors})+'</div>';
 }
 function vDailyProgress(user){
   ensureDailySeed();
