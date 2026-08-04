@@ -201,6 +201,7 @@
       <b>預設賬號：</b>
       <div>系統管理員：admin / admin</div>
       <div style="margin-top:6px;color:#666">其他員工請由管理員以「創建員工」新增；初始密碼為賬號最後四位。</div>
+      <div style="margin-top:8px;color:#1565c0">資料保存在 MongoDB 雲端：任何裝置開啟同一網站即可登入與輸入。</div>
     </div>
   </div>
 </div>
@@ -549,13 +550,18 @@ async function flushCloudSaves(){
     noteCloudError(e);
   }
 }
-/** 以雲端 users 為主，並併入本機有、雲端沒有的賬號（避免離線建立後遺失） */
+/**
+ * 雲端為唯一正式來源。
+ * - 雲端已有 users：直接採用雲端（其他裝置才能一致登入）
+ * - 雲端尚無 users：才把本機賬號上傳一次（救援舊資料）
+ */
 function applyUsersFromCloud(cloudUsers){
   const localCopy = (users||[]).map(normalizeUser).filter(Boolean);
   let needUpload = false;
   if(Array.isArray(cloudUsers) && cloudUsers.length){
     users = cloudUsers.map(normalizeUser).filter(Boolean);
     ensureAdminUser();
+    // 僅救援：本機有、雲端沒有的非 admin 賬號（例如舊版只寫進瀏覽器）
     const have = {};
     users.forEach(function(u){ have[String(u.login||'').toLowerCase()] = true; });
     localCopy.forEach(function(u){
@@ -566,7 +572,7 @@ function applyUsersFromCloud(cloudUsers){
       needUpload = true;
     });
   } else {
-    users = localCopy.length ? localCopy : users;
+    users = localCopy.length ? localCopy : [Object.assign({}, SEED_ADMIN)];
     ensureAdminUser();
     needUpload = true;
   }
@@ -1299,20 +1305,49 @@ function afterProjectChatRender(){
 }
 
 /* ═══════════ 登入/登出 ═══════════ */
-function doLogin(){
+async function doLogin(){
   const u = document.getElementById('login-user').value.trim();
   const p = document.getElementById('login-pw').value;
-  ensureAdminUser();
-  const user = users.find(x=>x.login===u && x.pw===p && x.active!==false);
   const err = document.getElementById('login-err');
   if(!apiReady){ err.style.color='#c62828'; err.textContent='資料儲存仍在初始化，請稍候再登入。'; err.style.display='block'; return; }
   if(!apiEnabled){
     err.style.color='#c62828';
-    err.textContent='未連接 MongoDB 雲端，無法登入正式系統。請確認伺服器已設定 MONGODB_URI 後重新整理。';
+    err.textContent='未連接 MongoDB 雲端，無法登入。所有裝置必須使用同一雲端資料庫。請確認 Railway 已設定 MONGODB_URI。';
     err.style.display='block';
     return;
   }
-  if(!user){ err.style.color='#c62828'; err.textContent='登入名稱或密碼錯誤，請重試或聯絡管理層。'; err.style.display='block'; return; }
+  // 登入前強制從雲端重載賬號／項目／每日工作（不依賴本機瀏覽器）
+  err.style.color='#1565c0';
+  err.textContent='正在從雲端讀取賬號…';
+  err.style.display='block';
+  try{
+    const ps = await apiFetch('/api/projects');
+    if(Array.isArray(ps.projects)) projects = ps.projects;
+    if(typeof ps.projSeq === 'number') projSeq = ps.projSeq;
+    if(ps.moduleLogs && typeof ps.moduleLogs === 'object') moduleLogs = ps.moduleLogs;
+    if(Array.isArray(ps.users) && ps.users.length){
+      users = ps.users.map(normalizeUser).filter(Boolean);
+    }
+    ensureAdminUser();
+    saveUsersLocal(); // 僅快取，登入驗證以剛拉下的雲端為準
+    const daily = await apiFetch('/api/daily');
+    dailyStateCache = dailyNormalizeState(daily);
+    purgeSampleDailyState(dailyStateCache);
+    try{ localStorage.setItem(DAILY_KEY, JSON.stringify(dailyStateCache)); }catch(e){}
+    await loadNotifications();
+  }catch(e){
+    err.style.color='#c62828';
+    err.textContent='無法連接雲端資料庫：'+(e.message||e)+'。請稍後再試。';
+    err.style.display='block';
+    return;
+  }
+  const user = users.find(x=>x.login===u && x.pw===p && x.active!==false);
+  if(!user){
+    err.style.color='#c62828';
+    err.textContent='登入名稱或密碼錯誤。若剛在其他裝置建立賬號，請確認建立時顯示「已同步到 MongoDB」。';
+    err.style.display='block';
+    return;
+  }
   err.style.display='none'; err.style.color=''; currentUser = normalizeUser(user);
   document.getElementById('page-login').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
@@ -1328,8 +1363,8 @@ function doLogin(){
   currentModule = 'daily'; currentView='dailyToday'; currentProject=null;
   ensureDailySeed(); generateRecurringForToday();
   addDailyOpLog('登入系統','進入每日工作流程');
-  flushCloudSaves();
-  loadNotifications().then(function(){ render(); }).catch(function(){ render(); });
+  try{ await flushCloudSaves(); }catch(e){ noteCloudError(e); }
+  render();
 }
 function logout(){
   if(currentModule==='daily' && typeof addDailyOpLog==='function'){
