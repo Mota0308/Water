@@ -1,7 +1,7 @@
 <!DOCTYPE html><html lang="zh-HK"><head><meta name="x-poe-datastore-behavior" content="local_only"><meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://code.jquery.com https://unpkg.com https://d3js.org https://threejs.org https://cdn.plot.ly https://stackpath.bootstrapcdn.com https://maps.googleapis.com https://cdn.tailwindcss.com https://ajax.googleapis.com https://kit.fontawesome.com https://cdn.datatables.net https://maxcdn.bootstrapcdn.com https://code.highcharts.com https://tako-static-assets-production.s3.amazonaws.com https://www.youtube.com https://fonts.googleapis.com https://fonts.gstatic.com https://pfst.cf2.poecdn.net https://puc.poecdn.net https://i.imgur.com https://wikimedia.org https://*.icons8.com https://*.giphy.com https://picsum.photos https://images.unsplash.com; frame-src 'self' https://www.youtube.com https://trytako.com; child-src 'self'; manifest-src 'self'; worker-src 'self'; upgrade-insecure-requests; block-all-mixed-content;">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>店鋪員工系統（靜態示範）</title>
+<title>店鋪員工系統</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; font-family:"Microsoft JhengHei","PingFang TC",sans-serif; }
   body { background:#f0f2f5; color:#333; font-size:15px; }
@@ -193,7 +193,7 @@
     <div class="demo-accounts">
       <b>預設賬號：</b>
       <div>系統管理員：admin / admin</div>
-      <div style="margin-top:6px;color:#666">其他員工請由管理員在「推送通知 → 創建員工」新增；初始密碼為賬號最後四位。</div>
+      <div style="margin-top:6px;color:#666">其他員工請由管理員以「創建員工」新增；初始密碼為賬號最後四位。</div>
     </div>
   </div>
 </div>
@@ -322,87 +322,64 @@ function stTag(s){
   return `<span class="tag ${map[s]||'s-notstart'}">${s}</span>`;
 }
 
-/* ═══════════ 示範項目資料 ═══════════ */
+/* ═══════════ 項目資料 ═══════════ */
 function mkStage(name, handler, status, opts={}){
   return {name, handler, status, deadline:opts.deadline||'', completedAt:opts.completedAt||null,
     content:opts.content||'', files:opts.files||[], skipReason:opts.skipReason||'', returnReason:opts.returnReason||''};
 }
-let projects = [
-  {
-    id:'P001', type:'dev', code:'WS-999', name:'成人日本光皮長短', cat:'成人保暖衣',
-    icon:'🧥', owner:'coey', createdBy:'adm', created:'2026年7月20日', due:'2026-10-15',
-    desc:'• 高端款式選用日本YAMAMOTO\n• 設計以簡約為主\n• 大貨可以印刷YAMAMOTO字樣\n• 工廠持有YAMAMOTO授權證書',
-    status:'進行中',
-    stages:[
-      mkStage('企劃選材','kwok','已完成',{completedAt:'2026年7月24日', content:'方向：高端成人保暖衣，選用日本YAMAMOTO物料，簡約設計。', deadline:'2026-07-25'}),
-      mkStage('技術規格單','ann','已完成',{completedAt:'2026年7月30日', deadline:'2026-08-01',
-        files:[{name:'技術規格單V1.xlsx', by:'ann', time:'2026年7月28日 11:20', ver:'V1', latest:false},
-               {name:'技術規格單V2.xlsx', by:'ann', time:'2026年7月30日 15:05', ver:'V2', latest:true}]}),
-      mkStage('打版','ann','已完成',{completedAt:'2026年8月1日', content:'已交工廠打版，樣板已寄出。', deadline:'2026-08-02'}),
-      mkStage('樣本修改與確認','coey','待確認',{deadline:'2026-08-05', content:'樣板V1已收到，尺寸大致OK，後頸洗水標位置需再確認。',
-        files:[{name:'樣板V1相片.jpg', by:'coey', time:'2026年8月2日 16:40', ver:'V1', latest:true}]}),
-      mkStage('量產準備','ann','未開始',{deadline:'2026-08-20'}),
-      mkStage('倉存與物流','ann','未開始',{deadline:'2026-09-15'}),
-      mkStage('陳列銷售','coey','未開始',{deadline:'2026-10-15'}),
-    ],
-    comments:[
-      {by:'ann', time:'2026年8月3日 14:30', stage:'技術規格單', text:'第一版技術規格單已上載，請確認後頸洗水標位置。', file:null, removed:false, replies:[
-        {by:'kwok', time:'2026年8月3日 15:10', text:'@Ann 洗水標建議改到後頸內側，跟返上季做法。'}
-      ]},
-      {by:'coey', time:'2026年8月2日 16:45', stage:'樣本修改與確認', text:'樣板V1已收到並上載相片，整體OK，等管理層確認。', file:'樣板V1相片.jpg', removed:false, replies:[]},
-    ],
-    logs:[
-      {time:'2026年7月20日 10:00', user:'管理層', action:'建立項目', detail:'開發及生產｜WS-999'},
-      {time:'2026年7月20日 10:05', user:'管理層', action:'分配經手人', detail:'全部階段已分配'},
-      {time:'2026年7月24日 17:00', user:'郭sir', action:'完成階段', detail:'企劃選材'},
-      {time:'2026年7月30日 15:05', user:'Ann', action:'上載文件', detail:'技術規格單V2.xlsx'},
-      {time:'2026年8月2日 16:40', user:'Coey', action:'上載文件', detail:'樣板V1相片.jpg'},
-      {time:'2026年8月2日 16:50', user:'Coey', action:'提交確認', detail:'樣本修改與確認 → 待確認'},
-    ]
-  },
-  {
-    id:'P002', type:'rep', code:'WS-888', name:'1mm兒童抓毛上衣', cat:'兒童抓毛',
-    icon:'👕', owner:'coey', createdBy:'adm', created:'2026年7月28日', due:'2026-09-30',
-    desc:'補貨修改要求：\n• 每碼胸及腰全圍各收窄1cm\n• 洗水標位置更改到後頸\n• 其餘沒有修改',
-    status:'進行中',
-    stages:[
-      mkStage('銷售分析','coey','已完成',{completedAt:'2026年7月30日', content:'上季銷售理想，建議補貨600件，加大碼比例。', deadline:'2026-07-31',
-        files:[{name:'銷售分析報表.xlsx', by:'coey', time:'2026年7月30日 12:00', ver:'V1', latest:true}]}),
-      mkStage('打版','ann','進行中',{deadline:'2026-08-08', content:'因有尺寸修改，需要重新打版。'}),
-      mkStage('樣本修改與確認','coey','未開始',{deadline:'2026-08-15'}),
-      mkStage('量產準備','ann','未開始',{deadline:'2026-08-25'}),
-      mkStage('倉存與物流','ann','未開始',{deadline:'2026-09-20'}),
-      mkStage('陳列銷售','coey','未開始',{deadline:'2026-09-30'}),
-    ],
-    comments:[
-      {by:'coey', time:'2026年7月30日 12:05', stage:'銷售分析', text:'銷售分析已完成，建議補貨600件。@Ann 麻煩安排打版，注意每碼胸腰各收窄1cm。', file:'銷售分析報表.xlsx', removed:false, replies:[]},
-    ],
-    logs:[
-      {time:'2026年7月28日 09:30', user:'管理層', action:'建立項目', detail:'補貨｜WS-888'},
-      {time:'2026年7月30日 12:10', user:'Coey', action:'完成階段', detail:'銷售分析'},
-      {time:'2026年8月1日 10:00', user:'Ann', action:'開始處理', detail:'打版 → 進行中'},
-    ]
-  },
-  {
-    id:'P003', type:'dev', code:'WS-777', name:'兒童防曬套裝', cat:'防曬用品',
-    icon:'🧴', owner:'kwok', createdBy:'adm', created:'2026年8月1日', due:'2026-11-30',
-    desc:'• 新開發兒童防曬系列\n• 目標客戶：3-12歲兒童\n• 顏色以粉色系為主',
-    status:'進行中',
-    stages:[
-      mkStage('企劃選材','kwok','進行中',{deadline:'2026-08-10', content:'初步方向已定，選材中。'}),
-      mkStage('技術規格單','ann','未開始',{deadline:'2026-08-20'}),
-      mkStage('打版','ann','未開始',{deadline:'2026-09-05'}),
-      mkStage('樣本修改與確認','coey','未開始',{deadline:'2026-09-20'}),
-      mkStage('量產準備','ann','未開始',{deadline:'2026-10-10'}),
-      mkStage('倉存與物流','ann','未開始',{deadline:'2026-11-10'}),
-      mkStage('陳列銷售','coey','未開始',{deadline:'2026-11-30'}),
-    ],
-    comments:[], 
-    logs:[{time:'2026年8月1日 11:00', user:'管理層', action:'建立項目', detail:'開發及生產｜WS-777'}]
-  },
-];
-let projSeq = 4;
+let projects = [];
+let projSeq = 1;
 let moduleLogs = { daily: [], production: [], replenishment: [] };
+const SAMPLE_PROJECT_IDS = ['P001','P002','P003'];
+const SAMPLE_PROJECT_CODES = ['WS-999','WS-888','WS-777'];
+const SAMPLE_DAILY_TITLES = ['整理今日到貨箱單','更新門市陳列清單','逾期示範：昨夜未完成點貨'];
+const SAMPLE_TPL_TITLES = ['門市巡檢','倉存點算'];
+const SAMPLE_LOG_RE = /WS-999|WS-888|WS-777|逾期示範|門市巡檢|倉存點算|整理今日到貨|更新門市陳列/;
+function purgeSampleProjects(){
+  const before = projects.length;
+  projects = (projects||[]).filter(function(p){
+    if(!p) return false;
+    if(SAMPLE_PROJECT_IDS.indexOf(p.id)>=0) return false;
+    if(SAMPLE_PROJECT_CODES.indexOf(p.code)>=0) return false;
+    return true;
+  });
+  let maxN = 0;
+  projects.forEach(function(p){
+    const m = String(p.id||'').match(/^P(\d+)$/);
+    if(m) maxN = Math.max(maxN, parseInt(m[1],10));
+  });
+  if(maxN >= projSeq) projSeq = maxN + 1;
+  if(!projects.length && projSeq < 1) projSeq = 1;
+  return projects.length !== before;
+}
+function purgeSampleModuleLogs(){
+  let changed = false;
+  ['daily','production','replenishment'].forEach(function(mod){
+    const arr = moduleLogs[mod];
+    if(!Array.isArray(arr)) return;
+    const next = arr.filter(function(l){
+      const blob = String((l&&l.detail)||'') + '|' + String((l&&l.action)||'');
+      return !SAMPLE_LOG_RE.test(blob);
+    });
+    if(next.length !== arr.length){ moduleLogs[mod] = next; changed = true; }
+  });
+  return changed;
+}
+function purgeSampleDailyState(s){
+  s = s || loadDailyState();
+  const wBefore = (s.works||[]).length;
+  const tBefore = (s.recurringTemplates||[]).length;
+  s.works = (s.works||[]).filter(function(w){
+    if(!w) return false;
+    if(SAMPLE_DAILY_TITLES.indexOf(w.title)>=0) return false;
+    if(String(w.title||'').indexOf('逾期示範')>=0) return false;
+    return true;
+  });
+  s.recurringTemplates = (s.recurringTemplates||[]).filter(function(t){
+    return t && SAMPLE_TPL_TITLES.indexOf(t.title)<0;
+  });
+  return (s.works.length!==wBefore) || (s.recurringTemplates.length!==tBefore);
+}
 let notifications = [];
 let notifSeq = 1;
 const NOTIF_KEY = 'store-web-notifications-v1';
@@ -527,32 +504,47 @@ async function initCloud(){
     }
     const daily = await apiFetch('/api/daily');
     dailyStateCache = dailyNormalizeState(daily);
+    const dailyChanged = purgeSampleDailyState(dailyStateCache);
     try{ localStorage.setItem(DAILY_KEY, JSON.stringify(dailyStateCache)); }catch(e){}
+    if(dailyChanged){
+      try{
+        await apiFetch('/api/daily', {
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(slimDailyPayload(dailyStateCache))
+        });
+      }catch(e){ console.warn('purge sample daily', e); }
+    }
 
     const ps = await apiFetch('/api/projects');
+    let projectsDirty = false;
     if(Array.isArray(ps.projects) && ps.projects.length){
       projects = ps.projects;
       if(typeof ps.projSeq === 'number') projSeq = ps.projSeq;
       if(ps.moduleLogs && typeof ps.moduleLogs === 'object') moduleLogs = ps.moduleLogs;
+      if(purgeSampleProjects()) projectsDirty = true;
+      if(purgeSampleModuleLogs()) projectsDirty = true;
       if(Array.isArray(ps.users) && ps.users.length){
         users = ps.users;
         if(ensureAdminUser()){
           saveUsersLocal();
-          await persistProjectsNow(); // 清掉雲端舊示範帳
+          projectsDirty = true;
         }
       } else {
-        // 專案已在雲端但尚無 users：寫入預設 admin
         loadUsersLocal();
         ensureAdminUser();
-        await persistProjectsNow();
+        projectsDirty = true;
       }
     } else {
+      projects = [];
+      projSeq = 1;
       ensureAdminUser();
-      await persistProjectsNow();
+      projectsDirty = true;
     }
+    if(projectsDirty) await persistProjectsNow();
     await loadNotifications();
   }catch(e){
-    console.warn('Cloud init failed, fallback to local demo:', e);
+    console.warn('Cloud init failed, fallback to local mode:', e);
     apiEnabled = false;
     loadUsersLocal();
     loadNotificationsLocal();
@@ -1099,7 +1091,7 @@ function fmtMention(text){
   return String(text||'').replace(/@([^\s@，,。]+)/g,'<span class="mention">@$1</span>');
 }
 function demoFileDataUrl(name){
-  const body = '示範檔案：'+name+'\n（靜態示範用內容，正式版為實際上傳檔案。）\n建立時間：'+nowStr();
+  const body = '檔案：'+name+'\n建立時間：'+nowStr();
   return 'data:text/plain;charset=utf-8,'+encodeURIComponent(body);
 }
 function ensureFilePayload(f){
@@ -1404,7 +1396,7 @@ function vList(type){
       <select onchange="fCat=this.value;render()"><option ${fCat==='全部'?'selected':''}>全部</option>${CATEGORIES.map(c=>`<option ${fCat===c?'selected':''}>${c}</option>`).join('')}</select>
       <select onchange="fStatus=this.value;render()">${['全部','進行中','待確認','需要修改','已完成'].map(s=>`<option ${fStatus===s?'selected':''}>${s}</option>`).join('')}</select>
       <input type="text" placeholder="搜尋編號／名稱／內容" value="${fKw}" onchange="fKw=this.value;render()">
-      ${isAdmin()?`<button class="btn sm" onclick="go('addProject')">＋ 建立新項目</button><button class="btn gray sm" onclick="alert2('示範版：正式版可匯出 Excel / CSV / PDF。')">匯出資料</button>`:''}
+      ${isAdmin()?`<button class="btn sm" onclick="go('addProject')">＋ 建立新項目</button><button class="btn gray sm" onclick="alert2('匯出功能即將推出。')">匯出資料</button>`:''}
     </div>
     ${projTable(list)}
   </div>`;
@@ -1486,8 +1478,8 @@ function tabOverview(p){
     <tr><th>項目詳細</th><td style="white-space:pre-wrap">${p.desc}</td></tr>
   </table></div>
   ${isAdmin()?`<div class="actions-row">
-    <button class="btn warn sm" onclick="alert2('示範版：正式版可編輯項目資料，並保留修改前後版本。')">編輯項目資料</button>
-    <button class="btn red sm" onclick="alert2('示範版：正式版可暫停、取消或封存項目，並記錄原因。')">暫停／取消項目</button>
+    <button class="btn warn sm" onclick="alert2('編輯項目資料功能即將推出。')">編輯項目資料</button>
+    <button class="btn red sm" onclick="alert2('暫停／取消項目功能即將推出。')">暫停／取消項目</button>
   </div>`:''}`;
 }
 
@@ -1610,7 +1602,7 @@ function askUpload(pid, idx){
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
   showModal(`<h3>上載文件／圖片</h3><p style="font-size:13px">階段：<b>${s.name}</b>｜支援 JPG、PNG、PDF、Word、Excel、ZIP 等</p>
     <label>選擇檔案</label><input type="file" id="m-file">
-    <label>或只輸入檔案名稱（示範佔位內容）</label><input type="text" id="m-fname" placeholder="例如：技術規格單V3.xlsx">
+    <label>或只輸入檔案名稱</label><input type="text" id="m-fname" placeholder="例如：技術規格單V3.xlsx">
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
     <button class="btn purple sm" onclick="doUpload('${pid}',${idx})">上載</button></div>`);
 }
@@ -2065,7 +2057,7 @@ function dailyEnsureSettlements(s){
       s.works.push(mkWork({
         id:'settle_'+unit+'_'+today,
         title:unit+' 每日結算',
-        content:'完成門市當日結算相關檢查（示範；正式版接 Part 2 POS／日結）。',
+        content:'完成門市當日結算相關檢查。',
         unit:unit, kind:'settlement', status:'open', dueDate:today, priority:'高'
       }));
     }
@@ -2109,26 +2101,14 @@ function syncOpenRecurringFromTemplate(t){
 }
 function ensureDailySeed(){
   try{ localStorage.removeItem('store-web-daily-v1'); localStorage.removeItem('store-web-daily-v2'); localStorage.removeItem('store-web-daily-v3'); }catch(e){}
-  var s=loadDailyState(), today=dailyTodayStr(), seeded=s.works.length>0||s.recurringTemplates.length>0;
-  if(!seeded){
-    s.recurringTemplates=[
-      {id:dailyId('tpl'), title:'門市巡檢', content:'檢查陳列、試衣間及店面整潔。', units:FIXED_UNITS.slice(), priority:'中', active:true, requireAttachment:true},
-      {id:dailyId('tpl'), title:'倉存點算', content:'核對國內倉今日進出貨。', units:['國內倉'], priority:'中', active:true, requireAttachment:false}
-    ];
-    s.works=[
-      mkWork({title:'整理今日到貨箱單', content:'確認收貨與上架時序。', unit:'觀塘', kind:'adhoc', dueDate:today, priority:'高'}),
-      mkWork({title:'更新門市陳列清單', content:'檢查缺貨與陳列位置。', unit:'屯門', kind:'adhoc', dueDate:today, priority:'中'}),
-      mkWork({title:'逾期示範：昨夜未完成點貨', content:'示範逾期標示。', unit:'灣仔', kind:'adhoc', dueDate:'2026-08-01', priority:'高'})
-    ];
-    saveDailyState(s);
-  } else {
-    s.recurringTemplates.forEach(function(t){ if(typeof t.requireAttachment==='undefined') t.requireAttachment=false; });
-    s.works.forEach(function(w){
-      if(typeof w.requireAttachment==='undefined') w.requireAttachment=false;
-      if(!Array.isArray(w.attachments)) w.attachments=[];
-    });
-    saveDailyState(s);
-  }
+  var s=loadDailyState();
+  purgeSampleDailyState(s);
+  s.recurringTemplates.forEach(function(t){ if(typeof t.requireAttachment==='undefined') t.requireAttachment=false; });
+  s.works.forEach(function(w){
+    if(typeof w.requireAttachment==='undefined') w.requireAttachment=false;
+    if(!Array.isArray(w.attachments)) w.attachments=[];
+  });
+  saveDailyState(s);
   generateRecurringForToday();
   return loadDailyState();
 }
@@ -2860,7 +2840,7 @@ go = function(v){ _go(v); if(v==='addProject') setTimeout(renderNpStages, 0); };
     } else {
       err.style.display = 'block';
       err.style.color = '#8d6e00';
-      err.textContent = '未連接 MongoDB（本機示範模式）。請設定 MONGODB_URI。';
+      err.textContent = '未連接 MongoDB（本機模式）。請設定 MONGODB_URI。';
     }
   }
 })();
