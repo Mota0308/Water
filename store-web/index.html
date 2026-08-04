@@ -217,7 +217,7 @@
           <div id="mailbox-list"><p style="padding:16px;color:#888;font-size:13px">登入後可查看通知。</p></div>
         </div>
       </div>
-      <div class="userinfo"><span id="top-user"></span><button onclick="logout()">登出</button></div>
+      <div class="userinfo"><span id="cloud-sync-status" style="font-size:12px;opacity:.9"></span><span id="top-user"></span><button onclick="logout()">登出</button></div>
     </div>
     <div class="module-nav" id="module-nav"></div>
     <div class="nav" id="nav"></div>
@@ -470,10 +470,46 @@ function slimDailyPayload(state){
   });
   return cloned;
 }
+let cloudSyncMessage = '';
+function refreshCloudSyncStatus(){
+  const el = document.getElementById('cloud-sync-status');
+  if(!el) return;
+  if(!apiEnabled){
+    el.textContent = '⚠ 本機模式';
+    el.style.color = '#ffcc80';
+    el.title = '未連接 MongoDB，資料只在此瀏覽器，其他裝置看不到。';
+    return;
+  }
+  if(cloudSyncMessage){
+    el.textContent = '⚠ 同步失敗';
+    el.style.color = '#ffcdd2';
+    el.title = cloudSyncMessage;
+    return;
+  }
+  el.textContent = '☁ 雲端';
+  el.style.color = '#c8e6c9';
+  el.title = '資料保存在 MongoDB 雲端後端';
+}
+function noteCloudError(e){
+  cloudSyncMessage = String((e && e.message) || e || '同步失敗');
+  console.warn('cloud sync', cloudSyncMessage);
+  refreshCloudSyncStatus();
+}
+function noteCloudOk(){
+  cloudSyncMessage = '';
+  refreshCloudSyncStatus();
+}
+function requireCloud(actionLabel){
+  if(apiEnabled) return true;
+  alert2((actionLabel||'此操作')+'需要連接 MongoDB 雲端。請確認 Railway 已設定 MONGODB_URI，並重新整理頁面。');
+  return false;
+}
 function persistProjects(){
   if(!apiEnabled) return;
   clearTimeout(projectsSaveTimer);
-  projectsSaveTimer = setTimeout(function(){ persistProjectsNow().catch(function(e){ console.warn('persist projects', e); }); }, 700);
+  projectsSaveTimer = setTimeout(function(){
+    persistProjectsNow().catch(noteCloudError);
+  }, 350);
 }
 async function persistProjectsNow(){
   if(!apiEnabled) return;
@@ -482,6 +518,36 @@ async function persistProjectsNow(){
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify(slimProjectsPayload())
   });
+  noteCloudOk();
+}
+async function persistDailyNow(){
+  if(!apiEnabled || !dailyStateCache) return;
+  await apiFetch('/api/daily', {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(slimDailyPayload(dailyStateCache))
+  });
+  noteCloudOk();
+}
+function scheduleDailyCloudSave(){
+  if(!apiEnabled || !dailyStateCache) return;
+  clearTimeout(dailySaveTimer);
+  dailySaveTimer = setTimeout(function(){
+    persistDailyNow().catch(noteCloudError);
+  }, 350);
+}
+async function flushCloudSaves(){
+  if(!apiEnabled) return;
+  clearTimeout(projectsSaveTimer);
+  clearTimeout(dailySaveTimer);
+  projectsSaveTimer = null;
+  dailySaveTimer = null;
+  try{
+    await persistProjectsNow();
+    await persistDailyNow();
+  }catch(e){
+    noteCloudError(e);
+  }
 }
 /** 以雲端 users 為主，並併入本機有、雲端沒有的賬號（避免離線建立後遺失） */
 function applyUsersFromCloud(cloudUsers){
@@ -507,17 +573,6 @@ function applyUsersFromCloud(cloudUsers){
   if(ensureAdminUser()) needUpload = true;
   saveUsersLocal();
   return needUpload;
-}
-function scheduleDailyCloudSave(){
-  if(!apiEnabled || !dailyStateCache) return;
-  clearTimeout(dailySaveTimer);
-  dailySaveTimer = setTimeout(function(){
-    apiFetch('/api/daily', {
-      method:'PUT',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(slimDailyPayload(dailyStateCache))
-    }).catch(function(e){ console.warn('persist daily', e); });
-  }, 700);
 }
 async function cloudUploadFile(file){
   if(!apiEnabled){
@@ -803,6 +858,7 @@ function selectedPushRecipientIds(){
   return Array.from(document.querySelectorAll('#push-recipients input[type=checkbox]:checked')).map(cb => cb.value);
 }
 function confirmSendPush(){
+  if(!requireCloud('推送通知')) return;
   const category = (document.getElementById('push-cat')||{}).value || '一般通知';
   const priority = (document.getElementById('push-pri')||{}).value || '一般';
   const title = ((document.getElementById('push-title')||{}).value || '').trim();
@@ -823,6 +879,7 @@ function confirmSendPush(){
     </div>`);
 }
 async function sendPushNotification(){
+  if(!requireCloud('推送通知')) return;
   const category = (document.getElementById('push-cat')||{}).value || '一般通知';
   const priority = (document.getElementById('push-pri')||{}).value || '一般';
   const title = ((document.getElementById('push-title')||{}).value || '').trim();
@@ -1001,6 +1058,7 @@ function selectedStaffRegions(){
 }
 async function submitCreateStaff(){
   if(!canCreateEmployee()){ alert2('沒有權限創建員工。'); return; }
+  if(!requireCloud('創建員工')) return;
   const login = ((document.getElementById('staff-login')||{}).value||'').trim();
   let name = ((document.getElementById('staff-name')||{}).value||'').trim();
   const position = ((document.getElementById('staff-position')||{}).value||'員工').trim();
@@ -1248,6 +1306,12 @@ function doLogin(){
   const user = users.find(x=>x.login===u && x.pw===p && x.active!==false);
   const err = document.getElementById('login-err');
   if(!apiReady){ err.style.color='#c62828'; err.textContent='資料儲存仍在初始化，請稍候再登入。'; err.style.display='block'; return; }
+  if(!apiEnabled){
+    err.style.color='#c62828';
+    err.textContent='未連接 MongoDB 雲端，無法登入正式系統。請確認伺服器已設定 MONGODB_URI 後重新整理。';
+    err.style.display='block';
+    return;
+  }
   if(!user){ err.style.color='#c62828'; err.textContent='登入名稱或密碼錯誤，請重試或聯絡管理層。'; err.style.display='block'; return; }
   err.style.display='none'; err.style.color=''; currentUser = normalizeUser(user);
   document.getElementById('page-login').classList.add('hidden');
@@ -1260,9 +1324,11 @@ function doLogin(){
   } else {
     document.getElementById('top-user').textContent = '👤 '+currentUser.name+'｜'+roleLabel(currentUser);
   }
+  refreshCloudSyncStatus();
   currentModule = 'daily'; currentView='dailyToday'; currentProject=null;
   ensureDailySeed(); generateRecurringForToday();
   addDailyOpLog('登入系統','進入每日工作流程');
+  flushCloudSaves();
   loadNotifications().then(function(){ render(); }).catch(function(){ render(); });
 }
 function logout(){
@@ -1330,7 +1396,7 @@ function render(){
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
   afterProjectChatRender();
   refreshMailboxUi();
-  persistProjects();
+  refreshCloudSyncStatus();
 }
 function go(v){
   currentView=v; currentProject=null;
@@ -2078,6 +2144,7 @@ function renderNpStages(){
 }
 function askCreateProject(){
   if(!isAdmin()){ alert2('只有系統管理員可以建立項目。'); return; }
+  if(!requireCloud('建立項目')) return;
   const type = document.getElementById('np-type').value;
   const code = document.getElementById('np-code').value.trim();
   const name = document.getElementById('np-name').value.trim();
@@ -2100,6 +2167,7 @@ function askCreateProject(){
 }
 async function createProject(){
   if(!isAdmin()){ alert2('只有系統管理員可以建立項目。'); return; }
+  if(!requireCloud('建立項目')) return;
   const type = document.getElementById('np-type').value;
   const code = document.getElementById('np-code').value.trim();
   const name = document.getElementById('np-name').value.trim();
@@ -2139,8 +2207,14 @@ async function createProject(){
   addProjLog(p,'分配經手人','全部階段已分配（相關經手人將收到系統通知）');
   if(files.length) addProjLog(p,'上載文件','建立項目｜'+files.map(f=>f.name).join('、'));
   npDraftFiles=[]; npCoverDraft=null;
-  persistProjects();
-  showModal(`<h3>✅ 已建立項目</h3><p>「${code}｜${name}」已建立，共 ${stages.length} 個階段${files.length?'，附件 '+files.length+' 個':''}。</p>
+  try{
+    await persistProjectsNow();
+  }catch(e){
+    noteCloudError(e);
+    alert2('項目已建立於記憶體，但雲端同步失敗：'+(e.message||e));
+    return;
+  }
+  showModal(`<h3>✅ 已建立項目</h3><p>「${code}｜${name}」已建立並同步到雲端，共 ${stages.length} 個階段${files.length?'，附件 '+files.length+' 個':''}。</p>
     <div class="actions"><button class="btn sm" onclick="closeModal();openProject('${p.id}','files')">查看文件及圖片</button>
     <button class="btn gray sm" onclick="closeModal();openProject('${p.id}','flow')">查看工作流程</button></div>`);
 }
@@ -2224,6 +2298,7 @@ function addDailyOpLog(action, detail){
 function saveDailyState(next){
   dailyStateCache=dailyNormalizeState(next||dailyStateCache||dailyBaseState());
   try{ localStorage.setItem(DAILY_KEY,JSON.stringify(dailyStateCache)); }catch(e){}
+  // 有雲端時寫入 MongoDB（localStorage 僅作快取）
   scheduleDailyCloudSave();
   return dailyStateCache;
 }
@@ -2647,6 +2722,7 @@ function prioritySelectHtml(val,id){
 }
 function dailyCreateAdhoc(){
   if(!dailyCanManage(currentUser)) return alert2('只有管理層可以建立突發工作。');
+  if(!requireCloud('建立突發工作')) return;
   showModal(
     '<h3>🛠️ 建立突發工作</h3>'+
     '<label>標題</label><input id="d-title" type="text" placeholder="例如：臨時補貨核對">'+
@@ -2667,11 +2743,14 @@ function dailySubmitAdhoc(){
   var requireAttachment=!!(document.getElementById('d-require-attach')||{}).checked;
   var units=[].slice.call(document.querySelectorAll('#modal-content .d-unit:checked')).map(function(x){return x.value;});
   if(!title||!units.length) return alert2('請輸入標題並選擇至少一個單位。');
+  if(!requireCloud('建立突發工作')) return;
   createAdhocWork({title:title,content:content,dueDate:due,priority:priority,units:units,requireAttachment:requireAttachment},currentUser);
-  closeModal(); render();
+  closeModal();
+  flushCloudSaves().then(function(){ render(); }).catch(function(){ render(); });
 }
 function dailyCreateRecurring(){
   if(!dailyCanManage(currentUser)) return alert2('只有管理層可以建立恆常任務。');
+  if(!requireCloud('建立恆常任務')) return;
   showModal(
     '<h3>🔁 建立恆常任務</h3>'+
     '<label>標題</label><input id="d-title" type="text" placeholder="輸入工作標題">'+
@@ -2690,8 +2769,10 @@ function dailySubmitRecurring(){
   var requireAttachment=!!(document.getElementById('d-require-attach')||{}).checked;
   var units=[].slice.call(document.querySelectorAll('#modal-content .d-unit:checked')).map(function(x){return x.value;});
   if(!title||!units.length) return alert2('請輸入標題並選擇至少一個單位。');
+  if(!requireCloud('建立恆常任務')) return;
   createRecurringTemplate({title:title,content:content,priority:priority,units:units,requireAttachment:requireAttachment},currentUser);
-  closeModal(); render();
+  closeModal();
+  flushCloudSaves().then(function(){ render(); }).catch(function(){ render(); });
 }
 function dailyEditWork(id){
   if(!dailyCanManage(currentUser)) return;
@@ -2982,6 +3063,7 @@ function vDailyNew(user){
 }
 function askDeleteTemplate(id){
   if(!dailyCanManage(currentUser)) return alert2('只有管理層可以刪除恆常任務。');
+  if(!requireCloud('刪除恆常任務')) return;
   var t=loadDailyState().recurringTemplates.find(function(x){return x.id===id;});
   if(!t) return;
   showModal('<h3>刪除恆常任務？</h3>'+
@@ -2993,9 +3075,9 @@ function askDeleteTemplate(id){
 }
 function confirmDeleteTemplate(id){
   closeModal();
+  if(!requireCloud('刪除恆常任務')) return;
   if(!deleteTemplate(id,currentUser)) return alert2('刪除失敗。');
-  render();
-  alert2('已刪除恆常任務。');
+  flushCloudSaves().then(function(){ render(); alert2('已刪除恆常任務。'); }).catch(function(){ render(); alert2('已刪除（雲端同步可能失敗，請查看頂欄狀態）。'); });
 }
 function vDailyRecurring(user){
   ensureDailySeed();
@@ -3082,17 +3164,22 @@ go = function(v){ _go(v); if(v==='addProject') setTimeout(renderNpStages, 0); };
     loadNotificationsLocal();
   }
   refreshMailboxUi();
+  refreshCloudSyncStatus();
   if(err){
     if(apiEnabled){
       err.style.display = 'block';
       err.style.color = '#2e7d32';
-      err.textContent = '已連接 MongoDB 資料儲存。請登入。';
+      err.textContent = '已連接 MongoDB 雲端。請登入（資料將保存在雲端）。';
     } else {
       err.style.display = 'block';
-      err.style.color = '#8d6e00';
-      err.textContent = '未連接 MongoDB（本機模式）。請設定 MONGODB_URI。';
+      err.style.color = '#c62828';
+      err.textContent = '未連接 MongoDB，無法使用正式系統。請在 Railway 設定 MONGODB_URI 後重新整理。';
     }
   }
+  document.addEventListener('visibilitychange', function(){
+    if(document.visibilityState==='hidden') flushCloudSaves();
+  });
+  window.addEventListener('pagehide', function(){ flushCloudSaves(); });
 })();
 </script>
 
