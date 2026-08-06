@@ -192,7 +192,7 @@
     <h1>🏭 店鋪員工系統</h1>
     <div class="sub">每日工作流程 · 開發及生產 · 補貨</div>
     <label>登入名稱</label>
-    <input type="text" id="login-user" placeholder="請輸入登入名稱">
+    <input type="text" id="login-user" placeholder="電話號碼（或舊賬號／admin）" autocomplete="username">
     <label>密碼</label>
     <input type="password" id="login-pw" placeholder="請輸入密碼">
     <div class="login-err" id="login-err"></div>
@@ -235,15 +235,22 @@ const REP_STAGES = ['銷售分析','打版','樣本修改與確認','量產準�
 const CATEGORIES = ['成人保暖衣','兒童保暖衣','成人抓毛','兒童抓毛','成人膠衣','兒童膠衣','成人泳裝','兒童泳裝','防曬用品','游水用品','防水袋','其他'];
 
 const USERS_KEY = 'store-web-users-v1';
+const AUTH_TOKEN_KEY = 'store-web-auth-token-v1';
 const STAFF_REGIONS = ['觀塘','荔枝角','灣仔','屯門','國內倉'];
 const SEED_ADMIN = {id:'adm', login:'admin', pw:'admin', name:'系統管理員', dept:'管理層', role:'system_admin', position:'系統管理員', unit:null, units:[], active:true};
 let users = [Object.assign({}, SEED_ADMIN)];
 let userSeq = 1;
 function isAdmin(){ return currentUser && currentUser.role==='system_admin'; }
 function isManager(){ return currentUser && currentUser.role==='manager'; }
-function isPersonal(){ return currentUser && currentUser.role==='personal'; }
+function isPersonal(){ return currentUser && (currentUser.role==='personal' || currentUser.position==='員工'); }
 function canWriteProduction(){ return isAdmin(); }
 function canCreateEmployee(){ return !!(currentUser && (currentUser.role==='system_admin' || currentUser.role==='manager')); }
+/** 可被指派為項目經手人／負責人的員工列表 */
+function listAssignableStaff(){
+  return users.filter(function(u){
+    return u && u.active!==false && u.login!=='admin' && (u.role==='personal' || u.position==='員工');
+  });
+}
 function userUnits(u){
   if(!u) return [];
   if(Array.isArray(u.units) && u.units.length){
@@ -253,12 +260,42 @@ function userUnits(u){
   if(u.fixedUnit && STAFF_REGIONS.indexOf(u.fixedUnit)>=0) return [u.fixedUnit];
   return [];
 }
+function normalizePhone(input){
+  if(input==null) return null;
+  let s = String(input).trim().replace(/[\s\-()]/g,'');
+  if(!s) return null;
+  if(s.indexOf('+852')===0) s = s.slice(4);
+  else if(s.indexOf('852')===0 && s.length===11) s = s.slice(3);
+  if(!/^\d{8}$/.test(s)) return null;
+  return s;
+}
+function passwordFromPhone(phone){
+  const p = normalizePhone(phone);
+  return p ? p.slice(-4) : '';
+}
+function userNeedsPhoneBind(u){
+  if(!u) return false;
+  if(u.login==='admin' || u.id==='adm') return false;
+  // 主鍵必須是電話；login 雖像電話但 id 仍為 u1 時仍需補登／遷移
+  if(normalizePhone(u.id)) return false;
+  return true;
+}
+function actorSnapshot(user){
+  user = user || currentUser;
+  if(!user) return { userId:'', userName:'—', userLabel:'—' };
+  const phone = normalizePhone(user.phone) || normalizePhone(user.id) || '';
+  const name = user.name || user.login || '—';
+  const label = phone ? (name+'｜'+phone) : (user.login==='admin' ? name+'｜admin' : name+'｜'+(user.login||user.id||''));
+  return { userId: user.id || '', userName: name, userPhone: phone || null, userLabel: label };
+}
 function normalizeUser(u){
   if(!u || typeof u!=='object') return u;
   const out = Object.assign({}, u);
   let units = userUnits(out);
   out.units = units;
   out.unit = units[0] || null;
+  const phone = normalizePhone(out.phone) || normalizePhone(out.id) || normalizePhone(out.login);
+  if(phone){ out.phone = phone; out.id = out.id || phone; }
   if(!out.position){
     if(out.login==='admin' || out.role==='system_admin') out.position = out.login==='admin' ? '系統管理員' : '經理';
     else if(out.role==='manager') out.position = '主管';
@@ -268,6 +305,7 @@ function normalizeUser(u){
   else if(out.position==='員工') out.role = 'personal';
   if(typeof out.active==='undefined') out.active = true;
   if(!out.dept) out.dept = units.join('、') || (out.position==='員工'?'—':'管理層');
+  out.needsPhoneBind = userNeedsPhoneBind(out);
   return out;
 }
 /** 舊示範帳（會從名單移除；admin 與之後「創建員工」新增的帳保留） */
@@ -421,19 +459,53 @@ let pushDraftFiles = []; // {name, dataUrl} draft attachments for compose
 let currentUser = null, currentModule = 'production', currentView = 'home', currentProject = null, currentTab = 'overview', commentFilter = '全部';
 let listType = 'dev', fCat='全部', fStatus='全部', fKw='';
 
-/* ═══════════ Cloud API（Google Drive via Node） ═══════════ */
+/* ═══════════ Cloud API（MongoDB via Node） ═══════════ */
 let apiEnabled = false;
 let apiReady = false;
 let apiBase = (typeof window !== 'undefined' && window.STORE_API_BASE) ? String(window.STORE_API_BASE).replace(/\/$/, '') : '';
+let authToken = '';
 let projectsSaveTimer = null;
 let dailySaveTimer = null;
+function loadAuthToken(){
+  try{ authToken = localStorage.getItem(AUTH_TOKEN_KEY) || ''; }catch(e){ authToken = ''; }
+  return authToken;
+}
+function saveAuthToken(token){
+  authToken = token || '';
+  try{
+    if(authToken) localStorage.setItem(AUTH_TOKEN_KEY, authToken);
+    else localStorage.removeItem(AUTH_TOKEN_KEY);
+  }catch(e){}
+}
+function clearAuthToken(){ saveAuthToken(''); }
 function apiUrl(path){ return apiBase + path; }
+function withFileToken(url){
+  if(!url || !authToken) return url;
+  if(String(url).indexOf('/api/files/')<0) return url;
+  const sep = String(url).indexOf('?')>=0 ? '&' : '?';
+  return String(url)+sep+'access_token='+encodeURIComponent(authToken);
+}
 async function apiFetch(path, opts){
-  const r = await fetch(apiUrl(path), opts);
+  opts = opts || {};
+  const headers = Object.assign({}, opts.headers || {});
+  if(authToken && !headers.Authorization) headers.Authorization = 'Bearer '+authToken;
+  const r = await fetch(apiUrl(path), Object.assign({}, opts, { headers: headers, credentials: 'include' }));
+  if(r.status===401){
+    clearAuthToken();
+    if(currentUser){
+      currentUser = null;
+      try{
+        document.getElementById('app').classList.add('hidden');
+        document.getElementById('page-login').classList.remove('hidden');
+      }catch(e){}
+    }
+  }
   if(!r.ok){
     let msg = r.statusText;
     try{ const j = await r.json(); msg = j.error || msg; }catch(_){ try{ msg = await r.text(); }catch(__){} }
-    throw new Error(msg || ('HTTP '+r.status));
+    const err = new Error(msg || ('HTTP '+r.status));
+    err.status = r.status;
+    throw err;
   }
   const ct = r.headers.get('content-type')||'';
   if(ct.includes('application/json')) return r.json();
@@ -450,8 +522,8 @@ function slimFileRef(f){
   return f;
 }
 function slimProjectsPayload(){
-  ensureAdminUser();
-  const cloned = JSON.parse(JSON.stringify({ projects, projSeq, moduleLogs, users }));
+  // users 已獨立存 users collection；PUT 不再夾帶 users（後端亦會忽略）
+  const cloned = JSON.parse(JSON.stringify({ projects, projSeq, moduleLogs }));
   (cloned.projects||[]).forEach(p=>{
     if(p.coverFileId && p.coverUrl && String(p.coverUrl).startsWith('data:')) p.coverUrl = apiUrl('/api/files/'+p.coverFileId);
     (p.files||[]).forEach((f,i)=>{ p.files[i] = slimFileRef(f); });
@@ -551,34 +623,79 @@ async function flushCloudSaves(){
   }
 }
 /**
- * 雲端為唯一正式來源。
- * - 雲端已有 users：直接採用雲端（其他裝置才能一致登入）
- * - 雲端尚無 users：才把本機賬號上傳一次（救援舊資料）
+ * 雲端 users collection 為唯一正式來源（GET 不含密碼）。
+ * 回傳本機有、雲端沒有的非 admin 賬號，供登入後以 POST /api/users 救援。
  */
 function applyUsersFromCloud(cloudUsers){
   const localCopy = (users||[]).map(normalizeUser).filter(Boolean);
-  let needUpload = false;
+  const orphans = [];
   if(Array.isArray(cloudUsers) && cloudUsers.length){
     users = cloudUsers.map(normalizeUser).filter(Boolean);
     ensureAdminUser();
-    // 僅救援：本機有、雲端沒有的非 admin 賬號（例如舊版只寫進瀏覽器）
     const have = {};
     users.forEach(function(u){ have[String(u.login||'').toLowerCase()] = true; });
     localCopy.forEach(function(u){
       const key = String(u.login||'').toLowerCase();
       if(!key || key==='admin' || have[key]) return;
-      users.push(u);
-      have[key] = true;
-      needUpload = true;
+      if(!u.pw) return; // 無密碼無法救援上傳
+      orphans.push(u);
     });
   } else {
     users = localCopy.length ? localCopy : [Object.assign({}, SEED_ADMIN)];
     ensureAdminUser();
-    needUpload = true;
   }
-  if(ensureAdminUser()) needUpload = true;
+  ensureAdminUser();
   saveUsersLocal();
-  return needUpload;
+  return orphans;
+}
+async function rescueOrphanUsers(orphans){
+  if(!apiEnabled || !authToken || !orphans || !orphans.length) return;
+  if(!canCreateEmployee()) return;
+  for(let i=0;i<orphans.length;i++){
+    const u = orphans[i];
+    try{
+      await apiFetch('/api/users', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          id: u.id, login: u.login, pw: u.pw, name: u.name,
+          position: u.position, role: u.role, units: u.units||[], unit: u.unit||null,
+          dept: u.dept, active: u.active!==false
+        })
+      });
+    }catch(e){ console.warn('rescue user', u.login, e); }
+  }
+  try{
+    const ju = await apiFetch('/api/users');
+    if(Array.isArray(ju.users)){
+      users = ju.users.map(normalizeUser).filter(Boolean);
+      ensureAdminUser();
+      saveUsersLocal();
+    }
+  }catch(e){}
+}
+async function loadCloudAppData(){
+  const daily = await apiFetch('/api/daily');
+  dailyStateCache = dailyNormalizeState(daily);
+  const dailyChanged = purgeSampleDailyState(dailyStateCache);
+  try{ localStorage.setItem(DAILY_KEY, JSON.stringify(dailyStateCache)); }catch(e){}
+  if(dailyChanged){
+    try{ await persistDailyNow(); }catch(e){ console.warn('purge sample daily', e); }
+  }
+
+  const ps = await apiFetch('/api/projects');
+  if(Array.isArray(ps.projects)) projects = ps.projects;
+  else projects = [];
+  if(typeof ps.projSeq === 'number') projSeq = ps.projSeq;
+  else if(!projects.length) projSeq = 1;
+  if(ps.moduleLogs && typeof ps.moduleLogs === 'object') moduleLogs = ps.moduleLogs;
+  const orphans = applyUsersFromCloud(ps.users);
+  let projectsDirty = false;
+  if(purgeSampleProjects()) projectsDirty = true;
+  if(purgeSampleModuleLogs()) projectsDirty = true;
+  if(projectsDirty) await persistProjectsNow();
+  await loadNotifications();
+  if(orphans && orphans.length) await rescueOrphanUsers(orphans);
 }
 async function cloudUploadFile(file){
   if(!apiEnabled){
@@ -591,7 +708,7 @@ async function cloudUploadFile(file){
     name: j.name || file.name,
     driveFileId: j.id,
     mimeType: j.mimeType,
-    dataUrl: apiUrl('/api/files/'+j.id)
+    dataUrl: withFileToken(apiUrl('/api/files/'+j.id))
   };
 }
 async function cloudUploadDataUrl(name, dataUrl){
@@ -603,11 +720,12 @@ async function cloudUploadDataUrl(name, dataUrl){
 function fileHref(f){
   if(!f) return '#';
   if(typeof f === 'string') return '#';
-  if(f.driveFileId) return apiUrl('/api/files/'+f.driveFileId);
+  if(f.driveFileId) return withFileToken(apiUrl('/api/files/'+f.driveFileId));
   return f.dataUrl || '#';
 }
 async function initCloud(){
   apiReady = false;
+  loadAuthToken();
   try{
     const health = await apiFetch('/api/health');
     apiEnabled = !!(health.mongoConfigured || health.configured || health.driveConfigured);
@@ -617,33 +735,24 @@ async function initCloud(){
       apiReady = true;
       return;
     }
-    const daily = await apiFetch('/api/daily');
-    dailyStateCache = dailyNormalizeState(daily);
-    const dailyChanged = purgeSampleDailyState(dailyStateCache);
-    try{ localStorage.setItem(DAILY_KEY, JSON.stringify(dailyStateCache)); }catch(e){}
-    if(dailyChanged){
+    // 未登入時不打受保護 API；有 token 則嘗試恢復工作階段
+    if(authToken){
       try{
-        await apiFetch('/api/daily', {
-          method:'PUT',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify(slimDailyPayload(dailyStateCache))
-        });
-      }catch(e){ console.warn('purge sample daily', e); }
+        const me = await apiFetch('/api/auth/me');
+        if(me && me.user){
+          await loadCloudAppData();
+          enterAppAs(normalizeUser(me.user), { silent:true });
+        } else {
+          clearAuthToken();
+          loadUsersLocal();
+        }
+      }catch(e){
+        clearAuthToken();
+        loadUsersLocal();
+      }
+    } else {
+      loadUsersLocal();
     }
-
-    const ps = await apiFetch('/api/projects');
-    let projectsDirty = false;
-    // 項目可為空陣列；users 仍必須從同一份雲端文件讀取（先前空項目會漏讀 users）
-    if(Array.isArray(ps.projects)) projects = ps.projects;
-    else projects = [];
-    if(typeof ps.projSeq === 'number') projSeq = ps.projSeq;
-    else if(!projects.length) projSeq = 1;
-    if(ps.moduleLogs && typeof ps.moduleLogs === 'object') moduleLogs = ps.moduleLogs;
-    if(applyUsersFromCloud(ps.users)) projectsDirty = true;
-    if(purgeSampleProjects()) projectsDirty = true;
-    if(purgeSampleModuleLogs()) projectsDirty = true;
-    if(projectsDirty) await persistProjectsNow();
-    await loadNotifications();
   }catch(e){
     console.warn('Cloud init failed, fallback to local mode:', e);
     apiEnabled = false;
@@ -990,8 +1099,10 @@ function vPushNotify(){
   </div>`;
 }
 
-/* ═══════════ 創建員工 ═══════════ */
+/* ═══════════ 創建員工（電話 = 主鍵／登入） ═══════════ */
 function passwordFromLogin(login){
+  const phone = normalizePhone(login);
+  if(phone) return passwordFromPhone(phone);
   const s = String(login||'');
   return s.length>=4 ? s.slice(-4) : '';
 }
@@ -1000,12 +1111,24 @@ function staffListRowsHtml(){
   return users.map(function(u){
     const sys = u.login==='admin' ? ' <span class="tag dept">系統帳</span>' : '';
     const units = userUnits(u);
+    const phone = normalizePhone(u.phone) || normalizePhone(u.id) || '';
+    const account = phone || u.login || u.id || '';
+    const need = userNeedsPhoneBind(u);
+    let actions = '—';
+    if(u.login!=='admin' && canCreateEmployee()){
+      if(need){
+        actions = '<button class="btn sm" onclick="promptAssignPhone('+JSON.stringify(String(u.id))+')">補登電話</button>';
+      } else if(phone){
+        actions = '<button class="btn sm gray" onclick="promptChangePhone('+JSON.stringify(String(phone))+')">更換電話</button>';
+      }
+    }
     return '<tr>'+
-      '<td>'+escHtml(u.login||'')+sys+'</td>'+
+      '<td>'+escHtml(account)+sys+(need?' <span class="tag s-fix">待補電話</span>':'')+'</td>'+
       '<td>'+escHtml(u.name||'')+'</td>'+
       '<td>'+escHtml(u.position||roleLabel(u))+'</td>'+
       '<td>'+escHtml(units.length?units.join('、'):'—')+'</td>'+
       '<td>'+(u.active===false?'停用':'啟用')+'</td>'+
+      '<td>'+actions+'</td>'+
       '</tr>';
   }).join('');
 }
@@ -1016,16 +1139,30 @@ function vCreateStaff(){
   const regionChecks = STAFF_REGIONS.map(function(r){
     return '<label class="rc-item"><input type="checkbox" class="staff-region" value="'+r+'"> '+r+'</label>';
   }).join('');
-  return `<div class="card">
+  const pending = users.filter(userNeedsPhoneBind);
+  const pendingBox = pending.length
+    ? `<div class="card" style="border-left:4px solid #ef6c00">
+        <h3>⚠ 待補登電話（${pending.length}）</h3>
+        <p style="font-size:13px;color:#666;margin-bottom:8px">舊賬號必須補上香港 8 位電話後，才能以電話登入；補登後密碼改為電話末四位，並自動改寫項目經手人等關聯。</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>舊賬號</th><th>名稱</th><th>操作</th></tr></thead>
+          <tbody>${pending.map(function(u){
+            return '<tr><td>'+escHtml(u.login||u.id)+'</td><td>'+escHtml(u.name||'')+'</td>'+
+              '<td><button class="btn sm" onclick="promptAssignPhone(\''+String(u.id).replace(/'/g,'')+'\')">補登電話</button></td></tr>';
+          }).join('')}</tbody>
+        </table></div>
+      </div>`
+    : '';
+  return pendingBox+`<div class="card">
     <h2>👤 創建員工</h2>
-    <p style="font-size:13px;color:#666;margin-bottom:8px">輸入登入賬號（至少 4 碼）；初始密碼自動為賬號最後四位。顯示名稱可留空。</p>
-    <label>登入賬號（必填）</label>
-    <input type="text" id="staff-login" placeholder="例如 ann.wong" autocomplete="off" oninput="staffPreviewPw()">
+    <p style="font-size:13px;color:#666;margin-bottom:8px">以<strong>香港 8 位電話</strong>為登入 ID；初始密碼自動為電話最後四位。系統帳 admin 除外。</p>
+    <label>電話號碼（必填）</label>
+    <input type="tel" id="staff-phone" placeholder="例如 91234567" autocomplete="off" oninput="staffPreviewPw()">
     <label>顯示名稱（選填）</label>
-    <input type="text" id="staff-name" placeholder="留空則使用登入賬號">
-    <label>初始密碼（自動）</label>
+    <input type="text" id="staff-name" placeholder="留空則使用電話號碼">
+    <label>初始密碼（自動＝電話末四位）</label>
     <input type="text" id="staff-pw-preview" value="" readonly style="background:#f5f5f5;color:#555">
-    <p id="staff-pw-hint" style="font-size:12px;color:#888;margin:4px 0 0">輸入賬號後顯示最後四位。</p>
+    <p id="staff-pw-hint" style="font-size:12px;color:#888;margin:4px 0 0">輸入 8 位電話後顯示密碼。</p>
     <label>職位</label>
     <select id="staff-position">
       <option value="經理">經理（等同管理員權限，可創建員工）</option>
@@ -1038,54 +1175,136 @@ function vCreateStaff(){
   </div>
   <div class="card">
     <h3>員工列表</h3>
-    <p style="font-size:12px;color:#888;margin-bottom:8px">第一版僅供查看，暫不支援編輯／停用。</p>
+    <p style="font-size:12px;color:#888;margin-bottom:8px">電話即為 ID。可補登／更換電話（管理員）。</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>賬號</th><th>顯示名稱</th><th>職位</th><th>地區</th><th>狀態</th></tr></thead>
+      <thead><tr><th>電話／賬號</th><th>顯示名稱</th><th>職位</th><th>地區</th><th>狀態</th><th>操作</th></tr></thead>
       <tbody id="staff-list-body">${staffListRowsHtml()}</tbody>
     </table></div>
   </div>`;
 }
 function staffPreviewPw(){
-  const login = ((document.getElementById('staff-login')||{}).value||'').trim();
+  const raw = ((document.getElementById('staff-phone')||document.getElementById('staff-login')||{}).value||'').trim();
+  const phone = normalizePhone(raw);
   const pwEl = document.getElementById('staff-pw-preview');
   const hint = document.getElementById('staff-pw-hint');
-  const pw = passwordFromLogin(login);
+  const pw = passwordFromPhone(phone);
   if(pwEl) pwEl.value = pw || '';
   if(hint){
-    hint.textContent = login.length && login.length<4
-      ? '賬號至少需要 4 個字元。'
-      : (pw ? ('初始密碼將為：'+pw) : '輸入賬號後顯示最後四位。');
-    hint.style.color = login.length && login.length<4 ? '#c62828' : '#888';
+    if(raw && !phone){
+      hint.textContent = '請輸入有效的香港 8 位電話（可含 +852）。';
+      hint.style.color = '#c62828';
+    } else {
+      hint.textContent = pw ? ('初始密碼將為：'+pw) : '輸入電話後顯示末四位。';
+      hint.style.color = '#888';
+    }
   }
 }
 function selectedStaffRegions(){
   return Array.from(document.querySelectorAll('.staff-region:checked')).map(function(cb){ return cb.value; })
     .filter(function(x,i,a){ return STAFF_REGIONS.indexOf(x)>=0 && a.indexOf(x)===i; });
 }
+function promptAssignPhone(userId){
+  const u = users.find(function(x){ return String(x.id)===String(userId); });
+  const prefill = u ? (normalizePhone(u.phone)||normalizePhone(u.login)||'') : '';
+  showModal(`<h3>補登／遷移電話主鍵</h3>
+    <p style="font-size:13px;color:#666">舊 ID：<b>${escHtml(userId)}</b>${u&&u.login?'（login：'+escHtml(u.login)+'）':''}。確認後主鍵改為電話，密碼改為末四位，並改寫經手人關聯。</p>
+    <label>香港 8 位電話</label>
+    <input type="tel" id="assign-phone-input" placeholder="91234567" value="${escHtml(prefill)}">
+    <div class="actions">
+      <button class="btn gray sm" onclick="closeModal()">取消</button>
+      <button class="btn sm" onclick="submitAssignPhone(${JSON.stringify(String(userId))})">確認補登</button>
+    </div>`);
+}
+async function submitAssignPhone(userId){
+  const phone = ((document.getElementById('assign-phone-input')||{}).value||'').trim();
+  if(!normalizePhone(phone)){ alert2('請輸入有效的香港 8 位電話。'); return; }
+  try{
+    const res = await apiFetch('/api/users/'+encodeURIComponent(userId)+'/assign-phone', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phone })
+    });
+    await loadCloudAppData();
+    closeModal();
+    alert2('已補登電話 '+normalizePhone(phone)+'，密碼為末四位。');
+    if(currentView==='createStaff') render();
+    else if(res && res.user){ /* ok */ }
+  }catch(e){ alert2('補登失敗：'+(e.message||e)); }
+}
+function promptChangePhone(oldPhone){
+  showModal(`<h3>更換電話</h3>
+    <p style="font-size:13px;color:#666">目前電話：<b>${escHtml(oldPhone)}</b>。更換後密碼改為新電話末四位，並改寫全庫關聯。</p>
+    <label>新電話（8 位）</label>
+    <input type="tel" id="change-phone-input" placeholder="91234567">
+    <div class="actions">
+      <button class="btn gray sm" onclick="closeModal()">取消</button>
+      <button class="btn sm" onclick="submitChangePhone(${JSON.stringify(String(oldPhone))})">確認更換</button>
+    </div>`);
+}
+async function submitChangePhone(oldPhone){
+  const phone = ((document.getElementById('change-phone-input')||{}).value||'').trim();
+  if(!normalizePhone(phone)){ alert2('請輸入有效的新電話。'); return; }
+  try{
+    await apiFetch('/api/users/'+encodeURIComponent(oldPhone)+'/change-phone', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phone })
+    });
+    await loadCloudAppData();
+    closeModal();
+    alert2('已更換為 '+normalizePhone(phone)+'。');
+    if(currentView==='createStaff') render();
+  }catch(e){ alert2('更換失敗：'+(e.message||e)); }
+}
+function showBindPhoneGate(){
+  showModal(`<h3>請綁定電話號碼</h3>
+    <p style="font-size:13px;color:#666;line-height:1.6">此為舊賬號，必須綁定香港 8 位電話後才能使用系統。綁定後請用<strong>電話 + 末四位密碼</strong>登入。</p>
+    <label>電話號碼</label>
+    <input type="tel" id="bind-phone-input" placeholder="91234567">
+    <div class="actions">
+      <button class="btn gray sm" onclick="logout()">登出</button>
+      <button class="btn sm" onclick="submitBindPhone()">確認綁定</button>
+    </div>`);
+}
+async function submitBindPhone(){
+  const phone = ((document.getElementById('bind-phone-input')||{}).value||'').trim();
+  if(!normalizePhone(phone)){ alert2('請輸入有效的香港 8 位電話。'); return; }
+  try{
+    const res = await apiFetch('/api/auth/bind-phone', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phone })
+    });
+    if(res && res.user){
+      currentUser = normalizeUser(res.user);
+      await loadCloudAppData();
+      closeModal();
+      alert2('已綁定電話。之後請用電話 '+normalizePhone(phone)+' 與末四位密碼登入。');
+      enterAppAs(currentUser, { silent:true });
+    }
+  }catch(e){ alert2('綁定失敗：'+(e.message||e)); }
+}
 async function submitCreateStaff(){
   if(!canCreateEmployee()){ alert2('沒有權限創建員工。'); return; }
   if(!requireCloud('創建員工')) return;
-  const login = ((document.getElementById('staff-login')||{}).value||'').trim();
+  if(!authToken){ alert2('請先登入後再創建員工。'); return; }
+  const phoneRaw = ((document.getElementById('staff-phone')||{}).value||'').trim();
+  const phone = normalizePhone(phoneRaw);
   let name = ((document.getElementById('staff-name')||{}).value||'').trim();
   const position = ((document.getElementById('staff-position')||{}).value||'員工').trim();
   const regions = selectedStaffRegions();
-  if(!login){ alert2('請輸入登入賬號。'); return; }
-  if(login.length<4){ alert2('登入賬號至少需要 4 個字元。'); return; }
-  if(login.toLowerCase()==='admin'){ alert2('不可建立系統帳 admin。'); return; }
+  if(!phone){ alert2('請輸入有效的香港 8 位電話號碼。'); return; }
   if(['經理','主管','員工'].indexOf(position)<0){ alert2('請選擇有效職位。'); return; }
   if(position==='員工' && !regions.length){ alert2('員工必須至少選擇 1 個隸屬地區。'); return; }
   ensureAdminUser();
-  if(users.some(function(u){ return String(u.login||'').toLowerCase()===login.toLowerCase(); })){
-    alert2('此登入賬號已存在，請換一個。');
+  if(users.some(function(u){
+    const up = normalizePhone(u.phone) || normalizePhone(u.id) || normalizePhone(u.login);
+    return up === phone || String(u.login||'') === phone || String(u.id||'') === phone;
+  })){
+    alert2('此電話號碼已存在，請換一個。');
     return;
   }
-  if(!name) name = login;
-  const pw = passwordFromLogin(login);
+  if(!name) name = phone;
+  const pw = passwordFromPhone(phone);
   const role = position==='員工' ? 'personal' : 'system_admin';
-  const id = 'u'+String(userSeq++);
-  const nu = normalizeUser({
-    id: id,
-    login: login,
+  const payload = {
+    id: phone,
+    login: phone,
+    phone: phone,
     pw: pw,
     name: name,
     position: position,
@@ -1094,25 +1313,30 @@ async function submitCreateStaff(){
     unit: regions[0]||null,
     dept: regions.join('、') || (position==='員工'?'—':'管理層'),
     active: true
-  });
-  users.push(nu);
-  saveUsersLocal();
+  };
   let syncNote = '';
-  if(apiEnabled){
-    try{
-      await persistProjectsNow();
-      syncNote = '<br><span style="color:#2e7d32">已同步到 MongoDB，其他裝置可用此賬號登入。</span>';
-    }catch(e){
-      syncNote = '<br><span style="color:#c62828">雲端同步失敗：'+escHtml(e.message||e)+'。目前只存在本機瀏覽器。</span>';
-    }
-  } else {
-    syncNote = '<br><span style="color:#ef6c00">目前為本機模式（未連 MongoDB），其他裝置無法登入此賬號。請確認 Railway 已設定 MONGODB_URI。</span>';
+  let nu = normalizeUser(payload);
+  try{
+    const res = await apiFetch('/api/users', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    if(res && res.user) nu = normalizeUser(Object.assign({}, res.user, { pw: pw }));
+    users.push(nu);
+    saveUsersLocal();
+    syncNote = '<br><span style="color:#2e7d32">已寫入 users collection（電話為 ID），其他裝置可用此電話登入。</span>';
+    noteCloudOk();
+  }catch(e){
+    alert2('創建失敗：'+(e.message||e));
+    return;
   }
-  addModuleLog('push','創建員工', position+'｜'+login+'｜'+(regions.length?regions.join('、'):'無地區'));
-  const copyText = '賬號：'+login+'\n密碼：'+pw+'\n職位：'+position+'\n地區：'+(regions.length?regions.join('、'):'—');
+  addModuleLog('push','創建員工', position+'｜'+phone+'｜'+(regions.length?regions.join('、'):'無地區'));
+  try{ await persistProjectsNow(); }catch(e){ noteCloudError(e); }
+  const copyText = '電話：'+phone+'\n密碼：'+pw+'\n職位：'+position+'\n地區：'+(regions.length?regions.join('、'):'—');
   showModal(`<h3>✅ 已建立員工</h3>
     <p style="font-size:14px;line-height:1.7">
-      賬號：<b>${escHtml(login)}</b><br>
+      電話／登入：<b>${escHtml(phone)}</b><br>
       初始密碼：<b>${escHtml(pw)}</b><br>
       職位：<b>${escHtml(position)}</b><br>
       地區：<b>${escHtml(regions.length?regions.join('、'):'—')}</b>
@@ -1122,9 +1346,9 @@ async function submitCreateStaff(){
       <button class="btn sm gray" onclick="closeModal()">關閉</button>
       <button class="btn sm green" onclick="copyStaffCreds(${JSON.stringify(copyText)})">複製賬號與密碼</button>
     </div>`);
-  const loginEl = document.getElementById('staff-login');
+  const phoneEl = document.getElementById('staff-phone');
   const nameEl = document.getElementById('staff-name');
-  if(loginEl) loginEl.value = '';
+  if(phoneEl) phoneEl.value = '';
   if(nameEl) nameEl.value = '';
   document.querySelectorAll('.staff-region').forEach(function(cb){ cb.checked=false; });
   staffPreviewPw();
@@ -1156,9 +1380,13 @@ function todayStr(){ const d=new Date(); return d.getFullYear()+'年'+(d.getMont
 function moduleForProject(p){ return p && p.type==='rep' ? 'replenishment' : 'production'; }
 function addModuleLog(mod, action, detail){
   if(!moduleLogs[mod]) moduleLogs[mod] = [];
+  const snap = actorSnapshot(currentUser);
   moduleLogs[mod].unshift({
     time: nowStr(),
-    user: currentUser ? currentUser.name : '—',
+    user: snap.userLabel,
+    userId: snap.userId,
+    userName: snap.userName,
+    userPhone: snap.userPhone,
     action,
     detail: detail || ''
   });
@@ -1167,7 +1395,16 @@ function addModuleLog(mod, action, detail){
 /** @deprecated use addModuleLog — kept for call sites; scopes to currentModule */
 function addSysLog(action, detail){ addModuleLog(currentModule || 'daily', action, detail); }
 function addProjLog(p, action, detail){
-  p.logs.unshift({time:nowStr(), user:currentUser.name, action, detail});
+  const snap = actorSnapshot(currentUser);
+  p.logs.unshift({
+    time:nowStr(),
+    user: snap.userLabel,
+    userId: snap.userId,
+    userName: snap.userName,
+    userPhone: snap.userPhone,
+    action,
+    detail
+  });
   addModuleLog(moduleForProject(p), action, p.code+'｜'+detail);
 }
 
@@ -1193,16 +1430,24 @@ function projStatus(p){
 }
 function typeTag(t){ return t==='dev'?'<span class="tag t-dev">開發及生產</span>':'<span class="tag t-rep">補貨</span>'; }
 function projectAssigneeOpts(selectedId){
-  let pool = users.filter(u=>u.active!==false && (u.role==='personal' || u.position==='員工'));
-  if(!pool.length) pool = users.filter(u=>u.active!==false && u.login!=='admin');
-  if(!pool.length) pool = users.filter(u=>u.active!==false);
-  return pool.map(u=>`<option value="${u.id}"${u.id===selectedId?' selected':''}>${escHtml(u.name)}（${escHtml(u.dept||roleLabel(u))}）</option>`).join('');
+  let pool = listAssignableStaff().filter(function(u){ return !userNeedsPhoneBind(u); });
+  if(!pool.length) pool = users.filter(u=>u.active!==false && u.login!=='admin' && !userNeedsPhoneBind(u));
+  const opts = pool.map(function(u){
+    const phone = normalizePhone(u.phone)||normalizePhone(u.id)||'';
+    const label = escHtml(u.name)+(phone?('｜'+phone):'')+'（'+escHtml(u.dept||roleLabel(u))+'）';
+    return `<option value="${u.id}"${u.id===selectedId?' selected':''}>${label}</option>`;
+  }).join('');
+  if(!opts) return `<option value="">（尚無已綁定電話的員工，請先創建或補登電話）</option>`;
+  return `<option value="">— 未分配 —</option>`+opts;
 }
 function projThumbHtml(p,size){
   size=size||44;
   const fs=size>=60?32:22;
   if(p&&p.coverUrl){
-    return `<div class="thumb" style="width:${size}px;height:${size}px"><img src="${p.coverUrl}" alt=""></div>`;
+    let src = p.coverUrl;
+    if(p.coverFileId) src = withFileToken(apiUrl('/api/files/'+p.coverFileId));
+    else src = withFileToken(src);
+    return `<div class="thumb" style="width:${size}px;height:${size}px"><img src="${src}" alt=""></div>`;
   }
   return `<div class="thumb" style="width:${size}px;height:${size}px;font-size:${fs}px">${p&&p.icon?p.icon:'🆕'}</div>`;
 }
@@ -1219,7 +1464,7 @@ function ensureFilePayload(f){
   if(!f) return f;
   if(typeof f==='string') return {name:f};
   if(f.driveFileId){
-    f.dataUrl = apiUrl('/api/files/'+f.driveFileId);
+    f.dataUrl = withFileToken(apiUrl('/api/files/'+f.driveFileId));
     return f;
   }
   return f;
@@ -1305,6 +1550,33 @@ function afterProjectChatRender(){
 }
 
 /* ═══════════ 登入/登出 ═══════════ */
+function enterAppAs(user, opts){
+  opts = opts || {};
+  currentUser = normalizeUser(user);
+  if(userNeedsPhoneBind(currentUser)){
+    document.getElementById('page-login').classList.add('hidden');
+    document.getElementById('app').classList.add('hidden');
+    refreshCloudSyncStatus();
+    showBindPhoneGate();
+    return;
+  }
+  document.getElementById('page-login').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  const pos = currentUser.position || '';
+  const phone = normalizePhone(currentUser.phone) || normalizePhone(currentUser.id);
+  if(currentUser.role==='system_admin'){
+    document.getElementById('top-user').textContent = '👑 '+currentUser.name+'（'+(pos||'系統管理員')+'）';
+  } else if(currentUser.role==='manager'){
+    document.getElementById('top-user').textContent = '🧭 '+currentUser.name+'（'+(pos||'主管')+'）';
+  } else {
+    document.getElementById('top-user').textContent = '👤 '+currentUser.name+(phone?'｜'+phone:'｜'+roleLabel(currentUser));
+  }
+  refreshCloudSyncStatus();
+  currentModule = 'daily'; currentView='dailyToday'; currentProject=null;
+  ensureDailySeed(); generateRecurringForToday();
+  if(!opts.silent) addDailyOpLog('登入系統','進入每日工作流程');
+  render();
+}
 async function doLogin(){
   const u = document.getElementById('login-user').value.trim();
   const p = document.getElementById('login-pw').value;
@@ -1316,62 +1588,48 @@ async function doLogin(){
     err.style.display='block';
     return;
   }
-  // 登入前強制從雲端重載賬號／項目／每日工作（不依賴本機瀏覽器）
   err.style.color='#1565c0';
-  err.textContent='正在從雲端讀取賬號…';
+  err.textContent='正在驗證帳號…';
   err.style.display='block';
   try{
-    const ps = await apiFetch('/api/projects');
-    if(Array.isArray(ps.projects)) projects = ps.projects;
-    if(typeof ps.projSeq === 'number') projSeq = ps.projSeq;
-    if(ps.moduleLogs && typeof ps.moduleLogs === 'object') moduleLogs = ps.moduleLogs;
-    if(Array.isArray(ps.users) && ps.users.length){
-      users = ps.users.map(normalizeUser).filter(Boolean);
+    const result = await apiFetch('/api/auth/login', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ login:u, pw:p })
+    });
+    if(!result || !result.token || !result.user){
+      throw new Error('登入回應無效');
     }
-    ensureAdminUser();
-    saveUsersLocal(); // 僅快取，登入驗證以剛拉下的雲端為準
-    const daily = await apiFetch('/api/daily');
-    dailyStateCache = dailyNormalizeState(daily);
-    purgeSampleDailyState(dailyStateCache);
-    try{ localStorage.setItem(DAILY_KEY, JSON.stringify(dailyStateCache)); }catch(e){}
-    await loadNotifications();
+    saveAuthToken(result.token);
+    if(result.needsPhoneBind || userNeedsPhoneBind(result.user)){
+      err.style.display='none';
+      currentUser = normalizeUser(result.user);
+      showBindPhoneGate();
+      return;
+    }
+    err.textContent='正在載入雲端資料…';
+    await loadCloudAppData();
+    err.style.display='none'; err.style.color='';
+    enterAppAs(result.user);
+    try{ await flushCloudSaves(); }catch(e){ noteCloudError(e); }
   }catch(e){
+    clearAuthToken();
     err.style.color='#c62828';
-    err.textContent='無法連接雲端資料庫：'+(e.message||e)+'。請稍後再試。';
+    err.textContent= (e && e.message) ? String(e.message) : '登入失敗';
     err.style.display='block';
-    return;
   }
-  const user = users.find(x=>x.login===u && x.pw===p && x.active!==false);
-  if(!user){
-    err.style.color='#c62828';
-    err.textContent='登入名稱或密碼錯誤。若剛在其他裝置建立賬號，請確認建立時顯示「已同步到 MongoDB」。';
-    err.style.display='block';
-    return;
-  }
-  err.style.display='none'; err.style.color=''; currentUser = normalizeUser(user);
-  document.getElementById('page-login').classList.add('hidden');
-  document.getElementById('app').classList.remove('hidden');
-  const pos = currentUser.position || '';
-  if(currentUser.role==='system_admin'){
-    document.getElementById('top-user').textContent = '👑 '+currentUser.name+'（'+(pos||'系統管理員')+'）';
-  } else if(currentUser.role==='manager'){
-    document.getElementById('top-user').textContent = '🧭 '+currentUser.name+'（'+(pos||'主管')+'）';
-  } else {
-    document.getElementById('top-user').textContent = '👤 '+currentUser.name+'｜'+roleLabel(currentUser);
-  }
-  refreshCloudSyncStatus();
-  currentModule = 'daily'; currentView='dailyToday'; currentProject=null;
-  ensureDailySeed(); generateRecurringForToday();
-  addDailyOpLog('登入系統','進入每日工作流程');
-  try{ await flushCloudSaves(); }catch(e){ noteCloudError(e); }
-  render();
 }
-function logout(){
+async function logout(){
   if(currentModule==='daily' && typeof addDailyOpLog==='function'){
     try{ addDailyOpLog('登出系統',''); }catch(e){ addModuleLog('daily','登出系統',''); }
   } else {
     addModuleLog(currentModule||'daily','登出系統','');
   }
+  try{ await flushCloudSaves(); }catch(e){}
+  try{
+    if(apiEnabled) await apiFetch('/api/auth/logout', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+  }catch(e){}
+  clearAuthToken();
   currentUser=null;
   closeMailbox();
   refreshMailboxUi();
@@ -1385,15 +1643,23 @@ function setModule(m){
   currentModule = m; currentProject=null;
   closeMailbox();
   if(m==='daily'){ currentView='dailyToday'; ensureDailySeed(); generateRecurringForToday(); }
-  else if(m==='production'){ currentView='home'; listType='dev'; }
+  else if(m==='production'){
+    // 員工進入開發及生產時直達「我的工作」，方便處理被指派階段
+    currentView = isPersonal() ? 'myTasks' : 'home';
+    listType='dev';
+  }
   else if(m==='push'){ currentView='pushNotify'; }
   else if(m==='createStaff'){ currentView='createStaff'; }
-  else { currentView='home'; listType='rep'; }
+  else {
+    currentView = isPersonal() ? 'myTasks' : 'home';
+    listType='rep';
+  }
   fCat='全部'; fStatus='全部'; fKw='';
   render();
 }
 function render(){
   const modNav = document.getElementById('module-nav');
+  // 所有登入角色（含員工）皆可使用每日／開發及生產／補貨／推送
   const modules = [['daily','📅 每日工作流程'],['production','📐 開發及生產'],['replenishment','🔄 補貨'],['push','📢 推送通知']];
   if(canCreateEmployee()) modules.push(['createStaff','👤 創建員工']);
   modNav.innerHTML = modules.map(([k,l])=>`<button class="${currentModule===k?'active':''}" onclick="setModule('${k}')">${l}</button>`).join('');
@@ -1403,7 +1669,10 @@ function render(){
     items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyRecords','我的記錄']];
     if(isAdmin()||isManager()) items.push(['dailyNew','新增突發'],['dailyRecurring','恆常任務'],['dailyOpLogs','操作記錄']);
   } else if(currentModule==='production'){
-    items = [['home','首頁'],['devList','項目列表'],['myTasks','我的工作']];
+    // 員工：我的工作優先；仍可看首頁與項目列表
+    items = isPersonal()
+      ? [['myTasks','我的工作'],['devList','項目列表'],['home','首頁']]
+      : [['home','首頁'],['devList','項目列表'],['myTasks','我的工作']];
     if(isAdmin()) items.push(['addProject','建立項目']);
     if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
   } else if(currentModule==='push'){
@@ -1411,7 +1680,9 @@ function render(){
   } else if(currentModule==='createStaff'){
     items = [];
   } else {
-    items = [['home','首頁'],['repList','項目列表'],['myTasks','我的工作']];
+    items = isPersonal()
+      ? [['myTasks','我的工作'],['repList','項目列表'],['home','首頁']]
+      : [['home','首頁'],['repList','項目列表'],['myTasks','我的工作']];
     if(isAdmin()) items.push(['addProject','建立項目']);
     if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
   }
@@ -1505,7 +1776,9 @@ function vHome(){
 }
 function getProjectTodosForUser(user){
   user=user||currentUser;
-  if(!user||user.role!=='personal') return [];
+  if(!user) return [];
+  // 員工（personal）看自己的經手階段；管理員也可在「我的工作」看到自己被指派的
+  if(!(user.role==='personal' || user.position==='員工' || user.role==='system_admin')) return [];
   const out=[];
   projects.forEach(p=>{
     if(isProjectLocked(p)) return;
@@ -1561,10 +1834,14 @@ function vList(type){
 
 /* ═══════════ 我的工作 ═══════════ */
 function vMyTasks(){
-  if(isAdmin()){
-    // 管理層：顯示待確認及未分配
+  if(isAdmin() && !isPersonal()){
+    // 純管理層：顯示待確認及各經手人概況
     const waits = [];
     projects.forEach(p=>p.stages.forEach(s=>{ if(s.status==='待確認') waits.push({p,s}); }));
+    const staffRows = listAssignableStaff().map(u=>{
+      let n=0; projects.forEach(p=>p.stages.forEach(s=>{ if(s.handler===u.id&&!stageDone(s)) n++; }));
+      return `<tr><td>${escHtml(u.name)}</td><td>${escHtml(u.dept||'')}</td><td><b>${n}</b></td></tr>`;
+    }).join('');
     return `<div class="card"><h2>✅ 等待管理層確認（${waits.length}）</h2>
       ${waits.length?`<div class="table-wrap"><table><tr><th>項目</th><th>階段</th><th>經手人</th><th>操作</th></tr>
       ${waits.map(({p,s})=>`<tr><td>${p.code} ${p.name}</td><td>${s.name}</td><td>${userName(s.handler)}</td>
@@ -1572,18 +1849,20 @@ function vMyTasks(){
     </div>
     <div class="card"><h2>👥 各經手人待辦工作</h2>
       <div class="table-wrap"><table><tr><th>經手人</th><th>部門</th><th>待辦階段數</th></tr>
-      ${users.filter(u=>u.role==='personal').map(u=>{
-        let n=0; projects.forEach(p=>p.stages.forEach(s=>{ if(s.handler===u.id&&!stageDone(s)) n++; }));
-        return `<tr><td>${u.name}</td><td>${u.dept}</td><td><b>${n}</b></td></tr>`;}).join('')}
+      ${staffRows||'<tr><td colspan="3" style="color:#888">尚無員工賬號。請先創建員工，並在項目中指派經手人。</td></tr>'}
       </table></div></div>`;
   }
   const tasks = getMyTasks();
   const doneList = [];
   projects.forEach(p=>p.stages.forEach(s=>{ if(s.handler===currentUser.id&&s.status==='已完成') doneList.push({p,s}); }));
+  const emptyHint = isPersonal()
+    ? '<p style="color:#888">暫時沒有待辦。請管理員在「項目 → 工作流程」把階段經手人指派給你之後，即可在此開始處理（開始／上載／提交確認）。</p>'
+    : '<p style="color:#888">暫時沒有待辦工作。</p>';
   return `<div class="card"><h2>📌 我的待辦工作（${tasks.length}）</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:10px">開發及生產／補貨中指派給你的階段會顯示於此，可點擊進入處理。</p>
     ${tasks.length?`<div class="table-wrap"><table><tr><th>項目</th><th>產品編號</th><th>工作階段</th><th>完成期限</th><th>狀態</th><th>操作</th></tr>
     ${tasks.map(t=>`<tr><td>${t.pname}</td><td>${t.code}</td><td>${t.stage}</td><td>${t.deadline||'—'}</td><td>${stTag(t.status)}</td>
-      <td><button class="btn sm" onclick="openProject('${t.pid}','flow')">查看／處理</button></td></tr>`).join('')}</table></div>`:'<p style="color:#888">暫時沒有待辦工作。</p>'}
+      <td><button class="btn sm" onclick="openProject('${t.pid}','flow')">查看／處理</button></td></tr>`).join('')}</table></div>`:emptyHint}
   </div>
   <div class="card"><h2>✔️ 我已完成的階段（${doneList.length}）</h2>
     ${doneList.length?`<div class="table-wrap"><table><tr><th>項目</th><th>階段</th><th>完成日期</th></tr>
@@ -2139,7 +2418,10 @@ async function npOnFilesPick(input){
 }
 function vAddProject(){
   if(!isAdmin()) return `<div class="card"><h2>➕ 建立新項目</h2><p>只有系統管理員可以建立項目。</p></div>`;
-  const staffOpts = users.filter(u=>u.role==='personal').map(u=>`<option value="${u.id}">${u.name}（${u.dept}）</option>`).join('');
+  const staffOpts = projectAssigneeOpts('');
+  const staffHint = listAssignableStaff().length
+    ? '<p style="font-size:12px;color:#888;margin:4px 0 0">請把各階段經手人指派給員工賬號，對方登入後可在「開發及生產 → 我的工作」處理。</p>'
+    : '<p style="font-size:12px;color:#c62828;margin:4px 0 0">尚未有員工賬號。請先到「創建員工」新增職位為「員工」的賬號，再開這裡指派經手人。</p>';
   setTimeout(()=>{ renderNpStages(); npRenderCoverPreview(); npRenderFileList(); },0);
   return `<div class="card"><h2>➕ 建立新項目</h2>
     <label>項目封面圖片（選填）</label>
@@ -2160,7 +2442,8 @@ function vAddProject(){
     <input type="file" id="np-files" multiple onchange="npOnFilesPick(this)">
     <p style="font-size:12px;color:#888;margin:4px 0 0">附件會顯示在項目「文件及圖片」，標籤為「建立項目」。封面只用於列表／標題縮圖，不進文件列表。</p>
     <div id="np-file-list">${npFileListHtml()}</div>
-    <h3 style="margin-top:16px">各階段經手人分配（可暫時保留未分配）</h3>
+    <h3 style="margin-top:16px">各階段經手人分配（指派給員工後對方才看得到待辦）</h3>
+    ${staffHint}
     <div id="np-stages"></div>
     <button class="btn" onclick="askCreateProject()">建立項目</button>
   </div>`;
@@ -2170,7 +2453,7 @@ function renderNpStages(){
   if(!typeEl) return;
   const type = typeEl.value;
   const stages = type==='dev'?DEV_STAGES:REP_STAGES;
-  const staffOpts = users.filter(u=>u.role==='personal').map(u=>`<option value="${u.id}">${u.name}（${u.dept}）</option>`).join('');
+  const staffOpts = projectAssigneeOpts('');
   document.getElementById('np-stages').innerHTML = stages.map((s,i)=>`
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
       <span style="min-width:140px;font-size:13px"><b>${i+1}. ${s}</b></span>
@@ -2212,7 +2495,8 @@ async function createProject(){
   const owner = document.getElementById('np-owner').value;
   const due = document.getElementById('np-due').value || '—';
   const stages = (type==='dev'?DEV_STAGES:REP_STAGES);
-  const handlers = [...document.querySelectorAll('.np-handler')].map(s=>s.value);
+  const handlers = [...document.querySelectorAll('.np-handler')].map(s=>s.value||null);
+  const assignedN = handlers.filter(Boolean).length;
   let coverUrl = null, coverFileId = null;
   let files = [];
   try{
@@ -2232,14 +2516,16 @@ async function createProject(){
   const p = {
     id:'P'+String(projSeq++).padStart(3,'0'), type, code, name, cat, icon:type==='dev'?'🆕':'🔄',
     coverUrl, coverFileId,
-    owner, createdBy:currentUser.id, created:todayStr(), due, desc, status:'進行中',
+    owner: owner||null, createdBy:currentUser.id, created:todayStr(), due, desc, status:'進行中',
     files: files,
-    stages: stages.map((s,i)=>mkStage(s, handlers[i], i===0?'待處理':'未開始')),
+    stages: stages.map((s,i)=>mkStage(s, handlers[i]||null, i===0?'待處理':'未開始')),
     comments:[], logs:[]
   };
   projects.unshift(p);
   addProjLog(p,'建立項目',(type==='dev'?'開發及生產':'補貨')+'｜'+code+'｜'+name+(p.coverUrl?'｜已設封面':'')+(files.length?'｜附件 '+files.length+' 個':''));
-  addProjLog(p,'分配經手人','全部階段已分配（相關經手人將收到系統通知）');
+  addProjLog(p,'分配經手人', assignedN
+    ? ('已指派 '+assignedN+'／'+stages.length+' 個階段（相關經手人可於「我的工作」處理）')
+    : '尚未指派經手人（請稍後在工作流程中更改經手人，員工才會看到待辦）');
   if(files.length) addProjLog(p,'上載文件','建立項目｜'+files.map(f=>f.name).join('、'));
   npDraftFiles=[]; npCoverDraft=null;
   try{
@@ -2320,9 +2606,13 @@ function dailyNormalizeState(raw){
 }
 function addDailyOpLog(action, detail){
   var s=loadDailyState();
+  var snap = actorSnapshot(currentUser);
   s.opLogs.unshift({
     time: dailyNowStr(),
-    user: dailyUserName(currentUser),
+    user: snap.userLabel || dailyUserName(currentUser),
+    userId: snap.userId,
+    userName: snap.userName,
+    userPhone: snap.userPhone,
     action: action,
     detail: detail||''
   });
@@ -3200,16 +3490,18 @@ go = function(v){ _go(v); if(v==='addProject') setTimeout(renderNpStages, 0); };
   }
   refreshMailboxUi();
   refreshCloudSyncStatus();
-  if(err){
+  if(err && !currentUser){
     if(apiEnabled){
       err.style.display = 'block';
       err.style.color = '#2e7d32';
-      err.textContent = '已連接 MongoDB 雲端。請登入（資料將保存在雲端）。';
+      err.textContent = '已連接 MongoDB 雲端。請登入（帳號存於 users collection）。';
     } else {
       err.style.display = 'block';
       err.style.color = '#c62828';
       err.textContent = '未連接 MongoDB，無法使用正式系統。請在 Railway 設定 MONGODB_URI 後重新整理。';
     }
+  } else if(err && currentUser){
+    err.style.display = 'none';
   }
   document.addEventListener('visibilitychange', function(){
     if(document.visibilityState==='hidden') flushCloudSaves();
