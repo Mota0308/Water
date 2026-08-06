@@ -1248,6 +1248,67 @@ function vPushNotify(){
   </div>`;
 }
 
+/* ═══════════ 個人設置（更改密碼） ═══════════ */
+function vPersonalSettings(){
+  if(!currentUser){
+    return '<div class="card"><h2>⚙️ 個人設置</h2><p>請先登入。</p></div>';
+  }
+  const u = currentUser;
+  const account = u.phone || u.login || u.id || '—';
+  const units = (typeof userUnits==='function' ? userUnits(u) : (u.units||[])).join('、') || '—';
+  return `<div class="card">
+    <h2>⚙️ 個人設置</h2>
+    <div class="table-wrap" style="margin-bottom:16px">
+      <table>
+        <tr><th style="width:120px">登入帳號</th><td>${escHtml(account)}</td></tr>
+        <tr><th>姓名</th><td>${escHtml(u.name||'—')}</td></tr>
+        <tr><th>職位</th><td>${escHtml(u.position||roleLabel(u))}</td></tr>
+        <tr><th>地區／單位</th><td>${escHtml(units)}</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <h2>🔑 更改密碼</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:10px">更改後請用新密碼登入。員工初始密碼多為電話末四位，建議首次登入後修改。</p>
+    <label>目前密碼</label>
+    <input type="password" id="set-pw-current" autocomplete="current-password" placeholder="輸入目前密碼">
+    <label>新密碼</label>
+    <input type="password" id="set-pw-new" autocomplete="new-password" placeholder="至少 4 個字元">
+    <label>確認新密碼</label>
+    <input type="password" id="set-pw-confirm" autocomplete="new-password" placeholder="再輸入一次新密碼">
+    <div class="actions" style="margin-top:12px">
+      <button type="button" class="btn" onclick="submitChangePassword()">儲存新密碼</button>
+    </div>
+  </div>`;
+}
+async function submitChangePassword(){
+  if(!currentUser){ alert2('請先登入。'); return; }
+  if(!requireCloud('更改密碼')) return;
+  const currentPw = ((document.getElementById('set-pw-current')||{}).value||'');
+  const newPw = ((document.getElementById('set-pw-new')||{}).value||'');
+  const confirmPw = ((document.getElementById('set-pw-confirm')||{}).value||'');
+  if(!currentPw){ alert2('請輸入目前密碼。'); return; }
+  if(newPw.length < 4){ alert2('新密碼至少 4 個字元。'); return; }
+  if(newPw !== confirmPw){ alert2('兩次輸入的新密碼不一致。'); return; }
+  if(newPw === currentPw){ alert2('新密碼不可與目前密碼相同。'); return; }
+  try{
+    await apiFetch('/api/auth/change-password', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ currentPw, newPw, confirmPw })
+    });
+    const local = users.find(function(x){ return x && x.id === currentUser.id; });
+    if(local){ local.pw = newPw; saveUsersLocal(); }
+    try{ addModuleLog('push','更改密碼', currentUser.login || currentUser.id || ''); }catch(e){}
+    ['set-pw-current','set-pw-new','set-pw-confirm'].forEach(function(id){
+      const el = document.getElementById(id); if(el) el.value = '';
+    });
+    alert2('密碼已更新。下次請用新密碼登入。');
+  }catch(e){
+    alert2('更改密碼失敗：'+(e.message||e));
+  }
+}
+
 /* ═══════════ 創建員工（電話 = 主鍵／登入） ═══════════ */
 function passwordFromLogin(login){
   const phone = normalizePhone(login);
@@ -1860,6 +1921,7 @@ function setModule(m){
   }
   else if(m==='push'){ currentView='pushNotify'; }
   else if(m==='createStaff'){ currentView='createStaff'; }
+  else if(m==='settings'){ currentView='settings'; }
   else {
     currentView = isPersonal() ? 'myTasks' : 'home';
     listType='rep';
@@ -1872,6 +1934,7 @@ function render(){
   // 所有登入角色（含員工）皆可使用每日／開發及生產／補貨／推送
   const modules = [['daily','📅 每日工作流程'],['production','📐 開發及生產'],['replenishment','🔄 補貨'],['push','📢 推送通知']];
   if(canCreateEmployee()) modules.push(['createStaff','👤 創建員工']);
+  modules.push(['settings','⚙️ 個人設置']);
   modNav.innerHTML = modules.map(([k,l])=>`<button class="${currentModule===k?'active':''}" onclick="setModule('${k}')">${l}</button>`).join('');
   const nav = document.getElementById('nav');
   let items = [];
@@ -1889,6 +1952,8 @@ function render(){
     items = [['pushNotify','撰寫推送']];
   } else if(currentModule==='createStaff'){
     items = [];
+  } else if(currentModule==='settings'){
+    items = [['settings','更改密碼']];
   } else {
     items = isPersonal()
       ? [['myTasks','我的工作'],['repList','項目列表'],['home','首頁']]
@@ -1907,7 +1972,8 @@ function render(){
     dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser),
     dailyOpLogs:()=>vDailyOpLogs(currentUser),
     pushNotify: vPushNotify,
-    createStaff: vCreateStaff
+    createStaff: vCreateStaff,
+    settings: vPersonalSettings
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
   afterProjectChatRender();
@@ -1920,6 +1986,7 @@ function go(v){
   if(v==='repList'){ listType='rep'; currentModule='replenishment'; }
   if(v==='pushNotify'){ currentModule='push'; }
   if(v==='createStaff'){ currentModule='createStaff'; }
+  if(v==='settings'){ currentModule='settings'; }
   fCat='全部'; fStatus='全部'; fKw='';
   render();
 }

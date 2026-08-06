@@ -18,6 +18,7 @@ import {
   uploadFile,
   downloadFile,
   loginWithPassword,
+  changeOwnPassword,
   getSessionUser,
   destroySession,
   listUsersPublic,
@@ -223,6 +224,22 @@ app.post('/api/auth/logout', requireDb, async (req, res) => {
 
 app.get('/api/auth/me', requireAuth, async (req, res) => {
   res.json({ user: publicUser(req.user), needsPhoneBind: !!publicUser(req.user)?.needsPhoneBind });
+});
+
+/** 登入者更改自己的密碼 */
+app.post('/api/auth/change-password', requireAuth, async (req, res) => {
+  try {
+    const currentPw = req.body?.currentPw ?? req.body?.oldPassword ?? '';
+    const newPw = req.body?.newPw ?? req.body?.newPassword ?? '';
+    const confirmPw = req.body?.confirmPw ?? req.body?.confirmPassword;
+    if (confirmPw != null && String(confirmPw) !== String(newPw)) {
+      return res.status(400).json({ error: '兩次輸入的新密碼不一致' });
+    }
+    const updated = await changeOwnPassword(req.user.id || req.user._id, currentPw, newPw);
+    res.json({ ok: true, user: updated });
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
 });
 
 /** 舊帳首次登入後自行綁定電話 */

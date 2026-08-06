@@ -1071,6 +1071,20 @@ export async function loginWithPassword(login, pw) {
   return { token, expiresAt, user: pub, needsPhoneBind: !!pub.needsPhoneBind };
 }
 
+/** 登入者自行更改密碼（需驗證目前密碼） */
+export async function changeOwnPassword(userId, currentPw, newPw) {
+  await connectMongo();
+  const user = await getUserById(userId);
+  if (!user || user.active === false) throw new Error('找不到用戶');
+  if (String(user.pw) !== String(currentPw ?? '')) throw new Error('目前密碼不正確');
+  const next = String(newPw ?? '');
+  if (next.length < 4) throw new Error('新密碼至少 4 個字元');
+  if (next.length > 64) throw new Error('新密碼過長（最多 64 字元）');
+  if (next === String(user.pw)) throw new Error('新密碼不可與目前密碼相同');
+  await usersCol().updateOne({ _id: user._id }, { $set: { pw: next } });
+  return publicUser({ ...user, pw: next });
+}
+
 export function canCreateEmployee(user) {
   if (!user) return false;
   return user.role === 'system_admin' || user.role === 'manager' || user.position === '經理' || user.position === '主管' || isAdminAccount(user);
