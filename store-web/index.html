@@ -804,6 +804,13 @@ async function loadCloudAppData(){
     if(!p || !Array.isArray(p.stages)) return;
     p.stages.forEach(function(s){ setStageHandlers(s, stageHandlers(s)); });
   });
+  // 補齊建立時間並依新→舊排序（列表／首頁共用）
+  projects.forEach(function(p){
+    if(!p || Number(p.createdAtMs)>0) return;
+    const ms = projCreatedMs(p);
+    if(ms) p.createdAtMs = ms;
+  });
+  projects = sortProjectsNewestFirst(projects);
   if(typeof ps.projSeq === 'number') projSeq = ps.projSeq;
   else if(!projects.filter(function(p){ return p.type!=='rep'; }).length) projSeq = 1;
   if(typeof ps.repProjSeq === 'number') repProjSeq = ps.repProjSeq;
@@ -1519,6 +1526,41 @@ async function copyStaffCreds(text){
 /* ═══════════ 工具 ═══════════ */
 function nowStr(){ const d=new Date(); return d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日 '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
 function todayStr(){ const d=new Date(); return d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日'; }
+/** 解析「2026年8月6日」或帶時間的字串 → ms；失敗回 0 */
+function parseZhDateMs(s){
+  const m = String(s||'').match(/(\d{4})年(\d{1,2})月(\d{1,2})日(?:\s+(\d{1,2}):(\d{2}))?/);
+  if(!m) return 0;
+  const hh = m[4]!=null ? Number(m[4]) : 0;
+  const mm = m[5]!=null ? Number(m[5]) : 0;
+  return new Date(Number(m[1]), Number(m[2])-1, Number(m[3]), hh, mm).getTime();
+}
+function projIdSeq(p){
+  const m = String(p&&p.id||'').match(/^[PR](\d+)$/i);
+  return m ? parseInt(m[1], 10) : 0;
+}
+/** 項目建立時間（越新越大）；優先 createdAtMs，其次建立日誌／建立日期／編號序號 */
+function projCreatedMs(p){
+  if(!p) return 0;
+  if(Number(p.createdAtMs)>0) return Number(p.createdAtMs);
+  const createLog = Array.isArray(p.logs) ? p.logs.find(function(l){ return l && l.action==='建立項目'; }) : null;
+  if(createLog && createLog.time){
+    const t = parseZhDateMs(createLog.time);
+    if(t) return t;
+  }
+  const day = parseZhDateMs(p.created);
+  if(day) return day + projIdSeq(p);
+  return projIdSeq(p);
+}
+function compareProjectsNewestFirst(a, b){
+  const diff = projCreatedMs(b) - projCreatedMs(a);
+  if(diff) return diff;
+  const seq = projIdSeq(b) - projIdSeq(a);
+  if(seq) return seq;
+  return String(b&&b.id||'').localeCompare(String(a&&a.id||''));
+}
+function sortProjectsNewestFirst(list){
+  return (Array.isArray(list) ? list.slice() : []).sort(compareProjectsNewestFirst);
+}
 function moduleForProject(p){ return p && p.type==='rep' ? 'replenishment' : 'production'; }
 function addModuleLog(mod, action, detail){
   if(!moduleLogs[mod]) moduleLogs[mod] = [];
@@ -1972,10 +2014,11 @@ function getMyTasks(){
 
 /* ═══════════ 項目列表 ═══════════ */
 function projTable(list){
-  if(!list.length) return '<p style="color:#888">沒有符合條件的項目。</p>';
+  const rows = sortProjectsNewestFirst(list);
+  if(!rows.length) return '<p style="color:#888">沒有符合條件的項目。</p>';
   return `<div class="table-wrap"><table>
     <tr><th>建立日期</th><th>圖片</th><th>產品編號</th><th>項目簡介</th><th>類別</th><th>類型</th><th>目前階段</th><th>狀態</th><th>完成進度</th></tr>
-    ${list.map(p=>{const pct=projProgress(p);return `<tr class="clickable" onclick="openProject('${p.id}')">
+    ${rows.map(p=>{const pct=projProgress(p);return `<tr class="clickable" onclick="openProject('${p.id}')">
       <td style="font-size:12px">${p.created}</td><td>${projThumbHtml(p,44)}</td>
       <td><b>${p.code}</b></td><td>${p.name}</td><td>${p.cat}</td><td>${typeTag(p.type)}</td>
       <td>${currentStage(p)}</td><td>${stTag(projStatus(p))}</td>
@@ -2320,7 +2363,7 @@ function confirmResumeProject(pid){
   render();
 }
 function exportProjectsCsv(type){
-  const list = projects.filter(p=>p.type===type);
+  const list = sortProjectsNewestFirst(projects.filter(p=>p.type===type));
   const header = ['建立日期','產品編號','項目簡介','類別','類型','目前階段','狀態','完成進度%','負責人','預計完成','項目詳細'];
   const rows = list.map(p=>[
     p.created||'', p.code||'', p.name||'', p.cat||'',
@@ -2805,7 +2848,7 @@ async function createProject(){
       : ('P'+String(projSeq++).padStart(3,'0')),
     type, code, name, cat, icon:type==='dev'?'🆕':'🔄',
     coverUrl, coverFileId,
-    owner: owner||null, createdBy:currentUser.id, created:todayStr(), due, desc, status:'進行中',
+    owner: owner||null, createdBy:currentUser.id, created:todayStr(), createdAtMs: Date.now(), due, desc, status:'進行中',
     files: files,
     stages: stages.map((s,i)=>mkStage(s, handlers[i]||[], i===0?'待處理':'未開始')),
     comments:[], logs:[]
