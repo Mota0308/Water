@@ -23,14 +23,17 @@ export async function connectMongo() {
   bucket = new GridFSBucket(db, { bucketName: 'uploads' });
   await dailyCol().createIndex({ _id: 1 });
   await projectsCol().createIndex({ _id: 1 });
+  await replenishmentProjectsCol().createIndex({ _id: 1 });
   await notificationsCol().createIndex({ _id: 1 });
   await usersCol().createIndex({ login: 1 }, { unique: true });
   await sessionsCol().createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await metaCol().createIndex({ _id: 1 });
+  await moduleLogsCol().createIndex({ module: 1, createdAt: -1 });
   console.log('MongoDB connected:', DB_NAME);
   try {
     await migrateUsersV1();
     await migrateProjectsV1();
+    await migrateSplitProjectsAndLogsV1();
     await ensureAdminInDb();
   } catch (e) {
     console.warn('Migration skipped/failed:', e.message || e);
@@ -70,7 +73,13 @@ function dailyCol() {
   return db.collection('daily');
 }
 function projectsCol() {
-  return db.collection('projects');
+  return db.collection('projects'); // 僅開發及生產
+}
+function replenishmentProjectsCol() {
+  return db.collection('replenishment_projects'); // 僅補貨
+}
+function moduleLogsCol() {
+  return db.collection('module_logs'); // 全站操作流水（一則一筆）
 }
 function notificationsCol() {
   return db.collection('notifications');
@@ -83,6 +92,38 @@ function sessionsCol() {
 }
 function metaCol() {
   return db.collection('meta');
+}
+
+function stripProjectDoc(d) {
+  const { _id, updatedAt, users: _u, ...rest } = d;
+  return { ...rest, id: rest.id || String(_id) };
+}
+
+async function listDocsFromCol(col) {
+  const docs = await col.find({ _id: { $ne: 'main' } }).toArray();
+  return docs.map(stripProjectDoc);
+}
+
+async function replaceProjectCollection(col, list, forceType) {
+  const items = (Array.isArray(list) ? list : []).filter((p) => p && p.id);
+  const keepIds = new Set(items.map((p) => String(p.id)));
+  for (const p of items) {
+    const id = String(p.id);
+    const { users: _u, _id, ...rest } = p;
+    const doc = {
+      ...rest,
+      id,
+      _id: id,
+      type: forceType || rest.type || (forceType === 'rep' ? 'rep' : 'dev'),
+      updatedAt: new Date(),
+    };
+    if (forceType) doc.type = forceType;
+    await col.replaceOne({ _id: id }, doc, { upsert: true });
+  }
+  const existing = await col.find({ _id: { $ne: 'main' } }).project({ _id: 1 }).toArray();
+  const toDelete = existing.map((d) => d._id).filter((id) => !keepIds.has(String(id)));
+  if (toDelete.length) await col.deleteMany({ _id: { $in: toDelete } });
+  await col.deleteOne({ _id: 'main' });
 }
 
 function isSampleDailyWork(w) {
@@ -199,6 +240,7 @@ function normalizeUserDoc(u) {
 
 const USER_REF_KEYS = new Set([
   'handler',
+  'handlers',
   'owner',
   'createdBy',
   'completedBy',
@@ -222,20 +264,29 @@ function rewriteIdsInValue(val, oldId, newId) {
   return out;
 }
 
-/** 將各功能文件中的舊使用者 id 改成新電話 id */
-export async function rewriteUserRefs(oldId, newId) {
-  if (!oldId || !newId || oldId === newId) return { projects: 0, daily: false, notifications: false, sessions: 0 };
-  await connectMongo();
-  let projects = 0;
-  const projDocs = await projectsCol().find({ _id: { $ne: 'main' } }).toArray();
-  for (const doc of projDocs) {
+async function rewriteInCollection(col, oldId, newId) {
+  let n = 0;
+  const docs = await col.find({ _id: { $ne: 'main' } }).toArray();
+  for (const doc of docs) {
     const next = rewriteIdsInValue(doc, oldId, newId);
     if (JSON.stringify(next) !== JSON.stringify(doc)) {
       next.updatedAt = new Date();
-      await projectsCol().replaceOne({ _id: doc._id }, next);
-      projects++;
+      await col.replaceOne({ _id: doc._id }, next);
+      n++;
     }
   }
+  return n;
+}
+
+/** 將各功能文件中的舊使用者 id 改成新電話 id */
+export async function rewriteUserRefs(oldId, newId) {
+  if (!oldId || !newId || oldId === newId) {
+    return { projects: 0, replenishment: 0, daily: false, notifications: false, sessions: 0 };
+  }
+  await connectMongo();
+  const projects = await rewriteInCollection(projectsCol(), oldId, newId);
+  const replenishment = await rewriteInCollection(replenishmentProjectsCol(), oldId, newId);
+  await moduleLogsCol().updateMany({ userId: String(oldId) }, { $set: { userId: String(newId) } });
   const dailyDoc = await dailyCol().findOne({ _id: 'main' });
   let daily = false;
   if (dailyDoc) {
@@ -257,7 +308,7 @@ export async function rewriteUserRefs(oldId, newId) {
     }
   }
   const sess = await sessionsCol().updateMany({ userId: String(oldId) }, { $set: { userId: String(newId) } });
-  return { projects, daily, notifications, sessions: sess.modifiedCount || 0 };
+  return { projects, replenishment, daily, notifications, sessions: sess.modifiedCount || 0 };
 }
 
 async function getMigrations() {
@@ -355,13 +406,12 @@ async function migrateProjectsV1() {
       if (m) maxN = Math.max(maxN, parseInt(m[1], 10));
     });
     if (maxN >= projSeq) projSeq = maxN + 1;
+    // moduleLogs 暫存 meta，下一階段 migrateSplitProjectsAndLogsV1 會拆到 module_logs
     const moduleLogs =
-      main.moduleLogs && typeof main.moduleLogs === 'object' ? main.moduleLogs : { daily: [], production: [], replenishment: [] };
-    await metaCol().replaceOne(
-      { _id: 'projects' },
-      { _id: 'projects', projSeq, moduleLogs, updatedAt: new Date() },
-      { upsert: true }
-    );
+      main.moduleLogs && typeof main.moduleLogs === 'object' ? main.moduleLogs : null;
+    const metaSet = { projSeq, repProjSeq: 1, updatedAt: new Date() };
+    if (moduleLogs) metaSet.moduleLogs = moduleLogs;
+    await metaCol().replaceOne({ _id: 'projects' }, { _id: 'projects', ...metaSet }, { upsert: true });
     await projectsCol().deleteOne({ _id: 'main' });
     console.log('Migrated projects → one doc each:', list.length);
   } else {
@@ -370,12 +420,94 @@ async function migrateProjectsV1() {
       await metaCol().insertOne({
         _id: 'projects',
         projSeq: 1,
-        moduleLogs: { daily: [], production: [], replenishment: [] },
+        repProjSeq: 1,
         updatedAt: new Date(),
       });
     }
   }
   await setMigrationFlag('projectsV1');
+}
+
+/** projects 只留開發；補貨搬到 replenishment_projects；moduleLogs → module_logs 一則一筆 */
+async function migrateSplitProjectsAndLogsV1() {
+  const mig = await getMigrations();
+  if (mig.splitProjectsLogsV1) return;
+
+  const mixed = await projectsCol().find({ _id: { $ne: 'main' } }).toArray();
+  let moved = 0;
+  for (const doc of mixed) {
+    if (doc.type === 'rep') {
+      const id = String(doc.id || doc._id);
+      const { users: _u, ...rest } = doc;
+      await replenishmentProjectsCol().replaceOne(
+        { _id: id },
+        { ...rest, id, type: 'rep', _id: id, updatedAt: new Date() },
+        { upsert: true }
+      );
+      await projectsCol().deleteOne({ _id: doc._id });
+      moved++;
+    } else if (!doc.type) {
+      await projectsCol().updateOne({ _id: doc._id }, { $set: { type: 'dev' } });
+    }
+  }
+
+  const meta = (await metaCol().findOne({ _id: 'projects' })) || {};
+  if (meta.moduleLogs && typeof meta.moduleLogs === 'object') {
+    const docs = [];
+    for (const mod of Object.keys(meta.moduleLogs)) {
+      const arr = Array.isArray(meta.moduleLogs[mod]) ? meta.moduleLogs[mod] : [];
+      arr.forEach((l, i) => {
+        if (!l) return;
+        docs.push({
+          module: String(mod),
+          time: l.time || '',
+          user: l.user || '',
+          userId: l.userId || '',
+          userName: l.userName || '',
+          userPhone: l.userPhone || null,
+          action: l.action || '',
+          detail: l.detail || '',
+          createdAt: new Date(),
+          seq: arr.length - i,
+        });
+      });
+    }
+    if (docs.length) {
+      for (let i = 0; i < docs.length; i += 400) {
+        await moduleLogsCol().insertMany(docs.slice(i, i + 400));
+      }
+      console.log('Migrated module_logs entries:', docs.length);
+    }
+  }
+
+  let projSeq = typeof meta.projSeq === 'number' ? meta.projSeq : 1;
+  let repProjSeq = typeof meta.repProjSeq === 'number' ? meta.repProjSeq : 1;
+  const prodDocs = await listDocsFromCol(projectsCol());
+  const repDocs = await listDocsFromCol(replenishmentProjectsCol());
+  let maxP = 0;
+  let maxR = 0;
+  prodDocs.forEach((p) => {
+    const m = String(p.id || '').match(/^P(\d+)$/i);
+    if (m) maxP = Math.max(maxP, parseInt(m[1], 10));
+  });
+  repDocs.forEach((p) => {
+    const m = String(p.id || '').match(/^[PR](\d+)$/i);
+    if (m) maxR = Math.max(maxR, parseInt(m[1], 10));
+  });
+  if (maxP >= projSeq) projSeq = maxP + 1;
+  if (maxR >= repProjSeq) repProjSeq = maxR + 1;
+
+  await metaCol().updateOne(
+    { _id: 'projects' },
+    {
+      $set: { projSeq, repProjSeq, updatedAt: new Date() },
+      $unset: { moduleLogs: '' },
+    },
+    { upsert: true }
+  );
+
+  await setMigrationFlag('splitProjectsLogsV1');
+  console.log('Split collections: moved replenishment projects:', moved);
 }
 
 async function ensureAdminInDb() {
@@ -395,15 +527,17 @@ export async function purgeSampleDataOnce() {
   if (!db) throw new Error('Mongo not connected');
   let changed = false;
 
-  const sampleProjIds = [];
-  const cursor = projectsCol().find({ _id: { $ne: 'main' } });
-  for await (const doc of cursor) {
-    const p = { ...doc, id: doc.id || doc._id };
-    if (isSampleProject(p)) sampleProjIds.push(doc._id);
-  }
-  if (sampleProjIds.length) {
-    await projectsCol().deleteMany({ _id: { $in: sampleProjIds } });
-    changed = true;
+  for (const col of [projectsCol(), replenishmentProjectsCol()]) {
+    const sampleProjIds = [];
+    const cursor = col.find({ _id: { $ne: 'main' } });
+    for await (const doc of cursor) {
+      const p = { ...doc, id: doc.id || doc._id };
+      if (isSampleProject(p)) sampleProjIds.push(doc._id);
+    }
+    if (sampleProjIds.length) {
+      await col.deleteMany({ _id: { $in: sampleProjIds } });
+      changed = true;
+    }
   }
 
   const legacyUsers = await usersCol()
@@ -422,25 +556,17 @@ export async function purgeSampleDataOnce() {
   }
   await ensureAdminInDb();
 
-  const meta = await metaCol().findOne({ _id: 'projects' });
-  if (meta?.moduleLogs && typeof meta.moduleLogs === 'object') {
-    const moduleLogs = { ...meta.moduleLogs };
-    let logsChanged = false;
-    for (const mod of ['daily', 'production', 'replenishment']) {
-      if (!Array.isArray(moduleLogs[mod])) continue;
-      const next = moduleLogs[mod].filter((l) => {
-        const blob = `${(l && l.detail) || ''}|${(l && l.action) || ''}`;
-        return !SAMPLE_LOG_RE.test(blob);
-      });
-      if (next.length !== moduleLogs[mod].length) {
-        moduleLogs[mod] = next;
-        logsChanged = true;
-      }
-    }
-    if (logsChanged) {
-      await metaCol().updateOne({ _id: 'projects' }, { $set: { moduleLogs, updatedAt: new Date() } });
+  try {
+    const logDocs = await moduleLogsCol().find({}).limit(2000).toArray();
+    const badIds = logDocs
+      .filter((l) => SAMPLE_LOG_RE.test(`${(l && l.detail) || ''}|${(l && l.action) || ''}`))
+      .map((l) => l._id);
+    if (badIds.length) {
+      await moduleLogsCol().deleteMany({ _id: { $in: badIds } });
       changed = true;
     }
+  } catch (e) {
+    /* ignore */
   }
 
   const dailyDoc = await dailyCol().findOne({ _id: 'main' });
@@ -490,26 +616,90 @@ export async function saveDaily(data) {
   return { ok: true };
 }
 
-async function listProjectDocs() {
-  const docs = await projectsCol().find({ _id: { $ne: 'main' } }).toArray();
-  return docs.map((d) => {
-    const { _id, updatedAt, users: _u, ...rest } = d;
-    return { ...rest, id: rest.id || String(_id) };
-  });
-}
-
 async function getProjectsMeta() {
   let meta = await metaCol().findOne({ _id: 'projects' });
   if (!meta) {
     meta = {
       _id: 'projects',
       projSeq: 1,
-      moduleLogs: { daily: [], production: [], replenishment: [] },
+      repProjSeq: 1,
       updatedAt: new Date(),
     };
     await metaCol().insertOne(meta);
   }
+  if (typeof meta.repProjSeq !== 'number') {
+    meta.repProjSeq = 1;
+    await metaCol().updateOne({ _id: 'projects' }, { $set: { repProjSeq: 1 } });
+  }
   return meta;
+}
+
+const MODULE_LOG_KEYS = ['daily', 'production', 'replenishment', 'push'];
+
+async function getModuleLogsGrouped(limitPerModule = 400) {
+  const out = { daily: [], production: [], replenishment: [], push: [] };
+  for (const mod of MODULE_LOG_KEYS) {
+    const rows = await moduleLogsCol()
+      .find({ module: mod })
+      .sort({ createdAt: -1, seq: -1 })
+      .limit(limitPerModule)
+      .toArray();
+    out[mod] = rows.map((l) => ({
+      time: l.time || '',
+      user: l.user || '',
+      userId: l.userId || '',
+      userName: l.userName || '',
+      userPhone: l.userPhone || null,
+      action: l.action || '',
+      detail: l.detail || '',
+    }));
+  }
+  return out;
+}
+
+/** 過渡：用前端送來的 moduleLogs 陣列覆寫各模組流水 */
+async function replaceModuleLogsFromBlob(moduleLogs) {
+  if (!moduleLogs || typeof moduleLogs !== 'object') return;
+  for (const mod of MODULE_LOG_KEYS) {
+    const arr = Array.isArray(moduleLogs[mod]) ? moduleLogs[mod] : [];
+    await moduleLogsCol().deleteMany({ module: mod });
+    if (!arr.length) continue;
+    const docs = arr.map((l, i) => ({
+      module: mod,
+      time: (l && l.time) || '',
+      user: (l && l.user) || '',
+      userId: (l && l.userId) || '',
+      userName: (l && l.userName) || '',
+      userPhone: (l && l.userPhone) || null,
+      action: (l && l.action) || '',
+      detail: (l && l.detail) || '',
+      createdAt: new Date(),
+      seq: arr.length - i,
+    }));
+    for (let i = 0; i < docs.length; i += 400) {
+      await moduleLogsCol().insertMany(docs.slice(i, i + 400));
+    }
+  }
+}
+
+export async function appendModuleLog(entry) {
+  await connectMongo();
+  const module = String(entry?.module || 'daily');
+  const doc = {
+    module,
+    time: entry?.time || '',
+    user: entry?.user || '',
+    userId: entry?.userId || '',
+    userName: entry?.userName || '',
+    userPhone: entry?.userPhone || null,
+    action: entry?.action || '',
+    detail: entry?.detail || '',
+    projectId: entry?.projectId || null,
+    createdAt: new Date(),
+    seq: Date.now(),
+  };
+  await moduleLogsCol().insertOne(doc);
+  return doc;
 }
 
 export async function listUsersPublic() {
@@ -649,13 +839,22 @@ export async function changeUserPhone(oldPhoneRaw, newPhoneRaw) {
 
 export async function getProjectsState() {
   await connectMongo();
-  const projects = await listProjectDocs();
+  const productionProjects = (await listDocsFromCol(projectsCol())).map((p) => ({ ...p, type: p.type || 'dev' }));
+  const replenishmentProjects = (await listDocsFromCol(replenishmentProjectsCol())).map((p) => ({
+    ...p,
+    type: 'rep',
+  }));
   const meta = await getProjectsMeta();
   const users = await listUsersPublic();
+  const moduleLogs = await getModuleLogsGrouped();
   return {
-    projects,
+    productionProjects,
+    replenishmentProjects,
+    // 過渡相容：舊前端仍讀 projects 混陣列
+    projects: [...productionProjects, ...replenishmentProjects],
     projSeq: typeof meta.projSeq === 'number' ? meta.projSeq : 1,
-    moduleLogs: meta.moduleLogs && typeof meta.moduleLogs === 'object' ? meta.moduleLogs : { daily: [], production: [], replenishment: [] },
+    repProjSeq: typeof meta.repProjSeq === 'number' ? meta.repProjSeq : 1,
+    moduleLogs,
     users,
   };
 }
@@ -663,41 +862,32 @@ export async function getProjectsState() {
 export async function saveProjectsState(data) {
   await connectMongo();
   // users 唯一真相在 users collection — 忽略 body.users
-  const list = Array.isArray(data?.projects) ? data.projects.filter((p) => p && p.id) : [];
-  const keepIds = new Set(list.map((p) => String(p.id)));
-
-  for (const p of list) {
-    const id = String(p.id);
-    const { users: _u, _id, ...rest } = p;
-    await projectsCol().replaceOne(
-      { _id: id },
-      { ...rest, id, _id: id, updatedAt: new Date() },
-      { upsert: true }
-    );
+  let productionProjects = Array.isArray(data?.productionProjects) ? data.productionProjects : null;
+  let replenishmentProjects = Array.isArray(data?.replenishmentProjects) ? data.replenishmentProjects : null;
+  if (!productionProjects && !replenishmentProjects && Array.isArray(data?.projects)) {
+    productionProjects = data.projects.filter((p) => p && p.type !== 'rep');
+    replenishmentProjects = data.projects.filter((p) => p && p.type === 'rep');
   }
+  if (!productionProjects) productionProjects = [];
+  if (!replenishmentProjects) replenishmentProjects = [];
 
-  const existing = await projectsCol()
-    .find({ _id: { $ne: 'main' } })
-    .project({ _id: 1 })
-    .toArray();
-  const toDelete = existing.map((d) => d._id).filter((id) => !keepIds.has(String(id)));
-  if (toDelete.length) {
-    await projectsCol().deleteMany({ _id: { $in: toDelete } });
-  }
-
-  // clean legacy blob if still present
-  await projectsCol().deleteOne({ _id: 'main' });
+  await replaceProjectCollection(projectsCol(), productionProjects, 'dev');
+  await replaceProjectCollection(replenishmentProjectsCol(), replenishmentProjects, 'rep');
 
   const projSeq = typeof data?.projSeq === 'number' ? data.projSeq : 1;
-  const moduleLogs =
-    data?.moduleLogs && typeof data.moduleLogs === 'object'
-      ? data.moduleLogs
-      : { daily: [], production: [], replenishment: [] };
-  await metaCol().replaceOne(
+  const repProjSeq = typeof data?.repProjSeq === 'number' ? data.repProjSeq : 1;
+  await metaCol().updateOne(
     { _id: 'projects' },
-    { _id: 'projects', projSeq, moduleLogs, updatedAt: new Date() },
+    {
+      $set: { projSeq, repProjSeq, updatedAt: new Date() },
+      $unset: { moduleLogs: '' },
+    },
     { upsert: true }
   );
+
+  if (data?.moduleLogs && typeof data.moduleLogs === 'object') {
+    await replaceModuleLogsFromBlob(data.moduleLogs);
+  }
   return { ok: true };
 }
 

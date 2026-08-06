@@ -245,11 +245,34 @@ function isManager(){ return currentUser && currentUser.role==='manager'; }
 function isPersonal(){ return currentUser && (currentUser.role==='personal' || currentUser.position==='員工'); }
 function canWriteProduction(){ return isAdmin(); }
 function canCreateEmployee(){ return !!(currentUser && (currentUser.role==='system_admin' || currentUser.role==='manager')); }
-/** 可被指派為項目經手人／負責人的員工列表 */
+/** 可被指派為項目經手人／負責人：僅經理、主管（不含系統帳 admin、不含員工） */
 function listAssignableStaff(){
   return users.filter(function(u){
-    return u && u.active!==false && u.login!=='admin' && (u.role==='personal' || u.position==='員工');
+    if(!u || u.active===false || u.login==='admin' || u.id==='adm') return false;
+    if(userNeedsPhoneBind(u)) return false;
+    return u.position==='經理' || u.position==='主管';
   });
+}
+/** 階段經手人（相容舊單值 handler） */
+function stageHandlers(s){
+  if(!s) return [];
+  if(Array.isArray(s.handlers) && s.handlers.length){
+    return s.handlers.filter(Boolean).filter(function(id,i,a){ return a.indexOf(id)===i; });
+  }
+  return s.handler ? [s.handler] : [];
+}
+function stageHandlersLabel(s){
+  const hs = stageHandlers(s);
+  return hs.length ? hs.map(userName).join('、') : '—';
+}
+function isStageHandler(s, uid){
+  if(!uid) return false;
+  return stageHandlers(s).indexOf(uid)>=0;
+}
+function setStageHandlers(s, ids){
+  const hs = (Array.isArray(ids)?ids:[]).filter(Boolean).filter(function(id,i,a){ return a.indexOf(id)===i; });
+  s.handlers = hs;
+  s.handler = hs[0] || null;
 }
 function userUnits(u){
   if(!u) return [];
@@ -372,13 +395,27 @@ function stTag(s){
 }
 
 /* ═══════════ 項目資料 ═══════════ */
-function mkStage(name, handler, status, opts={}){
-  return {name, handler, status, deadline:opts.deadline||'', completedAt:opts.completedAt||null,
-    content:opts.content||'', files:opts.files||[], skipReason:opts.skipReason||'', returnReason:opts.returnReason||''};
+function mkStage(name, handlerOrHandlers, status, opts={}){
+  const hs = Array.isArray(handlerOrHandlers)
+    ? handlerOrHandlers.filter(Boolean)
+    : (handlerOrHandlers ? [handlerOrHandlers] : []);
+  return {
+    name,
+    handler: hs[0]||null,
+    handlers: hs,
+    status,
+    deadline:opts.deadline||'',
+    completedAt:opts.completedAt||null,
+    content:opts.content||'',
+    files:opts.files||[],
+    skipReason:opts.skipReason||'',
+    returnReason:opts.returnReason||''
+  };
 }
 let projects = [];
 let projSeq = 1;
-let moduleLogs = { daily: [], production: [], replenishment: [] };
+let repProjSeq = 1;
+let moduleLogs = { daily: [], production: [], replenishment: [], push: [] };
 const SAMPLE_PROJECT_IDS = ['P001','P002','P003'];
 const SAMPLE_PROJECT_CODES = ['WS-999','WS-888','WS-777'];
 const SAMPLE_PROJECT_NAMES = ['成人日本光皮長短','1mm兒童抓毛上衣','兒童防曬套裝'];
@@ -405,12 +442,15 @@ function purgeSampleProjects(){
     if(SAMPLE_PROJECT_NAMES.indexOf(p.name)>=0) return false;
     return true;
   });
-  let maxN = 0;
+  let maxP = 0, maxR = 0;
   projects.forEach(function(p){
-    const m = String(p.id||'').match(/^P(\d+)$/);
-    if(m) maxN = Math.max(maxN, parseInt(m[1],10));
+    const mp = String(p.id||'').match(/^P(\d+)$/i);
+    const mr = String(p.id||'').match(/^R(\d+)$/i);
+    if(mp) maxP = Math.max(maxP, parseInt(mp[1],10));
+    if(mr) maxR = Math.max(maxR, parseInt(mr[1],10));
   });
-  if(maxN >= projSeq) projSeq = maxN + 1;
+  if(maxP >= projSeq) projSeq = maxP + 1;
+  if(maxR >= repProjSeq) repProjSeq = maxR + 1;
   if(!projects.length && projSeq < 1) projSeq = 1;
   return projects.length !== before;
 }
@@ -522,18 +562,32 @@ function slimFileRef(f){
   return f;
 }
 function slimProjectsPayload(){
-  // users 已獨立存 users collection；PUT 不再夾帶 users（後端亦會忽略）
-  const cloned = JSON.parse(JSON.stringify({ projects, projSeq, moduleLogs }));
-  (cloned.projects||[]).forEach(p=>{
-    if(p.coverFileId && p.coverUrl && String(p.coverUrl).startsWith('data:')) p.coverUrl = apiUrl('/api/files/'+p.coverFileId);
-    (p.files||[]).forEach((f,i)=>{ p.files[i] = slimFileRef(f); });
-    (p.stages||[]).forEach(s=>{
-      if(Array.isArray(s.files)) s.files = s.files.map(slimFileRef);
+  // 開發 → projects collection；補貨 → replenishment_projects；moduleLogs → module_logs
+  const productionProjects = projects.filter(function(p){ return p && p.type!=='rep'; });
+  const replenishmentProjects = projects.filter(function(p){ return p && p.type==='rep'; });
+  const cloned = JSON.parse(JSON.stringify({
+    productionProjects,
+    replenishmentProjects,
+    projects: productionProjects.concat(replenishmentProjects),
+    projSeq,
+    repProjSeq,
+    moduleLogs
+  }));
+  function slimList(list){
+    (list||[]).forEach(function(p){
+      if(p.coverFileId && p.coverUrl && String(p.coverUrl).startsWith('data:')) p.coverUrl = apiUrl('/api/files/'+p.coverFileId);
+      (p.files||[]).forEach(function(f,i){ p.files[i] = slimFileRef(f); });
+      (p.stages||[]).forEach(function(s){
+        if(Array.isArray(s.files)) s.files = s.files.map(slimFileRef);
+      });
+      (p.comments||[]).forEach(function(c){
+        if(c.file && typeof c.file === 'object') c.file = slimFileRef(c.file);
+      });
     });
-    (p.comments||[]).forEach(c=>{
-      if(c.file && typeof c.file === 'object') c.file = slimFileRef(c.file);
-    });
-  });
+  }
+  slimList(cloned.productionProjects);
+  slimList(cloned.replenishmentProjects);
+  slimList(cloned.projects);
   return cloned;
 }
 function slimDailyPayload(state){
@@ -684,11 +738,25 @@ async function loadCloudAppData(){
   }
 
   const ps = await apiFetch('/api/projects');
-  if(Array.isArray(ps.projects)) projects = ps.projects;
-  else projects = [];
+  if(Array.isArray(ps.productionProjects) || Array.isArray(ps.replenishmentProjects)){
+    projects = [].concat(ps.productionProjects||[], ps.replenishmentProjects||[]);
+  } else if(Array.isArray(ps.projects)){
+    projects = ps.projects;
+  } else {
+    projects = [];
+  }
+  // 正規化階段經手人：舊 handler 單值 → handlers[]
+  projects.forEach(function(p){
+    if(!p || !Array.isArray(p.stages)) return;
+    p.stages.forEach(function(s){ setStageHandlers(s, stageHandlers(s)); });
+  });
   if(typeof ps.projSeq === 'number') projSeq = ps.projSeq;
-  else if(!projects.length) projSeq = 1;
-  if(ps.moduleLogs && typeof ps.moduleLogs === 'object') moduleLogs = ps.moduleLogs;
+  else if(!projects.filter(function(p){ return p.type!=='rep'; }).length) projSeq = 1;
+  if(typeof ps.repProjSeq === 'number') repProjSeq = ps.repProjSeq;
+  else if(!projects.filter(function(p){ return p.type==='rep'; }).length) repProjSeq = 1;
+  if(ps.moduleLogs && typeof ps.moduleLogs === 'object'){
+    moduleLogs = Object.assign({ daily:[], production:[], replenishment:[], push:[] }, ps.moduleLogs);
+  }
   const orphans = applyUsersFromCloud(ps.users);
   let projectsDirty = false;
   if(purgeSampleProjects()) projectsDirty = true;
@@ -1430,15 +1498,41 @@ function projStatus(p){
 }
 function typeTag(t){ return t==='dev'?'<span class="tag t-dev">開發及生產</span>':'<span class="tag t-rep">補貨</span>'; }
 function projectAssigneeOpts(selectedId){
-  let pool = listAssignableStaff().filter(function(u){ return !userNeedsPhoneBind(u); });
-  if(!pool.length) pool = users.filter(u=>u.active!==false && u.login!=='admin' && !userNeedsPhoneBind(u));
+  const pool = listAssignableStaff();
+  const selected = selectedId ? String(selectedId) : '';
   const opts = pool.map(function(u){
     const phone = normalizePhone(u.phone)||normalizePhone(u.id)||'';
-    const label = escHtml(u.name)+(phone?('｜'+phone):'')+'（'+escHtml(u.dept||roleLabel(u))+'）';
-    return `<option value="${u.id}"${u.id===selectedId?' selected':''}>${label}</option>`;
+    const label = escHtml(u.name)+(phone?('｜'+phone):'')+'（'+escHtml(u.position||roleLabel(u))+'）';
+    return `<option value="${u.id}"${u.id===selected?' selected':''}>${label}</option>`;
   }).join('');
-  if(!opts) return `<option value="">（尚無已綁定電話的員工，請先創建或補登電話）</option>`;
+  if(!opts) return `<option value="">（尚無經理／主管賬號，請先「創建員工」）</option>`;
   return `<option value="">— 未分配 —</option>`+opts;
+}
+/** 階段經手人多選 checkbox（僅經理／主管） */
+function projectAssigneeChecksHtml(selectedIds, inputClass){
+  const pool = listAssignableStaff();
+  const selected = {};
+  (Array.isArray(selectedIds)?selectedIds:(selectedIds?[selectedIds]:[])).forEach(function(id){
+    if(id) selected[String(id)] = true;
+  });
+  const cls = inputClass || 'stage-handler-cb';
+  if(!pool.length){
+    return '<p style="font-size:12px;color:#c62828;margin:0">尚無經理／主管可選。請先創建職位為「經理」或「主管」的賬號。</p>';
+  }
+  return '<div class="recipient-box" style="max-height:160px;min-width:220px">'+
+    pool.map(function(u){
+      const phone = normalizePhone(u.phone)||normalizePhone(u.id)||'';
+      const label = escHtml(u.name)+'（'+escHtml(u.position||'')+(phone?'｜'+phone:'')+'）';
+      const checked = selected[String(u.id)] ? ' checked' : '';
+      return '<label class="rc-item"><input type="checkbox" class="'+cls+'" value="'+escHtml(u.id)+'"'+checked+'> '+label+'</label>';
+    }).join('')+
+    '</div>';
+}
+function readCheckedHandlerIds(rootSel, inputClass){
+  const root = typeof rootSel==='string' ? document.querySelector(rootSel) : rootSel;
+  if(!root) return [];
+  const cls = inputClass || 'stage-handler-cb';
+  return Array.from(root.querySelectorAll('input.'+cls+':checked')).map(function(cb){ return cb.value; }).filter(Boolean);
 }
 function projThumbHtml(p,size){
   size=size||44;
@@ -1453,9 +1547,9 @@ function projThumbHtml(p,size){
 }
 function canOperateStage(p, s){
   if(isProjectLocked(p)) return false;
-  if(isAdmin()) return true;
+  if(isAdmin()) return true; // 經理／主管／admin
   if(isManager()) return false;
-  return isPersonal() && s.handler===currentUser.id;
+  return !!(currentUser && isStageHandler(s, currentUser.id));
 }
 function fmtMention(text){
   return String(text||'').replace(/@([^\s@，,。]+)/g,'<span class="mention">@$1</span>');
@@ -1783,7 +1877,7 @@ function getProjectTodosForUser(user){
   projects.forEach(p=>{
     if(isProjectLocked(p)) return;
     p.stages.forEach((s,idx)=>{
-      if(s.handler!==user.id||stageDone(s)) return;
+      if(!isStageHandler(s, user.id)||stageDone(s)) return;
       if(!['進行中','待處理','需要修改','待確認','未開始'].includes(s.status)) return;
       const prevDone=idx===0||p.stages.slice(0,idx).every(stageDone);
       if(!(prevDone||s.status!=='未開始')) return;
@@ -1839,25 +1933,23 @@ function vMyTasks(){
     const waits = [];
     projects.forEach(p=>p.stages.forEach(s=>{ if(s.status==='待確認') waits.push({p,s}); }));
     const staffRows = listAssignableStaff().map(u=>{
-      let n=0; projects.forEach(p=>p.stages.forEach(s=>{ if(s.handler===u.id&&!stageDone(s)) n++; }));
-      return `<tr><td>${escHtml(u.name)}</td><td>${escHtml(u.dept||'')}</td><td><b>${n}</b></td></tr>`;
+      let n=0; projects.forEach(p=>p.stages.forEach(s=>{ if(isStageHandler(s,u.id)&&!stageDone(s)) n++; }));
+      return `<tr><td>${escHtml(u.name)}</td><td>${escHtml(u.position||u.dept||'')}</td><td><b>${n}</b></td></tr>`;
     }).join('');
     return `<div class="card"><h2>✅ 等待管理層確認（${waits.length}）</h2>
       ${waits.length?`<div class="table-wrap"><table><tr><th>項目</th><th>階段</th><th>經手人</th><th>操作</th></tr>
-      ${waits.map(({p,s})=>`<tr><td>${p.code} ${p.name}</td><td>${s.name}</td><td>${userName(s.handler)}</td>
+      ${waits.map(({p,s})=>`<tr><td>${p.code} ${p.name}</td><td>${s.name}</td><td>${escHtml(stageHandlersLabel(s))}</td>
         <td><button class="btn sm" onclick="openProject('${p.id}','flow')">處理</button></td></tr>`).join('')}</table></div>`:'<p style="color:#888">沒有等待確認的階段。</p>'}
     </div>
-    <div class="card"><h2>👥 各經手人待辦工作</h2>
-      <div class="table-wrap"><table><tr><th>經手人</th><th>部門</th><th>待辦階段數</th></tr>
-      ${staffRows||'<tr><td colspan="3" style="color:#888">尚無員工賬號。請先創建員工，並在項目中指派經手人。</td></tr>'}
+    <div class="card"><h2>👥 各經手人待辦工作（經理／主管）</h2>
+      <div class="table-wrap"><table><tr><th>經手人</th><th>職位</th><th>待辦階段數</th></tr>
+      ${staffRows||'<tr><td colspan="3" style="color:#888">尚無經理／主管。請先創建職位為「經理」或「主管」的賬號並指派經手人。</td></tr>'}
       </table></div></div>`;
   }
   const tasks = getMyTasks();
   const doneList = [];
-  projects.forEach(p=>p.stages.forEach(s=>{ if(s.handler===currentUser.id&&s.status==='已完成') doneList.push({p,s}); }));
-  const emptyHint = isPersonal()
-    ? '<p style="color:#888">暫時沒有待辦。請管理員在「項目 → 工作流程」把階段經手人指派給你之後，即可在此開始處理（開始／上載／提交確認）。</p>'
-    : '<p style="color:#888">暫時沒有待辦工作。</p>';
+  projects.forEach(p=>p.stages.forEach(s=>{ if(isStageHandler(s,currentUser.id)&&s.status==='已完成') doneList.push({p,s}); }));
+  const emptyHint = '<p style="color:#888">暫時沒有待辦。請在項目工作流程把階段經手人指派給經理／主管後，即可在此處理。</p>';
   return `<div class="card"><h2>📌 我的待辦工作（${tasks.length}）</h2>
     <p style="font-size:13px;color:#666;margin-bottom:10px">開發及生產／補貨中指派給你的階段會顯示於此，可點擊進入處理。</p>
     ${tasks.length?`<div class="table-wrap"><table><tr><th>項目</th><th>產品編號</th><th>工作階段</th><th>完成期限</th><th>狀態</th><th>操作</th></tr>
@@ -2087,13 +2179,20 @@ function tabFlow(p){
     let actions = '';
     if(isProjectLocked(p)){
       // 鎖定時不顯示推進按鈕
-    } else if(!isAdmin() && s.handler===currentUser.id){
+    } else if(!isAdmin() && isStageHandler(s, currentUser.id)){
       if(['未開始','待處理'].includes(s.status)) actions += `<button class="btn sm" onclick="stageAction('${p.id}',${i},'start')">開始處理</button>`;
       if(['進行中','需要修改'].includes(s.status)) actions += `<button class="btn green sm" onclick="stageAction('${p.id}',${i},'submit')">提交確認</button>`;
       if(!done) actions += `<button class="btn purple sm" onclick="askUpload('${p.id}',${i})">上載文件／圖片</button>
         <button class="btn gray sm" onclick="askContent('${p.id}',${i})">填寫工作內容</button>`;
     }
     else if(isAdmin()){
+      // 經理／主管被指派為經手人時，也可直接推進自己的階段
+      if(isStageHandler(s, currentUser.id)){
+        if(['未開始','待處理'].includes(s.status)) actions += `<button class="btn sm" onclick="stageAction('${p.id}',${i},'start')">開始處理</button>`;
+        if(['進行中','需要修改'].includes(s.status)) actions += `<button class="btn green sm" onclick="stageAction('${p.id}',${i},'submit')">提交確認</button>`;
+        if(!done) actions += `<button class="btn purple sm" onclick="askUpload('${p.id}',${i})">上載文件／圖片</button>
+          <button class="btn gray sm" onclick="askContent('${p.id}',${i})">填寫工作內容</button>`;
+      }
       if(s.status==='待確認') actions += `<button class="btn green sm" onclick="stageAction('${p.id}',${i},'confirm')">✓ 確認完成</button>
         <button class="btn red sm" onclick="askReturn('${p.id}',${i})">退回修改</button>`;
       if(!done && s.status!=='待確認') actions += `<button class="btn purple sm" onclick="askSkip('${p.id}',${i})">跳過（直接下一階段）</button>`;
@@ -2104,7 +2203,7 @@ function tabFlow(p){
       <div class="stage-head" onclick="this.nextElementSibling.classList.toggle('hidden')">
         <div class="stage-num ${numCls}">${done?'✓':i+1}</div>
         <div class="stage-name">${s.name}</div>
-        <span class="tag dept">👤 ${userName(s.handler)}</span>
+        <span class="tag dept">👤 ${escHtml(stageHandlersLabel(s))}</span>
         ${s.deadline?`<span style="font-size:12px;color:#888">⏰ ${s.deadline}</span>`:''}
         ${stTag(s.status)}
       </div>
@@ -2114,7 +2213,7 @@ function tabFlow(p){
         ${s.skipReason?`<div class="row">⏭ 跳過原因：${s.skipReason}</div>`:''}
         ${s.returnReason?`<div class="row" style="color:#c62828">↩️ 退回原因：${s.returnReason}</div>`:''}
         ${s.files.length?`<div class="row">📎 文件：${s.files.map(f=>fileLinkHtml(f, f.name+(f.latest?' ✅':''))).join('、 ')}</div>`:''}
-        ${!mine&&!isAdmin()?'<div class="row" style="color:#8d6e00">🔒 此階段由 '+userName(s.handler)+' 負責，你只可查看。</div>':''}
+        ${!mine&&!isAdmin()?'<div class="row" style="color:#8d6e00">🔒 此階段由 '+escHtml(stageHandlersLabel(s))+' 負責，你只可查看。</div>':''}
         <div class="actions-row">${actions}</div>
       </div>
     </div>`;
@@ -2128,7 +2227,7 @@ function stageAction(pid, idx, act){
   if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法推進階段。'); return; }
   if(act==='start'){ s.status='進行中'; addProjLog(p,'開始處理', s.name+' → 進行中'); }
   if(act==='submit'){ s.status='待確認'; s.returnReason=''; addProjLog(p,'提交確認', s.name+' → 待確認'); }
-  if(act==='confirm'){ s.status='已完成'; s.completedAt=todayStr(); addProjLog(p,'確認完成', s.name+'｜經手人：'+userName(s.handler)); }
+  if(act==='confirm'){ s.status='已完成'; s.completedAt=todayStr(); addProjLog(p,'確認完成', s.name+'｜經手人：'+stageHandlersLabel(s)); }
   if(act==='reopen'){ s.status='進行中'; s.completedAt=null; addProjLog(p,'重新開啟階段', s.name); }
   render();
 }
@@ -2170,20 +2269,24 @@ function askReassign(pid, idx){
   if(!isAdmin()){ alert2('只有系統管理員可以重新分配經手人。'); return; }
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
   if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法重新分配。'); return; }
-  showModal(`<h3>重新分配經手人</h3>
-    <p style="font-size:13px">階段：<b>${s.name}</b>｜現時經手人：<b>${userName(s.handler)}</b></p>
-    <label>新經手人</label><select id="m-handler">${projectAssigneeOpts(s.handler)}</select>
+  showModal(`<h3>重新分配經手人（可多選）</h3>
+    <p style="font-size:13px">階段：<b>${s.name}</b>｜現時：<b>${escHtml(stageHandlersLabel(s))}</b></p>
+    <p style="font-size:12px;color:#888;margin:4px 0 8px">僅可選經理／主管，可同時勾選多人。</p>
+    <label>經手人</label>
+    <div id="m-handler-box">${projectAssigneeChecksHtml(stageHandlers(s), 'm-handler-cb')}</div>
     <label>更改原因（選填）</label><input type="text" id="m-reason" placeholder="可留空">
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
     <button class="btn sm" onclick="doReassign('${pid}',${idx})">確認更改</button></div>`);
 }
 function doReassign(pid, idx){
   const r = document.getElementById('m-reason').value.trim();
-  const nh = document.getElementById('m-handler').value;
+  const nh = readCheckedHandlerIds('#m-handler-box', 'm-handler-cb');
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
   if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法重新分配。'); return; }
-  addProjLog(p,'更改經手人', s.name+'：'+userName(s.handler)+' → '+userName(nh)+(r?'｜原因：'+r:'')+'（系統已通知原有及新經手人）');
-  s.handler = nh;
+  const before = stageHandlersLabel(s);
+  setStageHandlers(s, nh);
+  addProjLog(p,'更改經手人', s.name+'：'+before+' → '+stageHandlersLabel(s)+(r?'｜原因：'+r:'')+'（系統已通知相關經手人）');
+  persistProjects();
   closeModal(); render();
 }
 function askContent(pid, idx){
@@ -2420,8 +2523,8 @@ function vAddProject(){
   if(!isAdmin()) return `<div class="card"><h2>➕ 建立新項目</h2><p>只有系統管理員可以建立項目。</p></div>`;
   const staffOpts = projectAssigneeOpts('');
   const staffHint = listAssignableStaff().length
-    ? '<p style="font-size:12px;color:#888;margin:4px 0 0">請把各階段經手人指派給員工賬號，對方登入後可在「開發及生產 → 我的工作」處理。</p>'
-    : '<p style="font-size:12px;color:#c62828;margin:4px 0 0">尚未有員工賬號。請先到「創建員工」新增職位為「員工」的賬號，再開這裡指派經手人。</p>';
+    ? '<p style="font-size:12px;color:#888;margin:4px 0 0">各階段經手人僅可選<strong>經理／主管</strong>，可多選；對方可在「我的工作」看到待辦。</p>'
+    : '<p style="font-size:12px;color:#c62828;margin:4px 0 0">尚未有經理／主管賬號。請先到「創建員工」新增職位為「經理」或「主管」的賬號。</p>';
   setTimeout(()=>{ renderNpStages(); npRenderCoverPreview(); npRenderFileList(); },0);
   return `<div class="card"><h2>➕ 建立新項目</h2>
     <label>項目封面圖片（選填）</label>
@@ -2436,13 +2539,13 @@ function vAddProject(){
     <label>項目簡介</label><input type="text" id="np-name" placeholder="例如：成人抓毛套裝">
     <label>產品類別</label><select id="np-cat">${CATEGORIES.map(c=>`<option>${c}</option>`).join('')}</select>
     <label>項目詳細內容（支援分行）</label><textarea id="np-desc" placeholder="• 要求一&#10;• 要求二"></textarea>
-    <label>項目負責人</label><select id="np-owner">${staffOpts}</select>
+    <label>項目負責人（經理／主管）</label><select id="np-owner">${staffOpts}</select>
     <label>預計完成日期</label><input type="date" id="np-due">
     <label>項目附件（可多次添加、可多選）</label>
     <input type="file" id="np-files" multiple onchange="npOnFilesPick(this)">
     <p style="font-size:12px;color:#888;margin:4px 0 0">附件會顯示在項目「文件及圖片」，標籤為「建立項目」。封面只用於列表／標題縮圖，不進文件列表。</p>
     <div id="np-file-list">${npFileListHtml()}</div>
-    <h3 style="margin-top:16px">各階段經手人分配（指派給員工後對方才看得到待辦）</h3>
+    <h3 style="margin-top:16px">各階段經手人分配（經理／主管，可多選）</h3>
     ${staffHint}
     <div id="np-stages"></div>
     <button class="btn" onclick="askCreateProject()">建立項目</button>
@@ -2453,11 +2556,10 @@ function renderNpStages(){
   if(!typeEl) return;
   const type = typeEl.value;
   const stages = type==='dev'?DEV_STAGES:REP_STAGES;
-  const staffOpts = projectAssigneeOpts('');
   document.getElementById('np-stages').innerHTML = stages.map((s,i)=>`
-    <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
-      <span style="min-width:140px;font-size:13px"><b>${i+1}. ${s}</b></span>
-      <select class="np-handler" style="width:auto;font-size:13px;padding:6px">${staffOpts}</select>
+    <div class="np-stage-row" style="display:flex;gap:12px;align-items:flex-start;margin-bottom:10px;flex-wrap:wrap">
+      <span style="min-width:140px;font-size:13px;padding-top:6px"><b>${i+1}. ${s}</b></span>
+      <div class="np-handler-box" data-stage="${i}">${projectAssigneeChecksHtml([], 'np-handler-cb')}</div>
     </div>`).join('');
 }
 function askCreateProject(){
@@ -2495,8 +2597,12 @@ async function createProject(){
   const owner = document.getElementById('np-owner').value;
   const due = document.getElementById('np-due').value || '—';
   const stages = (type==='dev'?DEV_STAGES:REP_STAGES);
-  const handlers = [...document.querySelectorAll('.np-handler')].map(s=>s.value||null);
-  const assignedN = handlers.filter(Boolean).length;
+  const handlerBoxes = [...document.querySelectorAll('.np-handler-box')];
+  const handlers = stages.map((_, i)=>{
+    const box = handlerBoxes.find(b=>String(b.getAttribute('data-stage'))===String(i)) || handlerBoxes[i];
+    return box ? readCheckedHandlerIds(box, 'np-handler-cb') : [];
+  });
+  const assignedN = handlers.filter(hs=>hs && hs.length).length;
   let coverUrl = null, coverFileId = null;
   let files = [];
   try{
@@ -2514,18 +2620,21 @@ async function createProject(){
     }
   }catch(e){ alert2('上傳封面／附件失敗：'+(e.message||e)); return; }
   const p = {
-    id:'P'+String(projSeq++).padStart(3,'0'), type, code, name, cat, icon:type==='dev'?'🆕':'🔄',
+    id: type==='rep'
+      ? ('R'+String(repProjSeq++).padStart(3,'0'))
+      : ('P'+String(projSeq++).padStart(3,'0')),
+    type, code, name, cat, icon:type==='dev'?'🆕':'🔄',
     coverUrl, coverFileId,
     owner: owner||null, createdBy:currentUser.id, created:todayStr(), due, desc, status:'進行中',
     files: files,
-    stages: stages.map((s,i)=>mkStage(s, handlers[i]||null, i===0?'待處理':'未開始')),
+    stages: stages.map((s,i)=>mkStage(s, handlers[i]||[], i===0?'待處理':'未開始')),
     comments:[], logs:[]
   };
   projects.unshift(p);
   addProjLog(p,'建立項目',(type==='dev'?'開發及生產':'補貨')+'｜'+code+'｜'+name+(p.coverUrl?'｜已設封面':'')+(files.length?'｜附件 '+files.length+' 個':''));
   addProjLog(p,'分配經手人', assignedN
-    ? ('已指派 '+assignedN+'／'+stages.length+' 個階段（相關經手人可於「我的工作」處理）')
-    : '尚未指派經手人（請稍後在工作流程中更改經手人，員工才會看到待辦）');
+    ? ('已指派 '+assignedN+'／'+stages.length+' 個階段（經理／主管可於「我的工作」處理）')
+    : '尚未指派經手人（請稍後在工作流程中更改經手人）');
   if(files.length) addProjLog(p,'上載文件','建立項目｜'+files.map(f=>f.name).join('、'));
   npDraftFiles=[]; npCoverDraft=null;
   try{
@@ -3251,7 +3360,7 @@ function dailyToggleProject(pid,idx,el){
   var p=projects.find(function(x){ return x.id===pid; });
   if(!p||!p.stages[idx]){ el.checked=!el.checked; return; }
   var s=p.stages[idx];
-  if(s.handler!==currentUser.id&&!isAdmin()){ el.checked=!el.checked; alert2('此階段不是你的待辦。'); return; }
+  if(!isStageHandler(s,currentUser.id)&&!isAdmin()){ el.checked=!el.checked; alert2('此階段不是你的待辦。'); return; }
   if(el.checked){
     el.checked=false;
     dailyAskProjectSubmit(pid,idx);
@@ -3282,7 +3391,7 @@ async function dailySubmitProject(pid,idx){
   var p=projects.find(function(x){ return x.id===pid; });
   if(!p||!p.stages[idx]) return;
   var s=p.stages[idx];
-  if(s.handler!==currentUser.id&&!isAdmin()) return alert2('此階段不是你的待辦。');
+  if(!isStageHandler(s,currentUser.id)&&!isAdmin()) return alert2('此階段不是你的待辦。');
   var input=document.getElementById('d-proj-files');
   if(!input||!input.files||!input.files.length) return alert2('請至少選擇 1 個附件。');
   try{
@@ -3313,7 +3422,7 @@ function dailyConfirmProjectWithdraw(pid,idx){
   var p=projects.find(function(x){ return x.id===pid; });
   if(!p||!p.stages[idx]){ closeModal(); return; }
   var s=p.stages[idx];
-  if(s.handler!==currentUser.id&&!isAdmin()){ closeModal(); return alert2('此階段不是你的待辦。'); }
+  if(!isStageHandler(s,currentUser.id)&&!isAdmin()){ closeModal(); return alert2('此階段不是你的待辦。'); }
   if(s.status!=='待確認'){ closeModal(); render(); return; }
   s.status='進行中';
   addProjLog(p,'撤回提交', s.name+'｜待確認 → 進行中');

@@ -26,6 +26,7 @@ import {
   assignPhoneToUser,
   changeUserPhone,
   isAdminAccount,
+  appendModuleLog,
 } from './mongo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -297,6 +298,19 @@ app.put('/api/projects', requireAuth, async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/module-logs', requireAuth, async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({ error: 'JSON body required' });
+    }
+    const item = await appendModuleLog(req.body);
+    res.json({ ok: true, log: item });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
   }
 });
 
