@@ -110,7 +110,38 @@ function clearAuthCookie(res) {
   res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`);
 }
 
+function readPackageVersion() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+    return String(pkg.version || '1.0.0');
+  } catch {
+    return '1.0.0';
+  }
+}
+
+/** Deploy fingerprint: package version + index.html mtime (changes on each code deploy). */
+function getAppVersionInfo() {
+  const pkgVersion = readPackageVersion();
+  const indexPath = path.join(webRoot, 'index.html');
+  let buildId = '0';
+  let builtAt = null;
+  try {
+    const st = fs.statSync(indexPath);
+    buildId = String(Math.floor(st.mtimeMs));
+    builtAt = st.mtime.toISOString();
+  } catch {
+    /* ignore */
+  }
+  return {
+    version: `${pkgVersion}-${buildId}`,
+    pkgVersion,
+    buildId,
+    builtAt,
+  };
+}
+
 app.get('/api/health', (_req, res) => {
+  const ver = getAppVersionInfo();
   res.json({
     ok: true,
     configured: mongoConfigured(),
@@ -119,7 +150,15 @@ app.get('/api/health', (_req, res) => {
     storage: mongoConfigured() ? 'mongodb' : null,
     db: process.env.MONGODB_DB || 'store_employee',
     auth: true,
+    version: ver.version,
+    buildId: ver.buildId,
+    builtAt: ver.builtAt,
   });
+});
+
+app.get('/api/version', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(getAppVersionInfo());
 });
 
 function requireDb(_req, res, next) {
@@ -394,9 +433,20 @@ app.get('/api/files/:id', requireAuth, async (req, res) => {
   }
 });
 
-app.use(express.static(webRoot));
+app.use(
+  express.static(webRoot, {
+    setHeaders(res, filePath) {
+      if (String(filePath).endsWith('index.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      } else {
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    },
+  })
+);
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(webRoot, 'index.html'));
 });
 

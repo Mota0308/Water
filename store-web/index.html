@@ -208,6 +208,20 @@
   .mention-item .mid { color:#888; font-size:12px; margin-left:6px; }
 
   .info-banner { background:#e3f2fd; border:1px solid #90caf9; color:#0d47a1; padding:10px 14px; border-radius:8px; margin-bottom:12px; font-size:13px; }
+  .app-update-banner {
+    position:fixed; left:12px; right:12px; bottom:12px; z-index:200;
+    display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px;
+    background:#1b5e20; color:#fff; padding:12px 16px; border-radius:10px;
+    box-shadow:0 8px 28px rgba(0,0,0,.28); font-size:14px;
+  }
+  .app-update-banner.hidden { display:none !important; }
+  .app-update-banner .aub-msg { flex:1 1 200px; line-height:1.45; }
+  .app-update-banner .aub-actions { display:flex; gap:8px; flex-shrink:0; }
+  .app-update-banner button {
+    border:none; border-radius:6px; padding:8px 14px; cursor:pointer; font-size:13px; font-weight:bold;
+  }
+  .app-update-banner .aub-update { background:#fff; color:#1b5e20; }
+  .app-update-banner .aub-later { background:rgba(255,255,255,.18); color:#fff; }
   @media (max-width:600px){ body{font-size:14px} .stat .num{font-size:20px} .stage-body{padding-left:14px} }
 </style>
 </head>
@@ -257,6 +271,13 @@
       <button type="button" onclick="closeMailbox()">關閉</button>
     </div>
     <div id="mailbox-list"><p class="mailbox-empty">登入後可查看通知。</p></div>
+  </div>
+</div>
+<div id="app-update-banner" class="app-update-banner hidden" role="status" aria-live="polite">
+  <div class="aub-msg">系統有新程式／功能可用。請更新以載入最新版本。</div>
+  <div class="aub-actions">
+    <button type="button" class="aub-later" onclick="dismissAppUpdate()">稍後</button>
+    <button type="button" class="aub-update" onclick="applyAppUpdate()">更新系統</button>
   </div>
 </div>
 
@@ -3771,9 +3792,68 @@ go = function(v){ _go(v); if(v==='addProject') setTimeout(renderNpStages, 0); };
   }
   document.addEventListener('visibilitychange', function(){
     if(document.visibilityState==='hidden') flushCloudSaves();
+    if(document.visibilityState==='visible') checkAppVersion();
   });
   window.addEventListener('pagehide', function(){ flushCloudSaves(); });
+  window.addEventListener('focus', function(){ checkAppVersion(); });
+  startAppVersionWatcher();
 })();
+
+/* ═══════════ 新版本提示／更新系統 ═══════════ */
+let clientAppVersion = null;
+let appUpdateDismissedFor = null;
+let appVersionTimer = null;
+const APP_VERSION_POLL_MS = 60 * 1000;
+
+async function fetchAppVersion(){
+  const r = await fetch(apiUrl('/api/version'), { cache: 'no-store', credentials: 'include' });
+  if(!r.ok) throw new Error('version HTTP '+r.status);
+  return r.json();
+}
+function showAppUpdateBanner(show){
+  const el = document.getElementById('app-update-banner');
+  if(!el) return;
+  if(show) el.classList.remove('hidden');
+  else el.classList.add('hidden');
+}
+async function checkAppVersion(){
+  try{
+    const info = await fetchAppVersion();
+    const remote = info && info.version ? String(info.version) : '';
+    if(!remote) return;
+    if(!clientAppVersion){
+      clientAppVersion = remote;
+      return;
+    }
+    if(remote === clientAppVersion){
+      if(appUpdateDismissedFor === remote) return;
+      showAppUpdateBanner(false);
+      return;
+    }
+    if(appUpdateDismissedFor === remote) return;
+    showAppUpdateBanner(true);
+  }catch(e){
+    /* 離線或舊伺服器無此 API 時略過 */
+  }
+}
+function dismissAppUpdate(){
+  fetchAppVersion().then(function(info){
+    if(info && info.version) appUpdateDismissedFor = String(info.version);
+  }).catch(function(){});
+  showAppUpdateBanner(false);
+}
+async function applyAppUpdate(){
+  showAppUpdateBanner(false);
+  try{ await flushCloudSaves(); }catch(e){}
+  const url = new URL(window.location.href);
+  url.searchParams.set('_v', String(Date.now()));
+  window.location.replace(url.toString());
+}
+function startAppVersionWatcher(){
+  checkAppVersion();
+  if(appVersionTimer) clearInterval(appVersionTimer);
+  appVersionTimer = setInterval(checkAppVersion, APP_VERSION_POLL_MS);
+}
 </script>
 
 
