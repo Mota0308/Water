@@ -958,20 +958,33 @@ export async function createNotification(input) {
   return item;
 }
 
-export async function markNotificationRead(id, userId) {
+export async function setNotificationReadState(id, userId, read) {
   await connectMongo();
   const state = await getNotificationsState();
   const item = state.notifications.find((n) => n.id === id);
   if (!item) throw new Error('Notification not found');
   const rec = (item.recipients || []).find((r) => r.userId === userId);
   if (!rec) throw new Error('Not a recipient');
-  if (!rec.read) {
+  const wantRead = !!read;
+  if (!!rec.read === wantRead) return item;
+  if (wantRead) {
     const now = new Date();
     rec.read = true;
     rec.readAt = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    await saveNotificationsState(state);
+  } else {
+    rec.read = false;
+    rec.readAt = null;
   }
+  await saveNotificationsState(state);
   return item;
+}
+
+export async function markNotificationRead(id, userId) {
+  return setNotificationReadState(id, userId, true);
+}
+
+export async function markNotificationUnread(id, userId) {
+  return setNotificationReadState(id, userId, false);
 }
 
 export async function uploadFile({ buffer, filename, mimeType }) {

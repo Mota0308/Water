@@ -14,6 +14,7 @@ import {
   getNotificationsState,
   createNotification,
   markNotificationRead,
+  markNotificationUnread,
   uploadFile,
   downloadFile,
   loginWithPassword,
@@ -341,6 +342,19 @@ app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
     const userId = String(req.body?.userId || req.user?.id || req.user?._id || '');
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const item = await markNotificationRead(req.params.id, userId);
+    res.json(item);
+  } catch (e) {
+    console.error(e);
+    const msg = String(e.message || e);
+    res.status(msg === 'Notification not found' ? 404 : 400).json({ error: msg });
+  }
+});
+
+app.post('/api/notifications/:id/unread', requireAuth, async (req, res) => {
+  try {
+    const userId = String(req.body?.userId || req.user?.id || req.user?._id || '');
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const item = await markNotificationUnread(req.params.id, userId);
     res.json(item);
   } catch (e) {
     console.error(e);
