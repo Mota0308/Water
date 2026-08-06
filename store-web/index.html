@@ -2075,11 +2075,83 @@ function tabOverview(p){
   ${hist}`;
 }
 
+let epCoverDraft = null; // {name, dataUrl} | null
+let epCoverRemove = false;
+
+function epCoverSrc(p){
+  if(!p || !p.coverUrl) return '';
+  if(p.coverFileId) return withFileToken(apiUrl('/api/files/'+p.coverFileId));
+  return withFileToken(p.coverUrl);
+}
+function epCoverPreviewHtml(p){
+  if(epCoverDraft){
+    return `<div style="display:flex;align-items:center;gap:10px;margin:8px 0">
+      <div class="thumb" style="width:64px;height:64px"><img src="${epCoverDraft.dataUrl}" alt=""></div>
+      <div style="font-size:13px">${escHtml(epCoverDraft.name||'新封面')}
+        <div style="color:#888;font-size:12px;margin-top:2px">將於儲存時更新封面</div>
+        <div><button type="button" class="btn gray sm" onclick="epClearCover('${p.id}')">清除</button></div>
+      </div></div>`;
+  }
+  if(epCoverRemove){
+    return `<div style="margin:8px 0">
+      <p style="font-size:12px;color:#888;margin:0 0 6px">已標記清除封面（儲存後使用預設圖示）。</p>
+      <button type="button" class="btn gray sm" onclick="epUndoClearCover('${p.id}')">取消清除</button>
+    </div>`;
+  }
+  if(p && p.coverUrl){
+    return `<div style="display:flex;align-items:center;gap:10px;margin:8px 0">
+      <div class="thumb" style="width:64px;height:64px"><img src="${epCoverSrc(p)}" alt=""></div>
+      <div style="font-size:13px">目前封面
+        <div style="color:#888;font-size:12px;margin-top:2px">可重新上傳以更換</div>
+        <div><button type="button" class="btn gray sm" onclick="epClearCover('${p.id}')">清除封面</button></div>
+      </div></div>`;
+  }
+  return '<p style="font-size:12px;color:#888;margin:6px 0">目前無封面（將使用預設圖示）。可上傳圖片作為封面。</p>';
+}
+function epRenderCoverPreview(pid){
+  const p = projects.find(x=>x.id===pid);
+  const el = document.getElementById('ep-cover-preview');
+  if(el) el.innerHTML = epCoverPreviewHtml(p||{});
+}
+function epClearCover(pid){
+  epCoverDraft = null;
+  epCoverRemove = true;
+  const input = document.getElementById('ep-cover');
+  if(input) input.value = '';
+  epRenderCoverPreview(pid);
+}
+function epUndoClearCover(pid){
+  epCoverRemove = false;
+  epRenderCoverPreview(pid);
+}
+async function epOnCoverPick(input, pid){
+  const f = input.files && input.files[0];
+  if(!f) return;
+  if(!(f.type||'').startsWith('image/')){
+    alert2('封面請選擇圖片檔（JPG／PNG／GIF／WebP）。');
+    input.value = '';
+    return;
+  }
+  try{
+    epCoverDraft = { name:f.name, dataUrl: await readFileAsDataUrl(f) };
+    epCoverRemove = false;
+    epRenderCoverPreview(pid);
+  }catch(e){
+    alert2('讀取封面失敗，請重試。');
+    input.value = '';
+  }
+}
 function askEditProject(pid){
   if(!isAdmin()){ alert2('只有系統管理員可以編輯項目。'); return; }
   const p = projects.find(x=>x.id===pid);
   if(!p) return;
+  epCoverDraft = null;
+  epCoverRemove = false;
   showModal(`<h3>編輯項目資料</h3>
+    <label>項目封面圖片</label>
+    <input type="file" id="ep-cover" accept="image/*" onchange="epOnCoverPick(this,'${pid}')">
+    <div id="ep-cover-preview">${epCoverPreviewHtml(p)}</div>
+    <p style="font-size:12px;color:#888;margin:4px 0 10px">封面用於列表／標題縮圖，不會加入「文件及圖片」。</p>
     <label>產品編號</label><input type="text" id="ep-code" value="${escHtml(p.code)}">
     <label>項目簡介</label><input type="text" id="ep-name" value="${escHtml(p.name)}">
     <label>產品類別</label><select id="ep-cat">${CATEGORIES.map(c=>`<option${c===p.cat?' selected':''}>${c}</option>`).join('')}</select>
@@ -2092,7 +2164,7 @@ function askEditProject(pid){
       <button class="btn sm green" onclick="saveProjectEdit('${pid}')">儲存變更</button>
     </div>`);
 }
-function saveProjectEdit(pid){
+async function saveProjectEdit(pid){
   if(!isAdmin()){ alert2('只有系統管理員可以編輯項目。'); return; }
   const p = projects.find(x=>x.id===pid);
   if(!p) return;
@@ -2103,7 +2175,12 @@ function saveProjectEdit(pid){
   const due = ((document.getElementById('ep-due')||{}).value||'').trim() || '—';
   const desc = ((document.getElementById('ep-desc')||{}).value||'').trim();
   if(!code||!name){ alert2('請輸入產品編號及項目簡介。'); return; }
-  const before = { code:p.code, name:p.name, cat:p.cat, owner:p.owner, due:p.due, desc:p.desc||'' };
+  const coverChanged = !!(epCoverDraft || (epCoverRemove && p.coverUrl));
+  if(coverChanged && !requireCloud('更新封面')) return;
+  const before = {
+    code:p.code, name:p.name, cat:p.cat, owner:p.owner, due:p.due, desc:p.desc||'',
+    coverUrl:p.coverUrl||null, coverFileId:p.coverFileId||null
+  };
   const changes = [];
   if(before.code!==code) changes.push('編號 '+before.code+' → '+code);
   if(before.name!==name) changes.push('簡介');
@@ -2111,7 +2188,24 @@ function saveProjectEdit(pid){
   if(before.owner!==owner) changes.push('負責人 '+userName(before.owner)+' → '+userName(owner));
   if(before.due!==due) changes.push('完成日 '+before.due+' → '+due);
   if(before.desc!==desc) changes.push('詳細內容');
+  if(epCoverDraft) changes.push('更新封面');
+  else if(epCoverRemove && before.coverUrl) changes.push('清除封面');
   if(!changes.length){ closeModal(); alert2('沒有變更。'); return; }
+  let nextCoverUrl = p.coverUrl || null;
+  let nextCoverFileId = p.coverFileId || null;
+  if(epCoverDraft){
+    try{
+      const up = await cloudUploadDataUrl(epCoverDraft.name, epCoverDraft.dataUrl);
+      nextCoverUrl = up.dataUrl;
+      nextCoverFileId = up.driveFileId || null;
+    }catch(e){
+      alert2('上傳封面失敗：'+(e.message||e));
+      return;
+    }
+  } else if(epCoverRemove){
+    nextCoverUrl = null;
+    nextCoverFileId = null;
+  }
   if(!Array.isArray(p.revisions)) p.revisions = [];
   p.revisions.unshift({
     time: nowStr(),
@@ -2122,8 +2216,20 @@ function saveProjectEdit(pid){
   });
   if(p.revisions.length>30) p.revisions = p.revisions.slice(0,30);
   p.code = code; p.name = name; p.cat = cat; p.owner = owner; p.due = due; p.desc = desc;
+  p.coverUrl = nextCoverUrl;
+  p.coverFileId = nextCoverFileId;
   addProjLog(p,'編輯項目資料', changes.join('；'));
-  persistProjects();
+  epCoverDraft = null;
+  epCoverRemove = false;
+  try{
+    await persistProjectsNow();
+  }catch(e){
+    noteCloudError(e);
+    alert2('已套用變更，但雲端同步失敗：'+(e.message||e));
+    closeModal();
+    render();
+    return;
+  }
   closeModal();
   render();
   alert2('已儲存項目資料，並保留修改前版本摘要。');
