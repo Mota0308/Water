@@ -35,7 +35,11 @@ import {
   decideTransferRequest,
   listTransferOrders,
   getTransferOrder,
+  createTransferProduct,
+  setTransferInventoryQuantities,
+  listTransferStockAdjustments,
   TRANSFER_STORES,
+  TRANSFER_CATEGORIES,
 } from './mongo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -338,6 +342,50 @@ app.get('/api/transfer/inventory', requireAuth, async (_req, res) => {
 
 app.get('/api/transfer/stores', requireAuth, async (_req, res) => {
   res.json({ stores: TRANSFER_STORES });
+});
+
+app.get('/api/transfer/meta', requireAuth, async (_req, res) => {
+  res.json({
+    stores: TRANSFER_STORES,
+    categories: TRANSFER_CATEGORIES,
+    sizePresets: ['S', 'M', 'L', 'XL', 'XXL', '均碼'],
+  });
+});
+
+app.post('/api/transfer/products', requireAuth, async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({ error: 'JSON body required' });
+    }
+    const product = await createTransferProduct(req.user, req.body);
+    res.json({ product });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.put('/api/transfer/inventory/qty', requireAuth, async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({ error: 'JSON body required' });
+    }
+    const adjustment = await setTransferInventoryQuantities(req.user, req.body);
+    res.json({ adjustment });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/transfer/stock-adjustments', requireAuth, async (req, res) => {
+  try {
+    const limit = req.query?.limit;
+    res.json({ adjustments: await listTransferStockAdjustments(limit) });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
 });
 
 app.get('/api/transfer/orders', requireAuth, async (_req, res) => {

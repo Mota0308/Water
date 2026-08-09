@@ -930,13 +930,6 @@ function bindStaticChrome(){
     if(!t || !t.closest) return;
     if(t.id==='mailbox-modal-bg'){ closeMailbox(); return; }
     if(t.id==='mailbox-detail-bg'){ closeMailboxDetail(); return; }
-    const invRow = t.closest('tr.inv-row');
-    if(invRow){
-      const pid = invRow.getAttribute('data-pid');
-      const size = invRow.getAttribute('data-size');
-      if(pid!=null && size!=null) openTransferApplyModal(pid, size);
-      return;
-    }
     const actionEl = t.closest('[data-action]');
     const action = actionEl ? actionEl.getAttribute('data-action') : '';
     if(action==='close-mailbox'){ closeMailbox(); return; }
@@ -956,6 +949,39 @@ function bindStaticChrome(){
     if(action==='toggle-transfer-timeline'){
       const tid = actionEl.getAttribute('data-tid');
       if(tid) toggleTransferHistoryExpand(tid);
+      return;
+    }
+    if(action==='submit-transfer-product'){ submitTransferProduct(); return; }
+    if(action==='submit-transfer-stock'){
+      const pid = actionEl.getAttribute('data-pid');
+      const size = actionEl.getAttribute('data-size');
+      if(pid!=null && size!=null) submitTransferStockEdit(pid, size);
+      return;
+    }
+    const callEl = t.closest('[data-call]');
+    if(callEl){
+      const fnName = callEl.getAttribute('data-call') || '';
+      const fn = typeof window[fnName] === 'function' ? window[fnName] : null;
+      if(!fn) return;
+      const args = [];
+      for(let i = 0; i < 8; i++){
+        const raw = callEl.getAttribute('data-arg' + i);
+        if(raw === null) break;
+        if(raw === 'true') args.push(true);
+        else if(raw === 'false') args.push(false);
+        else if(/^-?\d+(\.\d+)?$/.test(raw)) args.push(Number(raw));
+        else args.push(raw);
+      }
+      e.preventDefault();
+      try{ fn.apply(null, args); }catch(err){ console.error(fnName, err); }
+      return;
+    }
+    const invRow = t.closest('tr.inv-row');
+    if(invRow){
+      if(t.closest('button, a, input, select, textarea, label')) return;
+      const pid = invRow.getAttribute('data-pid');
+      const size = invRow.getAttribute('data-size');
+      if(pid!=null && size!=null) openTransferApplyModal(pid, size);
       return;
     }
   });
@@ -993,7 +1019,7 @@ async function decideTransferFromMailbox(transferId, decision){
     transferOrdersCache = null;
     transferInvCache = null;
     await loadNotifications();
-    if(currentView==='transferInventory' || currentView==='transferHistory'){
+    if(currentView==='transferInventory' || currentView==='transferHistory' || currentView==='transferStockLog'){
       try{ await loadTransferInventory(true); }catch(_e){}
       try{ await loadTransferOrders(true); }catch(_e){}
       render();
@@ -1242,8 +1268,10 @@ function vPushNotify(){
   </div>`;
 }
 
-/* ═══════════ 貨品調動｜庫存查詢／調動記錄 ═══════════ */
+/* ═══════════ 貨品調動｜庫存查詢／調動記錄／庫存校正 ═══════════ */
 const TRANSFER_STORES_FE = ['觀塘','荔枝角','灣仔','屯門'];
+const TRANSFER_SIZE_PRESETS = ['S','M','L','XL','XXL','均碼'];
+const TRANSFER_CATEGORY_FALLBACK = ['成人保暖衣','兒童保暖衣','成人抓毛','兒童抓毛','成人膠衣','兒童膠衣','防曬用品','游水用品','其他'];
 let transferInvCache = null; // { stores, categories, rows }
 let transferInvKw = '';
 let transferInvCat = '全部';
@@ -1251,6 +1279,8 @@ let transferInvLoading = false;
 let transferOrdersCache = null; // array
 let transferOrdersLoading = false;
 let transferHistoryExpandedId = null;
+let transferAdjCache = null; // array
+let transferAdjLoading = false;
 
 async function loadTransferInventory(force){
   if(!apiEnabled || !authToken){
@@ -1310,6 +1340,32 @@ function refreshTransferOrders(){
     render();
   });
 }
+async function loadTransferAdjustments(force){
+  if(!apiEnabled || !authToken){
+    transferAdjCache = [];
+    return transferAdjCache;
+  }
+  if(transferAdjCache && !force) return transferAdjCache;
+  transferAdjLoading = true;
+  try{
+    const data = await apiFetch('/api/transfer/stock-adjustments');
+    transferAdjCache = Array.isArray(data.adjustments) ? data.adjustments : [];
+  }catch(e){
+    noteCloudError(e);
+    transferAdjCache = transferAdjCache || [];
+    throw e;
+  }finally{
+    transferAdjLoading = false;
+  }
+  return transferAdjCache;
+}
+function refreshTransferAdjustments(){
+  transferAdjCache = null;
+  loadTransferAdjustments(true).then(function(){ render(); }).catch(function(e){
+    alert2('載入庫存校正記錄失敗：'+(e.message||e));
+    render();
+  });
+}
 function findTransferInvRow(productId, size){
   const rows = (transferInvCache && transferInvCache.rows) || [];
   return rows.find(function(r){ return r.productId===productId && r.size===size; }) || null;
@@ -1319,6 +1375,137 @@ function transferStoreOptions(selected, exclude){
     if(exclude && s===exclude) return '';
     return '<option value="'+escHtml(s)+'"'+(selected===s?' selected':'')+'>'+escHtml(s)+'</option>';
   }).join('');
+}
+function transferCategoryOptionsHtml(selected){
+  const cats = ((transferInvCache && transferInvCache.categories) || TRANSFER_CATEGORY_FALLBACK).slice();
+  TRANSFER_CATEGORY_FALLBACK.forEach(function(c){ if(cats.indexOf(c)<0) cats.push(c); });
+  const sel = selected || (cats[0] || '其他');
+  return cats.map(function(c){
+    return '<option value="'+escHtml(c)+'"'+(c===sel?' selected':'')+'>'+escHtml(c)+'</option>';
+  }).join('') + '<option value="__custom__">自訂類別…</option>';
+}
+function onTransferProductCatChange(){
+  const sel = document.getElementById('tp-cat');
+  const wrap = document.getElementById('tp-cat-custom-wrap');
+  if(!sel || !wrap) return;
+  wrap.style.display = sel.value==='__custom__' ? '' : 'none';
+}
+function openAddTransferProductModal(){
+  if(!currentUser){ alert2('請先登入。'); return; }
+  const sizeChecks = TRANSFER_SIZE_PRESETS.map(function(s){
+    return '<label style="display:inline-flex;align-items:center;gap:4px;margin:0 10px 6px 0;font-size:13px">'
+      +'<input type="checkbox" class="tp-size" value="'+escHtml(s)+'">'+escHtml(s)+'</label>';
+  }).join('');
+  showModal(
+    '<h3>新增產品</h3>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">建立主檔後，四店各尺碼庫存從 0 起算；請再到對應列按「改庫存」填入數量。</p>'
+    +'<label>產品編號（款號）</label><input type="text" id="tp-id" placeholder="例如 WS-S002" maxlength="64">'
+    +'<label>名稱</label><input type="text" id="tp-name" placeholder="產品名稱">'
+    +'<label>類別</label><select id="tp-cat" onchange="onTransferProductCatChange()">'+transferCategoryOptionsHtml('其他')+'</select>'
+    +'<div id="tp-cat-custom-wrap" style="display:none"><label>自訂類別</label><input type="text" id="tp-cat-custom" placeholder="輸入新類別"></div>'
+    +'<label>顏色（可留空）</label><input type="text" id="tp-color" placeholder="例如 黑">'
+    +'<label>尺碼</label><div style="margin:4px 0 8px">'+sizeChecks+'</div>'
+    +'<label>自訂尺碼（可多個，用逗號分隔）</label><input type="text" id="tp-size-custom" placeholder="例如 120, 童 L">'
+    +'<label>安全存量</label><input type="number" id="tp-safety" min="0" step="1" value="0">'
+    +'<div class="actions">'
+    +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
+    +'<button type="button" class="btn green" data-action="submit-transfer-product">建立產品</button>'
+    +'</div>'
+  );
+}
+async function submitTransferProduct(){
+  const id = ((document.getElementById('tp-id')||{}).value||'').trim();
+  const name = ((document.getElementById('tp-name')||{}).value||'').trim();
+  const catSel = (document.getElementById('tp-cat')||{}).value || '';
+  const category = catSel==='__custom__'
+    ? ((document.getElementById('tp-cat-custom')||{}).value||'').trim()
+    : catSel.trim();
+  const color = ((document.getElementById('tp-color')||{}).value||'').trim();
+  const safetyStock = Number((document.getElementById('tp-safety')||{}).value);
+  const sizes = [];
+  document.querySelectorAll('.tp-size:checked').forEach(function(cb){
+    if(cb.value) sizes.push(cb.value);
+  });
+  const custom = ((document.getElementById('tp-size-custom')||{}).value||'').split(/[,，、]/);
+  custom.forEach(function(s){
+    const t = String(s||'').trim();
+    if(t && sizes.indexOf(t)<0) sizes.push(t);
+  });
+  if(!id){ alert2('請填寫產品編號。'); return; }
+  if(!name){ alert2('請填寫產品名稱。'); return; }
+  if(!category){ alert2('請選擇或填寫類別。'); return; }
+  if(!sizes.length){ alert2('請至少選擇或新增 1 個尺碼。'); return; }
+  if(!Number.isFinite(safetyStock) || safetyStock<0 || Math.floor(safetyStock)!==safetyStock){
+    alert2('安全存量須為 ≥ 0 的整數。'); return;
+  }
+  try{
+    await apiFetch('/api/transfer/products', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ id, name, category, color, sizes, safetyStock })
+    });
+    closeModal();
+    transferInvCache = null;
+    transferAdjCache = null;
+    await loadTransferInventory(true);
+    render();
+    alert2('已建立產品 '+id+'，庫存均為 0，可用「改庫存」填入數量。');
+  }catch(e){
+    alert2('建立失敗：'+(e.message||e));
+  }
+}
+function openTransferStockEditModal(productId, size){
+  if(!currentUser){ alert2('請先登入。'); return; }
+  const row = findTransferInvRow(productId, size);
+  if(!row){ alert2('找不到該庫存列，請重新整理後再試。'); return; }
+  const pidAttr = escHtml(String(productId));
+  const szAttr = escHtml(String(size));
+  const fields = TRANSFER_STORES_FE.map(function(s){
+    const q = (row.qty && row.qty[s]!=null) ? row.qty[s] : 0;
+    return '<label>'+escHtml(s)+'</label>'
+      +'<input type="number" class="tf-stock-qty" data-store="'+escHtml(s)+'" min="0" step="1" value="'+escHtml(String(q))+'">';
+  }).join('');
+  showModal(
+    '<h3>改庫存</h3>'
+    +'<p style="font-size:13px;line-height:1.55;margin:0 0 10px">'
+    +'<b>'+escHtml(row.productId)+'</b> '+escHtml(row.name||'')
+    +'｜尺碼 <b>'+escHtml(row.size)+'</b>'
+    +(row.color?'｜'+escHtml(row.color):'')
+    +'<br><span style="color:#78909c;font-size:12px">一次設定此列四店數量（整數 ≥ 0）。儲存後會寫入庫存校正記錄。</span></p>'
+    +fields
+    +'<div class="actions">'
+    +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
+    +'<button type="button" class="btn green" data-action="submit-transfer-stock" data-pid="'+pidAttr+'" data-size="'+szAttr+'">儲存</button>'
+    +'</div>'
+  );
+}
+async function submitTransferStockEdit(productId, size){
+  const qty = {};
+  let ok = true;
+  document.querySelectorAll('.tf-stock-qty').forEach(function(inp){
+    const store = inp.getAttribute('data-store');
+    const n = Number(inp.value);
+    if(!store) return;
+    if(!Number.isFinite(n) || n<0 || Math.floor(n)!==n){ ok = false; return; }
+    qty[store] = n;
+  });
+  if(!ok){ alert2('各店庫存須為 ≥ 0 的整數。'); return; }
+  try{
+    await apiFetch('/api/transfer/inventory/qty', {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ productId, size, qty })
+    });
+    closeModal();
+    transferInvCache = null;
+    transferAdjCache = null;
+    await loadTransferInventory(true);
+    if(currentView==='transferStockLog') await loadTransferAdjustments(true).catch(function(){});
+    render();
+    alert2('已更新庫存。');
+  }catch(e){
+    alert2('更新失敗：'+(e.message||e));
+  }
 }
 function openTransferApplyModal(productId, size){
   if(!currentUser){ alert2('請先登入。'); return; }
@@ -1424,9 +1611,10 @@ function vTransferInventory(){
   }).join('');
   const head = '<tr><th>產品編號</th><th>名稱</th><th>類別</th><th>顏色</th><th>尺碼</th><th>安全存量</th>'
     + stores.map(function(s){ return '<th>'+escHtml(s)+'</th>'; }).join('')
-    + '<th>合計</th></tr>';
+    + '<th>合計</th><th></th></tr>';
+  const colSpan = 8 + stores.length;
   const body = !rows.length
-    ? '<tr><td colspan="'+(7+stores.length)+'" style="color:#888;text-align:center">沒有符合條件的庫存列。</td></tr>'
+    ? '<tr><td colspan="'+colSpan+'" style="color:#888;text-align:center">沒有符合條件的庫存列。</td></tr>'
     : rows.map(function(r){
       const cells = stores.map(function(s){
         const q = (r.qty && r.qty[s]!=null) ? r.qty[s] : 0;
@@ -1442,16 +1630,18 @@ function vTransferInventory(){
         +'<td>'+escHtml(String(r.safetyStock))+'</td>'
         +cells
         +'<td><b>'+(r.total!=null?r.total:0)+'</b></td>'
+        +'<td><button type="button" class="btn sm gray" data-call="openTransferStockEditModal" data-arg0="'+escHtml(String(r.productId))+'" data-arg1="'+escHtml(String(r.size))+'">改庫存</button></td>'
         +'</tr>';
     }).join('');
   return '<div class="card">'
     +'<h2>📦 庫存查詢</h2>'
     +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">四間港店（觀塘／荔枝角／灣仔／屯門）· 一列＝款號＋尺碼。'
-    +'點擊列可申請調動（發起點＝調入、調動點＝調出）。低於安全存量以<span class="inv-low">紅色</span>標示。篩選列中有 <b>'+lowCount+'</b> 列含預警。</p>'
+    +'點擊列可申請調動；列上「改庫存」可手改四店數量。低於安全存量以<span class="inv-low">紅色</span>標示。篩選列中有 <b>'+lowCount+'</b> 列含預警。</p>'
     +'<div class="filters">'
     +'<input type="text" placeholder="搜尋編號／名稱／顏色" value="'+escHtml(transferInvKw)+'" onchange="setTransferInvKw(this.value)" onkeydown="if(event.key===\'Enter\'){setTransferInvKw(this.value)}">'
     +'<select onchange="setTransferInvCat(this.value)">'+catOpts+'</select>'
-    +'<button type="button" class="btn gray sm" onclick="refreshTransferInventory()">重新整理</button>'
+    +'<button type="button" class="btn green sm" data-call="openAddTransferProductModal">＋ 新增產品</button>'
+    +'<button type="button" class="btn gray sm" data-call="refreshTransferInventory">重新整理</button>'
     +'</div>'
     +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 列</p>'
     +'</div>'
@@ -1507,8 +1697,49 @@ function vTransferHistory(){
   return '<div class="card">'
     +'<h2>📋 調動記錄</h2>'
     +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">所有已登入人員可查看全部調動單與操作時間軸（申請／通過／拒絕）。</p>'
-    +'<div class="filters"><button type="button" class="btn gray sm" onclick="refreshTransferOrders()">重新整理</button></div>'
+    +'<div class="filters"><button type="button" class="btn gray sm" data-call="refreshTransferOrders">重新整理</button></div>'
     +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+orders.length+' 筆</p>'
+    +'</div>'
+    +'<div class="card"><div class="table-wrap"><table>'+head+body+'</table></div></div>';
+}
+function vTransferStockLog(){
+  if(!currentUser){
+    return '<div class="card"><h2>📝 庫存校正記錄</h2><p>請先登入。</p></div>';
+  }
+  if(!apiEnabled){
+    return '<div class="card"><h2>📝 庫存校正記錄</h2><p style="color:#c62828">需要連接 MongoDB 雲端。</p></div>';
+  }
+  if(!transferAdjCache && !transferAdjLoading){
+    loadTransferAdjustments(true).then(function(){ render(); }).catch(function(){ render(); });
+    return '<div class="card"><h2>📝 庫存校正記錄</h2><p style="color:#888">正在載入…</p></div>';
+  }
+  if(transferAdjLoading && !transferAdjCache){
+    return '<div class="card"><h2>📝 庫存校正記錄</h2><p style="color:#888">正在載入…</p></div>';
+  }
+  const rows = transferAdjCache || [];
+  const head = '<tr><th>時間</th><th>操作人</th><th>商品</th><th>尺碼</th><th>變更明細</th></tr>';
+  const body = !rows.length
+    ? '<tr><td colspan="5" style="color:#888;text-align:center">尚無庫存校正記錄。</td></tr>'
+    : rows.map(function(a){
+      const detail = TRANSFER_STORES_FE.map(function(s){
+        const b = a.before && a.before[s]!=null ? a.before[s] : '—';
+        const n = a.after && a.after[s]!=null ? a.after[s] : '—';
+        if(String(b)===String(n)) return '<span style="color:#90a4ae">'+escHtml(s)+' '+escHtml(String(b))+'</span>';
+        return '<b>'+escHtml(s)+' '+escHtml(String(b))+'→'+escHtml(String(n))+'</b>';
+      }).join(' ｜ ');
+      return '<tr>'
+        +'<td style="white-space:nowrap;font-size:12px">'+escHtml(a.createdAt||'')+'</td>'
+        +'<td>'+escHtml(a.createdByName||a.createdBy||'')+'</td>'
+        +'<td><b>'+escHtml(a.productId||'')+'</b> '+escHtml(a.productName||'')+'</td>'
+        +'<td>'+escHtml(a.size||'')+'</td>'
+        +'<td style="font-size:12px;line-height:1.55">'+detail+'</td>'
+        +'</tr>';
+    }).join('');
+  return '<div class="card">'
+    +'<h2>📝 庫存校正記錄</h2>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">手改庫存（盤點／到貨校正）的完整痕跡：誰、何時、各店舊→新。所有已登入可查看。</p>'
+    +'<div class="filters"><button type="button" class="btn gray sm" data-call="refreshTransferAdjustments">重新整理</button></div>'
+    +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 筆</p>'
     +'</div>'
     +'<div class="card"><div class="table-wrap"><table>'+head+body+'</table></div></div>';
 }
@@ -1592,9 +1823,9 @@ function staffListRowsHtml(){
     let actions = '—';
     if(u.login!=='admin' && canCreateEmployee()){
       if(need){
-        actions = '<button class="btn sm" onclick=\'promptAssignPhone('+JSON.stringify(String(u.id))+')\'>補登電話</button>';
+        actions = '<button class="btn sm" data-call="promptAssignPhone" data-arg0="'+escHtml(String(u.id))+'">補登電話</button>';
       } else if(phone){
-        actions = '<button class="btn sm gray" onclick=\'promptChangePhone('+JSON.stringify(String(phone))+')\'>更換電話</button>';
+        actions = '<button class="btn sm gray" data-call="promptChangePhone" data-arg0="'+escHtml(String(phone))+'">更換電話</button>';
       }
     }
     return '<tr>'+
@@ -1623,7 +1854,7 @@ function vCreateStaff(){
           <thead><tr><th>舊賬號</th><th>名稱</th><th>操作</th></tr></thead>
           <tbody>${pending.map(function(u){
             return '<tr><td>'+escHtml(u.login||u.id)+'</td><td>'+escHtml(u.name||'')+'</td>'+
-              '<td><button class="btn sm" onclick="promptAssignPhone(\''+String(u.id).replace(/'/g,'')+'\')">補登電話</button></td></tr>';
+              '<td><button class="btn sm" data-call="promptAssignPhone" data-arg0="'+escHtml(String(u.id))+'">補登電話</button></td></tr>';
           }).join('')}</tbody>
         </table></div>
       </div>`
@@ -1687,7 +1918,7 @@ function promptAssignPhone(userId){
     <input type="tel" id="assign-phone-input" placeholder="91234567" value="${escHtml(prefill)}">
     <div class="actions">
       <button class="btn gray sm" onclick="closeModal()">取消</button>
-      <button class="btn sm" onclick='submitAssignPhone(${JSON.stringify(String(userId))})'>確認補登</button>
+      <button class="btn sm" data-call="submitAssignPhone" data-arg0="${escHtml(String(userId))}">確認補登</button>
     </div>`);
 }
 async function submitAssignPhone(userId){
@@ -1711,7 +1942,7 @@ function promptChangePhone(oldPhone){
     <input type="tel" id="change-phone-input" placeholder="91234567">
     <div class="actions">
       <button class="btn gray sm" onclick="closeModal()">取消</button>
-      <button class="btn sm" onclick='submitChangePhone(${JSON.stringify(String(oldPhone))})'>確認更換</button>
+      <button class="btn sm" data-call="submitChangePhone" data-arg0="${escHtml(String(oldPhone))}">確認更換</button>
     </div>`);
 }
 async function submitChangePhone(oldPhone){
@@ -1819,7 +2050,7 @@ async function submitCreateStaff(){
     </p>
     <div class="actions">
       <button class="btn sm gray" onclick="closeModal()">關閉</button>
-      <button class="btn sm green" onclick='copyStaffCreds(${JSON.stringify(copyText)})'>複製賬號與密碼</button>
+      <button class="btn sm green" data-call="copyStaffCreds" data-arg0="${escHtml(String(copyText))}">複製賬號與密碼</button>
     </div>`);
   const phoneEl = document.getElementById('staff-phone');
   const nameEl = document.getElementById('staff-name');
@@ -2205,7 +2436,7 @@ function render(){
   const modules = [['daily','📅 每日工作流程'],['production','📐 開發及生產'],['replenishment','🔄 補貨'],['transfer','📦 貨品調動'],['push','📢 推送通知']];
   if(canCreateEmployee()) modules.push(['createStaff','👤 創建員工']);
   modules.push(['settings','⚙️ 個人設置']);
-  modNav.innerHTML = modules.map(([k,l])=>`<button class="${currentModule===k?'active':''}" onclick="setModule('${k}')">${l}</button>`).join('');
+  modNav.innerHTML = modules.map(([k,l])=>`<button class="${currentModule===k?'active':''}" data-call="setModule" data-arg0="${escHtml(String(k))}">${l}</button>`).join('');
   const nav = document.getElementById('nav');
   let items = [];
   if(currentModule==='daily'){
@@ -2225,7 +2456,7 @@ function render(){
   } else if(currentModule==='settings'){
     items = [['settings','更改密碼']];
   } else if(currentModule==='transfer'){
-    items = [['transferInventory','庫存查詢'],['transferHistory','調動記錄']];
+    items = [['transferInventory','庫存查詢'],['transferHistory','調動記錄'],['transferStockLog','庫存校正記錄']];
   } else {
     items = isPersonal()
       ? [['myTasks','我的工作'],['repList','項目列表'],['home','首頁']]
@@ -2234,7 +2465,7 @@ function render(){
     if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
   }
   const subActive = (k)=> currentView===k || (currentView==='project' && ((k==='devList'&&currentModule==='production')||(k==='repList'&&currentModule==='replenishment')));
-  nav.innerHTML = items.map(([k,l])=>`<button class="${subActive(k)?'active':''}" onclick="go('${k}')">${l}</button>`).join('');
+  nav.innerHTML = items.map(([k,l])=>`<button class="${subActive(k)?'active':''}" data-call="go" data-arg0="${escHtml(String(k))}">${l}</button>`).join('');
   nav.style.display = items.length ? '' : 'none';
   const views = {
     home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : vHomeFiltered('dev'),
@@ -2247,7 +2478,8 @@ function render(){
     createStaff: vCreateStaff,
     settings: vPersonalSettings,
     transferInventory: vTransferInventory,
-    transferHistory: vTransferHistory
+    transferHistory: vTransferHistory,
+    transferStockLog: vTransferStockLog
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
   afterProjectChatRender();
@@ -2261,7 +2493,7 @@ function go(v){
   if(v==='pushNotify'){ currentModule='push'; }
   if(v==='createStaff'){ currentModule='createStaff'; }
   if(v==='settings'){ currentModule='settings'; }
-  if(v==='transferInventory' || v==='transferHistory'){ currentModule='transfer'; }
+  if(v==='transferInventory' || v==='transferHistory' || v==='transferStockLog'){ currentModule='transfer'; }
   fCat='全部'; fStatus='全部'; fKw='';
   render();
 }
@@ -2283,11 +2515,11 @@ function vHomeFiltered(type){
   </div>
   ${!isAdmin() ? `<div class="card"><h2>📌 我的待辦工作（${myTasks.length}）</h2>
     ${myTasks.length? `<div class="table-wrap"><table><tr><th>項目</th><th>產品編號</th><th>工作階段</th><th>期限</th><th>狀態</th></tr>
-    ${myTasks.map(t=>`<tr class="clickable" onclick="openProject('${t.pid}','flow')"><td>${t.pname}</td><td>${t.code}</td><td>${t.stage}</td><td>${t.deadline||'—'}</td><td>${stTag(t.status)}</td></tr>`).join('')}
+    ${myTasks.map(t=>`<tr class="clickable" data-call="openProject" data-arg0="${escHtml(String(t.pid))}" data-arg1="flow"><td>${t.pname}</td><td>${t.code}</td><td>${t.stage}</td><td>${t.deadline||'—'}</td><td>${stTag(t.status)}</td></tr>`).join('')}
     </table></div>` : '<p style="color:#888">暫時沒有待辦工作。</p>'}
   </div>`:''}
   <div class="card"><h2>💬 最新留言</h2>
-    ${allComments.length? allComments.map(c=>`<div class="msg" style="cursor:pointer" onclick="openProject('${c.pid}','chat')">
+    ${allComments.length? allComments.map(c=>`<div class="msg" style="cursor:pointer" data-call="openProject" data-arg0="${escHtml(String(c.pid))}" data-arg1="chat">
       <div class="mhead"><span class="mname">${userName(c.by)}</span><span class="tag dept">${userDept(c.by)}</span>
       <span class="mtime">${c.time}</span><span class="tag s-pending">${c.pname}</span></div>
       <div class="mbody">${fmtMention(c.text)}</div></div>`).join('') : '<p style="color:#888">暫無留言。</p>'}
@@ -2315,11 +2547,11 @@ function vHome(){
   </div>
   ${!isAdmin() ? `<div class="card"><h2>📌 我的待辦工作（${myTasks.length}）</h2>
     ${myTasks.length? `<div class="table-wrap"><table><tr><th>項目</th><th>產品編號</th><th>工作階段</th><th>期限</th><th>狀態</th></tr>
-    ${myTasks.map(t=>`<tr class="clickable" onclick="openProject('${t.pid}','flow')"><td>${t.pname}</td><td>${t.code}</td><td>${t.stage}</td><td>${t.deadline||'—'}</td><td>${stTag(t.status)}</td></tr>`).join('')}
+    ${myTasks.map(t=>`<tr class="clickable" data-call="openProject" data-arg0="${escHtml(String(t.pid))}" data-arg1="flow"><td>${t.pname}</td><td>${t.code}</td><td>${t.stage}</td><td>${t.deadline||'—'}</td><td>${stTag(t.status)}</td></tr>`).join('')}
     </table></div>` : '<p style="color:#888">暫時沒有待辦工作。</p>'}
   </div>`:''}
   <div class="card"><h2>💬 最新留言</h2>
-    ${allComments.length? allComments.map(c=>`<div class="msg" style="cursor:pointer" onclick="openProject('${c.pid}','chat')">
+    ${allComments.length? allComments.map(c=>`<div class="msg" style="cursor:pointer" data-call="openProject" data-arg0="${escHtml(String(c.pid))}" data-arg1="chat">
       <div class="mhead"><span class="mname">${userName(c.by)}</span><span class="tag dept">${userDept(c.by)}</span>
       <span class="mtime">${c.time}</span><span class="tag s-pending">${c.pname}</span></div>
       <div class="mbody">${fmtMention(c.text)}</div></div>`).join('') : '<p style="color:#888">暫無留言。</p>'}
@@ -2360,7 +2592,7 @@ function projTable(list){
   if(!rows.length) return '<p style="color:#888">沒有符合條件的項目。</p>';
   return `<div class="table-wrap"><table>
     <tr><th>建立日期</th><th>圖片</th><th>產品編號</th><th>項目簡介</th><th>類別</th><th>類型</th><th>目前階段</th><th>狀態</th><th>完成進度</th></tr>
-    ${rows.map(p=>{const pct=projProgress(p);return `<tr class="clickable" onclick="openProject('${p.id}')">
+    ${rows.map(p=>{const pct=projProgress(p);return `<tr class="clickable" data-call="openProject" data-arg0="${escHtml(String(p.id))}">
       <td style="font-size:12px">${p.created}</td><td>${projThumbHtml(p,44)}</td>
       <td><b>${p.code}</b></td><td>${p.name}</td><td>${p.cat}</td><td>${typeTag(p.type)}</td>
       <td>${currentStage(p)}</td><td>${stTag(projStatus(p))}</td>
@@ -2379,7 +2611,7 @@ function vList(type){
       <select onchange="fCat=this.value;render()"><option ${fCat==='全部'?'selected':''}>全部</option>${CATEGORIES.map(c=>`<option ${fCat===c?'selected':''}>${c}</option>`).join('')}</select>
       <select onchange="fStatus=this.value;render()">${['全部','進行中','待確認','需要修改','已完成','暫停','已取消','已封存'].map(s=>`<option ${fStatus===s?'selected':''}>${s}</option>`).join('')}</select>
       <input type="text" placeholder="搜尋編號／名稱／內容" value="${fKw}" onchange="fKw=this.value;render()">
-      ${isAdmin()?`<button class="btn sm" onclick="go('addProject')">＋ 建立新項目</button><button class="btn gray sm" onclick="exportProjectsCsv('${type}')">匯出資料</button>`:''}
+      ${isAdmin()?`<button class="btn sm" onclick="go('addProject')">＋ 建立新項目</button><button class="btn gray sm" data-call="exportProjectsCsv" data-arg0="${escHtml(String(type))}">匯出資料</button>`:''}
     </div>
     ${projTable(list)}
   </div>`;
@@ -2398,7 +2630,7 @@ function vMyTasks(){
     return `<div class="card"><h2>✅ 等待管理層確認（${waits.length}）</h2>
       ${waits.length?`<div class="table-wrap"><table><tr><th>項目</th><th>階段</th><th>經手人</th><th>操作</th></tr>
       ${waits.map(({p,s})=>`<tr><td>${p.code} ${p.name}</td><td>${s.name}</td><td>${escHtml(stageHandlersLabel(s))}</td>
-        <td><button class="btn sm" onclick="openProject('${p.id}','flow')">處理</button></td></tr>`).join('')}</table></div>`:'<p style="color:#888">沒有等待確認的階段。</p>'}
+        <td><button class="btn sm" data-call="openProject" data-arg0="${escHtml(String(p.id))}" data-arg1="flow">處理</button></td></tr>`).join('')}</table></div>`:'<p style="color:#888">沒有等待確認的階段。</p>'}
     </div>
     <div class="card"><h2>👥 各經手人待辦工作（經理／主管）</h2>
       <div class="table-wrap"><table><tr><th>經手人</th><th>職位</th><th>待辦階段數</th></tr>
@@ -2413,11 +2645,11 @@ function vMyTasks(){
     <p style="font-size:13px;color:#666;margin-bottom:10px">開發及生產／補貨中指派給你的階段會顯示於此，可點擊進入處理。</p>
     ${tasks.length?`<div class="table-wrap"><table><tr><th>項目</th><th>產品編號</th><th>工作階段</th><th>完成期限</th><th>狀態</th><th>操作</th></tr>
     ${tasks.map(t=>`<tr><td>${t.pname}</td><td>${t.code}</td><td>${t.stage}</td><td>${t.deadline||'—'}</td><td>${stTag(t.status)}</td>
-      <td><button class="btn sm" onclick="openProject('${t.pid}','flow')">查看／處理</button></td></tr>`).join('')}</table></div>`:emptyHint}
+      <td><button class="btn sm" data-call="openProject" data-arg0="${escHtml(String(t.pid))}" data-arg1="flow">查看／處理</button></td></tr>`).join('')}</table></div>`:emptyHint}
   </div>
   <div class="card"><h2>✔️ 我已完成的階段（${doneList.length}）</h2>
     ${doneList.length?`<div class="table-wrap"><table><tr><th>項目</th><th>階段</th><th>完成日期</th></tr>
-    ${doneList.map(({p,s})=>`<tr class="clickable" onclick="openProject('${p.id}','flow')"><td>${p.code} ${p.name}</td><td>${s.name}</td><td>${s.completedAt||'—'}</td></tr>`).join('')}</table></div>`:'<p style="color:#888">暫無記錄。</p>'}
+    ${doneList.map(({p,s})=>`<tr class="clickable" data-call="openProject" data-arg0="${escHtml(String(p.id))}" data-arg1="flow"><td>${p.code} ${p.name}</td><td>${s.name}</td><td>${s.completedAt||'—'}</td></tr>`).join('')}</table></div>`:'<p style="color:#888">暫無記錄。</p>'}
   </div>`;
 }
 
@@ -2428,7 +2660,7 @@ function vProject(){
   const pct = projProgress(p);
   const tabs = [['overview','項目概覽'],['flow','工作流程'],['files','文件及圖片'],['chat','項目對話'],['logs','操作記錄']];
   return `<div class="card">
-    <button class="btn gray sm" onclick="go('${p.type==='dev'?'devList':'repList'}')">← 返回列表</button>
+    <button class="btn gray sm" data-call="go" data-arg0="${escHtml(String(p.type==='dev'?'devList':'repList'))}">← 返回列表</button>
     <div style="display:flex;gap:14px;align-items:center;margin-top:12px;flex-wrap:wrap">
       ${projThumbHtml(p,64)}
       <div style="flex:1;min-width:200px">
@@ -2443,7 +2675,7 @@ function vProject(){
       </div>
     </div>
     <div class="tabs" style="margin-top:14px">
-      ${tabs.map(([k,l])=>`<button class="${currentTab===k?'active':''}" onclick="setTab('${k}')">${l}${k==='chat'?`（${p.comments.filter(c=>!c.removed).length}）`:''}</button>`).join('')}
+      ${tabs.map(([k,l])=>`<button class="${currentTab===k?'active':''}" data-call="setTab" data-arg0="${escHtml(String(k))}">${l}${k==='chat'?`（${p.comments.filter(c=>!c.removed).length}）`:''}</button>`).join('')}
     </div>
     ${{overview:tabOverview, flow:tabFlow, files:tabFiles, chat:tabChat, logs:tabLogs}[currentTab](p)}
   </div>`;
@@ -2474,9 +2706,9 @@ function tabOverview(p){
     <tr><th>項目詳細</th><td style="white-space:pre-wrap">${escHtml(p.desc||'')}</td></tr>
   </table></div>
   ${isAdmin()?`<div class="actions-row">
-    <button class="btn warn sm" onclick="askEditProject('${p.id}')">編輯項目資料</button>
-    <button class="btn red sm" onclick="askProjectLifecycle('${p.id}')">暫停／取消／封存</button>
-    ${p.status==='暫停'?`<button class="btn green sm" onclick="resumeProject('${p.id}')">恢復進行</button>`:''}
+    <button class="btn warn sm" data-call="askEditProject" data-arg0="${escHtml(String(p.id))}">編輯項目資料</button>
+    <button class="btn red sm" data-call="askProjectLifecycle" data-arg0="${escHtml(String(p.id))}">暫停／取消／封存</button>
+    ${p.status==='暫停'?`<button class="btn green sm" data-call="resumeProject" data-arg0="${escHtml(String(p.id))}">恢復進行</button>`:''}
   </div>`:''}
   ${hist}`;
 }
@@ -2495,13 +2727,13 @@ function epCoverPreviewHtml(p){
       <div class="thumb" style="width:64px;height:64px"><img src="${epCoverDraft.dataUrl}" alt=""></div>
       <div style="font-size:13px">${escHtml(epCoverDraft.name||'新封面')}
         <div style="color:#888;font-size:12px;margin-top:2px">將於儲存時更新封面</div>
-        <div><button type="button" class="btn gray sm" onclick="epClearCover('${p.id}')">清除</button></div>
+        <div><button type="button" class="btn gray sm" data-call="epClearCover" data-arg0="${escHtml(String(p.id))}">清除</button></div>
       </div></div>`;
   }
   if(epCoverRemove){
     return `<div style="margin:8px 0">
       <p style="font-size:12px;color:#888;margin:0 0 6px">已標記清除封面（儲存後使用預設圖示）。</p>
-      <button type="button" class="btn gray sm" onclick="epUndoClearCover('${p.id}')">取消清除</button>
+      <button type="button" class="btn gray sm" data-call="epUndoClearCover" data-arg0="${escHtml(String(p.id))}">取消清除</button>
     </div>`;
   }
   if(p && p.coverUrl){
@@ -2509,7 +2741,7 @@ function epCoverPreviewHtml(p){
       <div class="thumb" style="width:64px;height:64px"><img src="${epCoverSrc(p)}" alt=""></div>
       <div style="font-size:13px">目前封面
         <div style="color:#888;font-size:12px;margin-top:2px">可重新上傳以更換</div>
-        <div><button type="button" class="btn gray sm" onclick="epClearCover('${p.id}')">清除封面</button></div>
+        <div><button type="button" class="btn gray sm" data-call="epClearCover" data-arg0="${escHtml(String(p.id))}">清除封面</button></div>
       </div></div>`;
   }
   return '<p style="font-size:12px;color:#888;margin:6px 0">目前無封面（將使用預設圖示）。可上傳圖片作為封面。</p>';
@@ -2567,7 +2799,7 @@ function askEditProject(pid){
     <p style="font-size:12px;color:#888;margin-top:8px">儲存時會保留修改前版本摘要於「修改紀錄」。</p>
     <div class="actions">
       <button class="btn sm gray" onclick="closeModal()">取消</button>
-      <button class="btn sm green" onclick="saveProjectEdit('${pid}')">儲存變更</button>
+      <button class="btn sm green" data-call="saveProjectEdit" data-arg0="${escHtml(String(pid))}">儲存變更</button>
     </div>`);
 }
 async function saveProjectEdit(pid){
@@ -2657,7 +2889,7 @@ function askProjectLifecycle(pid){
     <textarea id="pl-reason" placeholder="可留空，例如：物料未到／客戶取消／已完成歸檔">${escHtml(p.statusReason||'')}</textarea>
     <div class="actions">
       <button class="btn sm gray" onclick="closeModal()">返回</button>
-      <button class="btn sm red" onclick="applyProjectLifecycle('${pid}')">確認變更</button>
+      <button class="btn sm red" data-call="applyProjectLifecycle" data-arg0="${escHtml(String(pid))}">確認變更</button>
     </div>`);
 }
 function applyProjectLifecycle(pid){
@@ -2688,7 +2920,7 @@ function resumeProject(pid){
     <label>備註（選填）</label><textarea id="pl-resume-note" placeholder="可留空"></textarea>
     <div class="actions">
       <button class="btn sm gray" onclick="closeModal()">取消</button>
-      <button class="btn sm green" onclick="confirmResumeProject('${pid}')">確認恢復</button>
+      <button class="btn sm green" data-call="confirmResumeProject" data-arg0="${escHtml(String(pid))}">確認恢復</button>
     </div>`);
 }
 function confirmResumeProject(pid){
@@ -2745,24 +2977,24 @@ function tabFlow(p){
     if(isProjectLocked(p)){
       // 鎖定時不顯示推進按鈕
     } else if(!isAdmin() && isStageHandler(s, currentUser.id)){
-      if(['未開始','待處理'].includes(s.status)) actions += `<button class="btn sm" onclick="stageAction('${p.id}',${i},'start')">開始處理</button>`;
-      if(['進行中','需要修改'].includes(s.status)) actions += `<button class="btn green sm" onclick="stageAction('${p.id}',${i},'submit')">提交確認</button>`;
-      if(!done) actions += `<button class="btn purple sm" onclick="askUpload('${p.id}',${i})">上載文件／圖片</button>
-        <button class="btn gray sm" onclick="askContent('${p.id}',${i})">填寫工作內容</button>`;
+      if(['未開始','待處理'].includes(s.status)) actions += `<button class="btn sm" data-call="stageAction" data-arg0="${escHtml(String(p.id))}" data-arg1="${i}" data-arg2="start">開始處理</button>`;
+      if(['進行中','需要修改'].includes(s.status)) actions += `<button class="btn green sm" data-call="stageAction" data-arg0="${escHtml(String(p.id))}" data-arg1="${i}" data-arg2="submit">提交確認</button>`;
+      if(!done) actions += `<button class="btn purple sm" data-call="askUpload" data-arg0="${escHtml(String(p.id))}" data-arg1="${i}">上載文件／圖片</button>
+        <button class="btn gray sm" data-call="askContent" data-arg0="${escHtml(String(p.id))}" data-arg1="${i}">填寫工作內容</button>`;
     }
     else if(isAdmin()){
       // 經理／主管被指派為經手人時，也可直接推進自己的階段
       if(isStageHandler(s, currentUser.id)){
-        if(['未開始','待處理'].includes(s.status)) actions += `<button class="btn sm" onclick="stageAction('${p.id}',${i},'start')">開始處理</button>`;
-        if(['進行中','需要修改'].includes(s.status)) actions += `<button class="btn green sm" onclick="stageAction('${p.id}',${i},'submit')">提交確認</button>`;
-        if(!done) actions += `<button class="btn purple sm" onclick="askUpload('${p.id}',${i})">上載文件／圖片</button>
-          <button class="btn gray sm" onclick="askContent('${p.id}',${i})">填寫工作內容</button>`;
+        if(['未開始','待處理'].includes(s.status)) actions += `<button class="btn sm" data-call="stageAction" data-arg0="${escHtml(String(p.id))}" data-arg1="${i}" data-arg2="start">開始處理</button>`;
+        if(['進行中','需要修改'].includes(s.status)) actions += `<button class="btn green sm" data-call="stageAction" data-arg0="${escHtml(String(p.id))}" data-arg1="${i}" data-arg2="submit">提交確認</button>`;
+        if(!done) actions += `<button class="btn purple sm" data-call="askUpload" data-arg0="${escHtml(String(p.id))}" data-arg1="${i}">上載文件／圖片</button>
+          <button class="btn gray sm" data-call="askContent" data-arg0="${escHtml(String(p.id))}" data-arg1="${i}">填寫工作內容</button>`;
       }
-      if(s.status==='待確認') actions += `<button class="btn green sm" onclick="stageAction('${p.id}',${i},'confirm')">✓ 確認完成</button>
-        <button class="btn red sm" onclick="askReturn('${p.id}',${i})">退回修改</button>`;
-      if(!done && s.status!=='待確認') actions += `<button class="btn purple sm" onclick="askSkip('${p.id}',${i})">跳過（直接下一階段）</button>`;
-      actions += `<button class="btn gray sm" onclick="askReassign('${p.id}',${i})">重新分配經手人</button>`;
-      if(s.status==='已完成') actions += `<button class="btn warn sm" onclick="stageAction('${p.id}',${i},'reopen')">重新開啟</button>`;
+      if(s.status==='待確認') actions += `<button class="btn green sm" data-call="stageAction" data-arg0="${escHtml(String(p.id))}" data-arg1="${i}" data-arg2="confirm">✓ 確認完成</button>
+        <button class="btn red sm" data-call="askReturn" data-arg0="${escHtml(String(p.id))}" data-arg1="${i}">退回修改</button>`;
+      if(!done && s.status!=='待確認') actions += `<button class="btn purple sm" data-call="askSkip" data-arg0="${escHtml(String(p.id))}" data-arg1="${i}">跳過（直接下一階段）</button>`;
+      actions += `<button class="btn gray sm" data-call="askReassign" data-arg0="${escHtml(String(p.id))}" data-arg1="${i}">重新分配經手人</button>`;
+      if(s.status==='已完成') actions += `<button class="btn warn sm" data-call="stageAction" data-arg0="${escHtml(String(p.id))}" data-arg1="${i}" data-arg2="reopen">重新開啟</button>`;
     }
     return `<div class="stage ${isCur?'current-stage':''}">
       <div class="stage-head" onclick="this.nextElementSibling.classList.toggle('hidden')">
@@ -2802,7 +3034,7 @@ function askReturn(pid, idx){
   if(isProjectLocked(p0)){ alert2('項目已「'+p0.status+'」，無法退回。'); return; }
   showModal(`<h3>退回修改</h3><label>退回原因（選填）</label><input type="text" id="m-reason" placeholder="可留空">
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
-    <button class="btn red sm" onclick="doReturn('${pid}',${idx})">確認退回</button></div>`);
+    <button class="btn red sm" data-call="doReturn" data-arg0="${escHtml(String(pid))}" data-arg1="${idx}">確認退回</button></div>`);
 }
 function doReturn(pid, idx){
   const r = document.getElementById('m-reason').value.trim();
@@ -2820,7 +3052,7 @@ function askSkip(pid, idx){
     <p style="font-size:13px;color:#888">例如：沿用上一批最終確認樣板，產品規格沒有修改。</p>
     <label>跳過原因（選填）</label><input type="text" id="m-reason" placeholder="可留空">
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
-    <button class="btn purple sm" onclick="doSkip('${pid}',${idx})">確認跳過</button></div>`);
+    <button class="btn purple sm" data-call="doSkip" data-arg0="${escHtml(String(pid))}" data-arg1="${idx}">確認跳過</button></div>`);
 }
 function doSkip(pid, idx){
   const r = document.getElementById('m-reason').value.trim();
@@ -2841,7 +3073,7 @@ function askReassign(pid, idx){
     <div id="m-handler-box">${projectAssigneeChecksHtml(stageHandlers(s), 'm-handler-cb')}</div>
     <label>更改原因（選填）</label><input type="text" id="m-reason" placeholder="可留空">
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
-    <button class="btn sm" onclick="doReassign('${pid}',${idx})">確認更改</button></div>`);
+    <button class="btn sm" data-call="doReassign" data-arg0="${escHtml(String(pid))}" data-arg1="${idx}">確認更改</button></div>`);
 }
 function doReassign(pid, idx){
   const r = document.getElementById('m-reason').value.trim();
@@ -2860,7 +3092,7 @@ function askContent(pid, idx){
   showModal(`<h3>填寫工作內容</h3><p style="font-size:13px">階段：<b>${s.name}</b></p>
     <label>工作內容</label><textarea id="m-content">${escHtml(s.content||'')}</textarea>
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
-    <button class="btn sm" onclick="doContent('${pid}',${idx})">儲存</button></div>`);
+    <button class="btn sm" data-call="doContent" data-arg0="${escHtml(String(pid))}" data-arg1="${idx}">儲存</button></div>`);
 }
 function doContent(pid, idx){
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
@@ -2875,7 +3107,7 @@ function askUpload(pid, idx){
   showModal(`<h3>上載文件／圖片</h3><p style="font-size:13px">階段：<b>${s.name}</b>｜支援 JPG、PNG、PDF、Word、Excel、ZIP 等</p>
     <label>選擇檔案</label><input type="file" id="m-file">
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
-    <button class="btn purple sm" onclick="doUpload('${pid}',${idx})">上載</button></div>`);
+    <button class="btn purple sm" data-call="doUpload" data-arg0="${escHtml(String(pid))}" data-arg1="${idx}">上載</button></div>`);
 }
 async function doUpload(pid, idx){
   const p = projects.find(x=>x.id===pid), s = p.stages[idx];
@@ -2940,13 +3172,13 @@ function tabChat(p){
       ${commentFileHtml(c.file)}
       ${(c.replies||[]).map((r,ri)=>`<div class="reply"><div class="mhead"><span class="mname">${userName(r.by)}</span>
         <span class="mtime">${r.time}</span>
-        ${(r.by===currentUser.id||isAdmin())&&!r.removed?`<button class="btn red sm" style="margin-left:auto" onclick="removeReply('${p.id}',${realIdx},${ri})">刪除</button>`:''}
+        ${(r.by===currentUser.id||isAdmin())&&!r.removed?`<button class="btn red sm" style="margin-left:auto" data-call="removeReply" data-arg0="${escHtml(String(p.id))}" data-arg1="${realIdx}" data-arg2="${ri}">刪除</button>`:''}
         </div>
         ${r.removed?'<div class="removed">此回覆已刪除。</div>':`<div class="mbody">${fmtMention(r.text)}</div>`}
       </div>`).join('')}
       <div class="actions-row">
-        <button class="btn gray sm" onclick="askReply('${p.id}',${realIdx})">回覆</button>
-        ${canDelete?`<button class="btn red sm" onclick="removeComment('${p.id}',${realIdx})">${c.by===currentUser.id?'刪除留言':'移除留言'}</button>`:''}
+        <button class="btn gray sm" data-call="askReply" data-arg0="${escHtml(String(p.id))}" data-arg1="${realIdx}">回覆</button>
+        ${canDelete?`<button class="btn red sm" data-call="removeComment" data-arg0="${escHtml(String(p.id))}" data-arg1="${realIdx}">${c.by===currentUser.id?'刪除留言':'移除留言'}</button>`:''}
       </div>`}
     </div>`;}).join('') : '<p style="color:#888;margin-bottom:12px">暫無留言。</p>'}
     <div class="card" style="background:#f7f9fc;margin-top:14px">
@@ -2957,7 +3189,7 @@ function tabChat(p){
       <textarea id="c-text" placeholder="輸入留言內容… 可用 @ 提及同事"></textarea>
       <label>附件（選填）</label>
       <input type="file" id="c-file">
-      <button class="btn" onclick="postComment('${p.id}')">發表留言</button>
+      <button class="btn" data-call="postComment" data-arg0="${escHtml(String(p.id))}">發表留言</button>
     </div>`;
 }
 async function postComment(pid){
@@ -2983,7 +3215,7 @@ async function postComment(pid){
 function askReply(pid, idx){
   showModal(`<h3>回覆留言</h3><label>回覆內容（輸入 @ 選擇同事）</label><textarea id="m-reply"></textarea>
     <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
-    <button class="btn sm" onclick="doReply('${pid}',${idx})">回覆</button></div>`);
+    <button class="btn sm" data-call="doReply" data-arg0="${escHtml(String(pid))}" data-arg1="${idx}">回覆</button></div>`);
   setTimeout(()=> bindMentionInput('m-reply'), 0);
 }
 function doReply(pid, idx){
@@ -3740,7 +3972,7 @@ function dailyToggle(id,el){
     '<h3>取消完成？</h3>'+
     '<p style="font-size:14px">將重開「'+dailyEsc(w.title)+'」，並<strong>刪除該工作上的全部附件</strong>。</p>'+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">返回</button>'+
-    '<button class="btn red sm" onclick="dailyConfirmUntick(\''+id+'\')">確認取消完成</button></div>'
+    '<button class="btn red sm" data-call="dailyConfirmUntick" data-arg0="'+escHtml(String(id))+'">確認取消完成</button></div>'
   );
 }
 function dailyConfirmUntick(id){
@@ -3757,7 +3989,7 @@ function dailyAskCompleteWithFiles(id){
     '<p style="font-size:13px;color:#555">「'+dailyEsc(w.title)+'」需要上傳至少 1 個附件（格式不限，可多選）。上傳成功後才會剔選完成。</p>'+
     '<label>選擇檔案</label><input type="file" id="d-complete-files" multiple>'+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'+
-    '<button class="btn sm" onclick="dailySubmitCompleteWithFiles(\''+id+'\')">上傳並完成</button></div>'
+    '<button class="btn sm" data-call="dailySubmitCompleteWithFiles" data-arg0="'+escHtml(String(id))+'">上傳並完成</button></div>'
   );
 }
 async function dailySubmitCompleteWithFiles(id){
@@ -3784,7 +4016,7 @@ function dailyAskAddFiles(id){
     '<p style="font-size:13px;color:#555">「'+dailyEsc(w.title)+'」已完成，可再補傳附件（不影響完成狀態）。</p>'+
     '<label>選擇檔案</label><input type="file" id="d-add-files" multiple>'+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'+
-    '<button class="btn sm" onclick="dailySubmitAddFiles(\''+id+'\')">上傳</button></div>'
+    '<button class="btn sm" data-call="dailySubmitAddFiles" data-arg0="'+escHtml(String(id))+'">上傳</button></div>'
   );
 }
 async function dailySubmitAddFiles(id){
@@ -3811,7 +4043,7 @@ function dailyReopen(id){
     '<h3>重新開啟工作？</h3>'+
     '<p style="font-size:14px">將重開「'+dailyEsc(w.title)+'」，並<strong>刪除該工作上的全部附件</strong>。</p>'+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">返回</button>'+
-    '<button class="btn red sm" onclick="dailyConfirmUntick(\''+id+'\')">確認重開</button></div>'
+    '<button class="btn red sm" data-call="dailyConfirmUntick" data-arg0="'+escHtml(String(id))+'">確認重開</button></div>'
   );
 }
 function dailyCancelWork(id){
@@ -3931,7 +4163,7 @@ function dailyEditWork(id){
     '<label>內容</label><textarea id="d-content">'+dailyEsc(w.content)+'</textarea>'+
     '<label>完成期限</label><input id="d-due" type="date" value="'+dailyEsc(w.dueDate)+'">'+
     '<label>優先級</label>'+prioritySelectHtml(w.priority)+
-    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitEditWork(\''+id+'\')">儲存</button></div>'
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" data-call="dailySubmitEditWork" data-arg0="'+escHtml(String(id))+'">儲存</button></div>'
   );
 }
 function dailySubmitEditWork(id){
@@ -3955,7 +4187,7 @@ function dailyEditTemplate(id){
     '<label>適用單位</label><div class="card" style="padding:10px">'+unitChecksHtml(t.units||[])+'</div>'+
     '<label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="d-require-attach" '+(t.requireAttachment?'checked':'')+'> 完成時需要上傳附件</label>'+
     '<p style="font-size:12px;color:#888;margin-top:4px">變更會同步到今日尚未完成的實例；已完成工作不受影響。</p>'+
-    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitEditTemplate(\''+id+'\')">儲存</button></div>'
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" data-call="dailySubmitEditTemplate" data-arg0="'+escHtml(String(id))+'">儲存</button></div>'
   );
 }
 function dailySubmitEditTemplate(id){
@@ -3990,13 +4222,13 @@ function dailyAttachHtml(w,user,readonly){
   }
   if(files.length){
     bits.push('<div style="margin-top:4px;font-size:12px">'+files.map(function(f,i){
-      return '<button type="button" class="btn gray sm" style="margin:2px 4px 2px 0" onclick="dailyDownloadAttach(\''+w.id+'\','+i+')">📎 '+dailyEsc(f.name)+'</button>';
+      return '<button type="button" class="btn gray sm" style="margin:2px 4px 2px 0" data-call="dailyDownloadAttach" data-arg0="'+escHtml(String(w.id))+'" data-arg1="'+i+'">📎 '+dailyEsc(f.name)+'</button>';
     }).join('')+'</div>');
   }else if(w.status==='done'){
     bits.push('<div style="font-size:11px;color:#aaa;margin-top:2px">無附件</div>');
   }
   if(!readonly&&can&&w.status==='done'){
-    bits.push('<div style="margin-top:4px"><button type="button" class="btn gray sm" onclick="dailyAskAddFiles(\''+w.id+'\')">補傳附件</button></div>');
+    bits.push('<div style="margin-top:4px"><button type="button" class="btn gray sm" data-call="dailyAskAddFiles" data-arg0="'+escHtml(String(w.id))+'">補傳附件</button></div>');
   }
   return bits.length?'<div style="margin-top:6px">'+bits.join('')+'</div>':'';
 }
@@ -4025,9 +4257,9 @@ function dailyWorkRows(list,user,opts){
         : '—';
       var admin='';
       if(showAdmin){
-        admin='<button class="btn gray sm" onclick="dailyEditWork(\''+w.id+'\')">編輯</button> ';
-        if(w.status==='done') admin+='<button class="btn warn sm" onclick="dailyReopen(\''+w.id+'\')">重開</button> ';
-        if(w.kind!=='settlement'&&w.status!=='cancelled') admin+='<button class="btn red sm" onclick="dailyCancelWork(\''+w.id+'\')">取消</button>';
+        admin='<button class="btn gray sm" data-call="dailyEditWork" data-arg0="'+escHtml(String(w.id))+'">編輯</button> ';
+        if(w.status==='done') admin+='<button class="btn warn sm" data-call="dailyReopen" data-arg0="'+escHtml(String(w.id))+'">重開</button> ';
+        if(w.kind!=='settlement'&&w.status!=='cancelled') admin+='<button class="btn red sm" data-call="dailyCancelWork" data-arg0="'+escHtml(String(w.id))+'">取消</button>';
       }
       return '<tr>'+
         (readonly?'':'<td>'+tick+'</td>')+
@@ -4059,8 +4291,8 @@ function dailyProjectMirrorRow(t,readonly){
   var extra=
     (t.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(t.content)+'</div>':'')+
     '<div style="margin-top:6px" class="actions-row">'+
-      '<button type="button" class="btn gray sm" onclick="askContent(\''+t.pid+'\','+t.idx+')">填寫工作內容</button> '+
-      '<button type="button" class="btn sm" onclick="openProject(\''+t.pid+'\',\'flow\')">查看項目</button>'+
+      '<button type="button" class="btn gray sm" data-call="askContent" data-arg0="'+escHtml(String(t.pid))+'" data-arg1="'+t.idx+'">填寫工作內容</button> '+
+      '<button type="button" class="btn sm" data-call="openProject" data-arg0="'+escHtml(String(t.pid))+'" data-arg1="flow">查看項目</button>'+
     '</div>'+
     (t.files&&t.files.length?'<div style="font-size:11px;color:#888;margin-top:4px">已有附件 '+t.files.length+' 個（提交時仍須新上傳）</div>':'');
   return '<tr>'+
@@ -4086,7 +4318,7 @@ function dailyToggleProject(pid,idx,el){
     '<h3>撤回提交？</h3>'+
     '<p style="font-size:14px">將「'+dailyEsc(p.code)+'｜'+dailyEsc(s.name)+'」由待確認撤回為進行中。</p>'+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">返回</button>'+
-    '<button class="btn red sm" onclick="dailyConfirmProjectWithdraw(\''+pid+'\','+idx+')">確認撤回</button></div>'
+    '<button class="btn red sm" data-call="dailyConfirmProjectWithdraw" data-arg0="'+escHtml(String(pid))+'" data-arg1="'+idx+'">確認撤回</button></div>'
   );
 }
 function dailyAskProjectSubmit(pid,idx){
@@ -4098,7 +4330,7 @@ function dailyAskProjectSubmit(pid,idx){
     '<p style="font-size:13px;color:#555">「'+dailyEsc(p.code)+'｜'+dailyEsc(s.name)+'」提交前必須<strong>新上傳</strong>至少 1 個附件（格式不限，可多選）。未開始的階段會自動開始處理。</p>'+
     '<label>選擇檔案</label><input type="file" id="d-proj-files" multiple>'+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'+
-    '<button class="btn sm" onclick="dailySubmitProject(\''+pid+'\','+idx+')">上傳並提交</button></div>'
+    '<button class="btn sm" data-call="dailySubmitProject" data-arg0="'+escHtml(String(pid))+'" data-arg1="'+idx+'">上傳並提交</button></div>'
   );
 }
 async function dailySubmitProject(pid,idx){
@@ -4175,7 +4407,7 @@ function vDailyProgress(user){
   var progress=getUnitProgress();
   var cards=STORE_UNITS.map(function(unit){
     var p=progress[unit];
-    return '<div class="card" style="cursor:pointer" onclick="openDailyUnit(\''+unit+'\')">'+
+    return '<div class="card" style="cursor:pointer" data-call="openDailyUnit" data-arg0="'+escHtml(String(unit))+'">'+
       '<h3>'+unit+'</h3>'+
       '<div class="stats">'+
       '<div class="stat"><div class="num">'+p.total+'</div><div class="lbl">總數</div></div>'+
@@ -4199,7 +4431,7 @@ function vDailyUnit(user){
     '<div class="stat"><div class="num green">'+p.done+'</div><div class="lbl">已完成</div></div>'+
     '<div class="stat"><div class="num red">'+p.overdue+'</div><div class="lbl">逾期</div></div>'+
     '<div class="stat"><div class="num blue">'+p.pct+'%</div><div class="lbl">完成率</div></div></div>'+
-    '<div class="filters" style="margin-top:12px"><button class="btn gray sm" onclick="goDailyView(\'progress\')">← 返回進度</button></div>'+
+    '<div class="filters" style="margin-top:12px"><button class="btn gray sm" data-call="goDailyView" data-arg0="progress">← 返回進度</button></div>'+
     (readonly?'<div class="info-banner" style="margin-top:10px">🔒 唯讀：非你所屬單位，不可剔選。</div>':'')+
     '</div><div class="card">'+dailyWorkRows(p.items,user,{readonly:readonly})+'</div>';
 }
@@ -4222,9 +4454,9 @@ function vDailyNew(user){
         var doneInfo=w.status==='done'
           ? dailyEsc(w.completedByName||'—')+'<div style="font-size:11px;color:#888">'+dailyEsc(w.completedAt||'')+'</div>'
           : '—';
-        var admin='<button class="btn gray sm" onclick="dailyEditWork(\''+w.id+'\')">編輯</button> ';
-        if(w.status==='done') admin+='<button class="btn warn sm" onclick="dailyReopen(\''+w.id+'\')">重開</button> ';
-        admin+='<button class="btn red sm" onclick="dailyCancelWork(\''+w.id+'\')">取消</button>';
+        var admin='<button class="btn gray sm" data-call="dailyEditWork" data-arg0="'+escHtml(String(w.id))+'">編輯</button> ';
+        if(w.status==='done') admin+='<button class="btn warn sm" data-call="dailyReopen" data-arg0="'+escHtml(String(w.id))+'">重開</button> ';
+        admin+='<button class="btn red sm" data-call="dailyCancelWork" data-arg0="'+escHtml(String(w.id))+'">取消</button>';
         return '<tr>'+
           '<td><b>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+'</td>'+
           '<td>'+dailyEsc(w.unit)+'</td>'+
@@ -4240,7 +4472,7 @@ function vDailyNew(user){
   return '<div class="card"><h2>➕ 新增突發工作</h2>'+
     '<p style="color:#666;font-size:13px;margin-bottom:10px">可指定多個單位、員工、期限與優先級；建立後即出現在下方清單，並進入對應單位今日／期限日清單。</p>'+
     '<button class="btn" onclick="dailyCreateAdhoc()">🛠️ 建立突發工作</button> '+
-    '<button class="btn gray" onclick="goDailyView(\'recurring\')">前往恆常任務</button></div>'+
+    '<button class="btn gray" data-call="goDailyView" data-arg0="recurring">前往恆常任務</button></div>'+
     '<div class="card"><h3>已建立的突發工作（'+list.length+'）</h3>'+rows+'</div>';
 }
 function askDeleteTemplate(id){
@@ -4254,7 +4486,7 @@ function askDeleteTemplate(id){
     '若只想暫停，請用「停用」，不要刪除。</p>'+
     '<div class="actions">'+
     '<button class="btn sm gray" onclick="closeModal()">取消</button>'+
-    '<button class="btn sm red" onclick="confirmDeleteTemplate(\''+id+'\')">確認刪除</button>'+
+    '<button class="btn sm red" data-call="confirmDeleteTemplate" data-arg0="'+escHtml(String(id))+'">確認刪除</button>'+
     '</div>');
 }
 function confirmDeleteTemplate(id){
@@ -4270,11 +4502,11 @@ function vDailyRecurring(user){
     '<div class="table-wrap"><table><thead><tr><th>任務</th><th>單位</th><th>優先</th><th>附件</th><th>狀態</th>'+(dailyCanManage(user)?'<th>管理</th>':'')+'</tr></thead><tbody>'+
     list.map(function(t){
       var admin=dailyCanManage(user)
-        ?('<button class="btn gray sm" onclick="dailyEditTemplate(\''+t.id+'\')">編輯</button> '+
+        ?('<button class="btn gray sm" data-call="dailyEditTemplate" data-arg0="'+escHtml(String(t.id))+'">編輯</button> '+
           (t.active
-            ?'<button class="btn warn sm" onclick="dailyToggleTemplate(\''+t.id+'\',false)">停用</button>'
-            :'<button class="btn green sm" onclick="dailyToggleTemplate(\''+t.id+'\',true)">啟用</button>')+
-          ' <button class="btn red sm" onclick="askDeleteTemplate(\''+t.id+'\')">刪除</button>')
+            ?'<button class="btn warn sm" data-call="dailyToggleTemplate" data-arg0="'+escHtml(String(t.id))+'" data-arg1="false">停用</button>'
+            :'<button class="btn green sm" data-call="dailyToggleTemplate" data-arg0="'+escHtml(String(t.id))+'" data-arg1="true">啟用</button>')+
+          ' <button class="btn red sm" data-call="askDeleteTemplate" data-arg0="'+escHtml(String(t.id))+'">刪除</button>')
         :'';
       return '<tr><td><b>'+dailyEsc(t.title)+'</b>'+(t.content?'<div style="font-size:12px;color:#777">'+dailyEsc(t.content)+'</div>':'')+'</td>'+
         '<td>'+dailyEsc((t.units||[]).join('、'))+'</td><td>'+priorityTag(t.priority||'中')+'</td>'+

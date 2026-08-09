@@ -33,6 +33,7 @@ export async function connectMongo() {
   await transferInventoryCol().createIndex({ productId: 1, size: 1, store: 1 }, { unique: true });
   await transferOrdersCol().createIndex({ id: 1 }, { unique: true });
   await transferOrdersCol().createIndex({ createdAtMs: -1 });
+  await transferStockAdjustmentsCol().createIndex({ createdAtMs: -1 });
   console.log('MongoDB connected:', DB_NAME);
   try {
     await migrateUsersV1();
@@ -105,6 +106,9 @@ function transferInventoryCol() {
 }
 function transferOrdersCol() {
   return db.collection('transfer_orders');
+}
+function transferStockAdjustmentsCol() {
+  return db.collection('transfer_stock_adjustments');
 }
 
 function formatHkDateTime(d = new Date()) {
@@ -1217,25 +1221,9 @@ function buildSeedInventoryDocs(products, now) {
   return inv;
 }
 
-/** 只保留目前種子清單中的示範款（WS-*），多餘樣本刪除 */
+/** 不再依 WS-* 前綴刪除商品，避免誤刪使用者新增的款號 */
 async function trimTransferSeedProducts() {
-  const keepIds = TRANSFER_SEED_PRODUCTS.map((p) => p.id);
-  const keepSet = new Set(keepIds);
-  const seedish = await transferProductsCol()
-    .find({ $or: [{ _id: /^WS-/ }, { id: /^WS-/ }] })
-    .project({ _id: 1, id: 1 })
-    .toArray();
-  const toRemove = seedish
-    .map((p) => String(p.id || p._id))
-    .filter((id) => id && !keepSet.has(id));
-  if (toRemove.length) {
-    await transferProductsCol().deleteMany({
-      $or: [{ _id: { $in: toRemove } }, { id: { $in: toRemove } }],
-    });
-    await transferInventoryCol().deleteMany({ productId: { $in: toRemove } });
-    console.log('Trimmed transfer seed products:', toRemove.join(', '));
-  }
-  return toRemove.length;
+  return 0;
 }
 
 export async function ensureTransferSeed() {
@@ -1308,11 +1296,222 @@ export async function listTransferInventory() {
       });
     }
   }
+  const fromProducts = products.map((p) => String(p.category || '').trim()).filter(Boolean);
+  const categories = [...new Set([...TRANSFER_CATEGORIES, ...fromProducts])].sort((a, b) =>
+    a.localeCompare(b, 'zh-Hant')
+  );
   return {
     stores: TRANSFER_STORES.slice(),
-    categories: TRANSFER_CATEGORIES.slice(),
+    categories,
     rows,
   };
+}
+
+function normalizeProductId(raw) {
+  return String(raw || '').trim();
+}
+
+function normalizeSizeList(input) {
+  const arr = Array.isArray(input) ? input : String(input || '').split(/[,，、\s]+/);
+  const out = [];
+  const seen = new Set();
+  for (const item of arr) {
+    const s = String(item || '').trim();
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
+function parseNonNegInt(raw, label) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || Math.floor(n) !== n) {
+    throw new Error(`${label}須為 ≥ 0 的整數`);
+  }
+  return n;
+}
+
+/**
+ * 新增商品主檔；四店各尺碼庫存從 0。
+ * 全員可操作（由 API requireAuth 把關）。
+ */
+export async function createTransferProduct(actor, input) {
+  await connectMongo();
+  await ensureTransferSeed();
+  const me = publicUser(actor);
+  if (!me?.id) throw new Error('未登入');
+
+  const id = normalizeProductId(input?.id || input?.productId);
+  if (!id) throw new Error('請填寫產品編號');
+  if (id.length > 64) throw new Error('產品編號過長');
+  if (/[\/\\]/.test(id)) throw new Error('產品編號含有不允許的字元');
+
+  const name = String(input?.name || '').trim();
+  if (!name) throw new Error('請填寫產品名稱');
+
+  const category = String(input?.category || '').trim();
+  if (!category) throw new Error('請選擇或填寫類別');
+
+  const color = String(input?.color || '').trim();
+  const sizes = normalizeSizeList(input?.sizes);
+  if (!sizes.length) throw new Error('請至少選擇或新增 1 個尺碼');
+
+  const safetyStock = parseNonNegInt(input?.safetyStock, '安全存量');
+
+  const existing = await transferProductsCol().findOne({
+    $or: [{ _id: id }, { id }],
+  });
+  if (existing) throw new Error('產品編號已存在：' + id);
+
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const product = {
+    _id: id,
+    id,
+    name,
+    category,
+    color,
+    sizes,
+    safetyStock,
+    active: true,
+    createdAt: now,
+    updatedAt: now,
+    createdBy: String(me.id),
+    createdByName: me.name || me.login || me.id,
+  };
+  await transferProductsCol().insertOne(product);
+
+  for (const size of sizes) {
+    for (const store of TRANSFER_STORES) {
+      const _id = `${id}__${size}__${store}`;
+      await transferInventoryCol().updateOne(
+        { _id },
+        {
+          $setOnInsert: {
+            _id,
+            productId: id,
+            size,
+            store,
+            quantity: 0,
+            createdAt: now,
+            updatedAt: now,
+          },
+        },
+        { upsert: true }
+      );
+    }
+  }
+
+  await appendModuleLog({
+    module: 'transfer',
+    time,
+    action: '新增商品',
+    detail: `${id}｜${name}｜${category}｜尺碼 ${sizes.join('、')}｜安全存量 ${safetyStock}`,
+    userId: me.id,
+    userName: me.name || me.login || me.id,
+    user: me.name || me.login || me.id,
+  });
+
+  const { _id, ...rest } = product;
+  return rest;
+}
+
+/**
+ * 手改某一款號×尺碼的四店庫存（整數 ≥ 0），並寫入校正記錄。
+ */
+export async function setTransferInventoryQuantities(actor, input) {
+  await connectMongo();
+  await ensureTransferSeed();
+  const me = publicUser(actor);
+  if (!me?.id) throw new Error('未登入');
+
+  const productId = normalizeProductId(input?.productId || input?.id);
+  const size = String(input?.size || '').trim();
+  if (!productId || !size) throw new Error('缺少產品編號或尺碼');
+
+  const product = await transferProductsCol().findOne({
+    $or: [{ _id: productId }, { id: productId }],
+    active: { $ne: false },
+  });
+  if (!product) throw new Error('找不到商品');
+  const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : ['均碼'];
+  if (!sizes.includes(size)) throw new Error('此商品沒有該尺碼');
+
+  const qtyInput = input?.qty && typeof input.qty === 'object' ? input.qty : input?.quantities;
+  if (!qtyInput || typeof qtyInput !== 'object') throw new Error('請提供四店庫存數量');
+
+  const before = {};
+  const after = {};
+  for (const store of TRANSFER_STORES) {
+    before[store] = await getInventoryQty(productId, size, store);
+    if (qtyInput[store] === undefined || qtyInput[store] === null || qtyInput[store] === '') {
+      after[store] = before[store];
+    } else {
+      after[store] = parseNonNegInt(qtyInput[store], store + '庫存');
+    }
+  }
+
+  const changed = TRANSFER_STORES.some((s) => before[s] !== after[s]);
+  if (!changed) throw new Error('數量沒有變更');
+
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  for (const store of TRANSFER_STORES) {
+    if (before[store] === after[store]) continue;
+    const _id = `${productId}__${size}__${store}`;
+    await transferInventoryCol().updateOne(
+      { _id },
+      {
+        $set: { productId, size, store, quantity: after[store], updatedAt: now },
+        $setOnInsert: { _id, createdAt: now },
+      },
+      { upsert: true }
+    );
+  }
+
+  const adjId = 'AD' + String(now.getTime()) + '-' + crypto.randomBytes(2).toString('hex');
+  const actorName = me.name || me.login || me.id;
+  const adjustment = {
+    _id: adjId,
+    id: adjId,
+    productId,
+    productName: product.name || '',
+    size,
+    before,
+    after,
+    createdAt: time,
+    createdAtMs: now.getTime(),
+    createdBy: String(me.id),
+    createdByName: actorName,
+  };
+  await transferStockAdjustmentsCol().insertOne(adjustment);
+
+  const detailParts = TRANSFER_STORES.filter((s) => before[s] !== after[s]).map(
+    (s) => `${s} ${before[s]}→${after[s]}`
+  );
+  await appendModuleLog({
+    module: 'transfer',
+    time,
+    action: '庫存校正',
+    detail: `${productId}｜${size}｜${detailParts.join('、')}`,
+    userId: me.id,
+    userName: actorName,
+    user: actorName,
+  });
+
+  const { _id, ...rest } = adjustment;
+  return rest;
+}
+
+export async function listTransferStockAdjustments(limit = 200) {
+  await connectMongo();
+  const n = Math.min(Math.max(Number(limit) || 200, 1), 500);
+  const docs = await transferStockAdjustmentsCol().find({}).sort({ createdAtMs: -1 }).limit(n).toArray();
+  return docs.map((d) => {
+    const { _id, ...rest } = d;
+    return rest;
+  });
 }
 
 async function getInventoryQty(productId, size, store) {
