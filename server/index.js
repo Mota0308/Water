@@ -11,7 +11,8 @@ import {
   saveDaily,
   getProjectsState,
   saveProjectsState,
-  getNotificationsState,
+  getNotificationsStateForUser,
+  filterNotificationForViewer,
   createNotification,
   markNotificationRead,
   markNotificationUnread,
@@ -434,9 +435,9 @@ app.post('/api/module-logs', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/notifications', requireAuth, async (_req, res) => {
+app.get('/api/notifications', requireAuth, async (req, res) => {
   try {
-    res.json(await getNotificationsState());
+    res.json(await getNotificationsStateForUser(req.user));
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: String(e.message || e) });
@@ -448,8 +449,15 @@ app.post('/api/notifications', requireAuth, async (req, res) => {
     if (!req.body || typeof req.body !== 'object') {
       return res.status(400).json({ error: 'JSON body required' });
     }
-    const item = await createNotification(req.body);
-    res.json(item);
+    const me = publicUser(req.user);
+    const body = {
+      ...req.body,
+      fromUserId: String(me?.id || req.body.fromUserId || ''),
+      fromName: String(me?.name || me?.login || req.body.fromName || ''),
+    };
+    const item = await createNotification(body);
+    const filtered = filterNotificationForViewer(item, me?.id) || item;
+    res.json(filtered);
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });
@@ -458,10 +466,11 @@ app.post('/api/notifications', requireAuth, async (req, res) => {
 
 app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
   try {
-    const userId = String(req.body?.userId || req.user?.id || req.user?._id || '');
+    const me = publicUser(req.user);
+    const userId = String(me?.id || '');
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const item = await markNotificationRead(req.params.id, userId);
-    res.json(item);
+    res.json(filterNotificationForViewer(item, userId) || item);
   } catch (e) {
     console.error(e);
     const msg = String(e.message || e);
@@ -471,10 +480,11 @@ app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
 
 app.post('/api/notifications/:id/unread', requireAuth, async (req, res) => {
   try {
-    const userId = String(req.body?.userId || req.user?.id || req.user?._id || '');
+    const me = publicUser(req.user);
+    const userId = String(me?.id || '');
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const item = await markNotificationUnread(req.params.id, userId);
-    res.json(item);
+    res.json(filterNotificationForViewer(item, userId) || item);
   } catch (e) {
     console.error(e);
     const msg = String(e.message || e);

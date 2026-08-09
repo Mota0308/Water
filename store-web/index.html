@@ -41,6 +41,14 @@
     padding:14px 16px; font-weight:bold; color:#37474f; flex-shrink:0;
   }
   .mailbox-modal .mb-head button { background:#eceff1; color:#37474f; border:none; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; }
+  .mailbox-tabs {
+    display:flex; gap:0; border-bottom:1px solid #e5e9f0; background:#fff; flex-shrink:0;
+  }
+  .mailbox-tabs button {
+    flex:1; border:none; background:transparent; padding:10px 12px; cursor:pointer;
+    font-size:13px; font-weight:600; color:#78909c; border-bottom:2px solid transparent;
+  }
+  .mailbox-tabs button.active { color:#1565c0; border-bottom-color:#1565c0; background:#f3f8ff; }
   #mailbox-list { overflow:auto; flex:1; min-height:120px; }
   .mailbox-row {
     border-bottom:1px solid #eee; background:#fff; cursor:pointer;
@@ -60,6 +68,7 @@
   }
   .mailbox-row.unread .mb-status { background:#bbdefb; color:#0d47a1; }
   .mailbox-row:not(.unread) .mb-status { background:#eceff1; color:#607d8b; }
+  .mailbox-row-line .mb-status.mb-receipt { background:#e8f5e9; color:#2e7d32; }
   .mailbox-row-line .mb-date { flex:0 0 auto; color:#78909c; font-size:12px; white-space:nowrap; }
   .mailbox-row-line .mb-title {
     flex:1 1 auto; min-width:0; font-weight:bold; color:#37474f; white-space:nowrap;
@@ -67,6 +76,11 @@
   }
   .mailbox-row-line .mb-from { flex:0 1 auto; color:#90a4ae; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:140px; }
   .mailbox-empty { padding:28px 16px; color:#888; font-size:13px; text-align:center; }
+  .md-receipts { margin-top:14px; border-top:1px dashed #e0e6ed; padding-top:12px; }
+  .md-receipts h4 { margin:0 0 8px; font-size:13px; color:#37474f; }
+  .md-receipts .md-receipt-summary { font-size:12px; color:#546e7a; margin-bottom:10px; }
+  .md-receipts ul { margin:0 0 10px; padding-left:18px; font-size:13px; color:#455a64; line-height:1.55; }
+  .md-receipts .md-receipt-empty { font-size:12px; color:#90a4ae; margin:0 0 10px; }
   .mailbox-detail-bg {
     position:fixed; inset:0; background:rgba(0,0,0,.4); display:flex; align-items:center; justify-content:center;
     z-index:110; padding:16px;
@@ -303,6 +317,10 @@
     <div class="mb-head">
       <span>信箱通知</span>
       <button type="button" onclick="closeMailbox()">關閉</button>
+    </div>
+    <div class="mailbox-tabs">
+      <button type="button" id="mailbox-tab-inbox" class="active" onclick="setMailboxTab('inbox')">接收</button>
+      <button type="button" id="mailbox-tab-sent" onclick="setMailboxTab('sent')">發送</button>
     </div>
     <div id="mailbox-list"><p class="mailbox-empty">登入後可查看通知。</p></div>
   </div>
@@ -594,7 +612,9 @@ const NOTIF_KEY = 'store-web-notifications-v1';
 const NOTIF_CATEGORIES = ['補貨','價錢更新','緊急通知','一般通知'];
 const NOTIF_PRIORITIES = ['一般','重要','緊急'];
 let mailboxOpen = false;
+let mailboxTab = 'inbox'; // inbox | sent
 let mailboxDetailId = null;
+let mailboxDetailTab = 'inbox'; // which tab opened the detail
 let pushDraftFiles = []; // {name, dataUrl} draft attachments for compose
 
 let currentUser = null, currentModule = 'production', currentView = 'home', currentProject = null, currentTab = 'overview', commentFilter = '全部';
@@ -1022,24 +1042,57 @@ function isNotifUnreadForMe(n){
   const rec = (n.recipients||[]).find(r => r.userId === currentUser.id);
   return !!(rec && !rec.read);
 }
-function myMailboxItems(){
-  if(!currentUser) return [];
-  const uid = currentUser.id;
-  const mine = notifications.filter(n => (n.recipients||[]).some(r => r.userId === uid));
-  mine.sort(function(a,b){
-    const au = isNotifUnreadForMe(a) ? 0 : 1;
-    const bu = isNotifUnreadForMe(b) ? 0 : 1;
-    if(au!==bu) return au - bu;
+function notifReadStats(n){
+  const recs = Array.isArray(n && n.recipients) ? n.recipients : [];
+  const total = recs.length;
+  const read = recs.filter(function(r){ return !!r.read; }).length;
+  return { read: read, total: total };
+}
+function sortMailboxItems(list, preferUnread){
+  const arr = (list || []).slice();
+  arr.sort(function(a,b){
+    if(preferUnread){
+      const au = isNotifUnreadForMe(a) ? 0 : 1;
+      const bu = isNotifUnreadForMe(b) ? 0 : 1;
+      if(au!==bu) return au - bu;
+    }
     const dt = (b.createdAtMs||0) - (a.createdAtMs||0);
     if(dt!==0) return dt;
     return notifPriorityRank(a.priority) - notifPriorityRank(b.priority);
   });
-  return mine;
+  return arr;
+}
+function myInboxItems(){
+  if(!currentUser) return [];
+  const uid = currentUser.id;
+  return sortMailboxItems(
+    notifications.filter(n => (n.recipients||[]).some(r => r.userId === uid)),
+    true
+  );
+}
+function mySentItems(){
+  if(!currentUser) return [];
+  const uid = String(currentUser.id);
+  return sortMailboxItems(
+    notifications.filter(n => String(n.fromUserId||'') === uid),
+    false
+  );
+}
+function myMailboxItems(){
+  return mailboxTab === 'sent' ? mySentItems() : myInboxItems();
 }
 function unreadCount(){
   if(!currentUser) return 0;
   const uid = currentUser.id;
   return notifications.filter(n => (n.recipients||[]).some(r => r.userId===uid && !r.read)).length;
+}
+function setMailboxTab(tab){
+  mailboxTab = (tab === 'sent') ? 'sent' : 'inbox';
+  const inboxBtn = document.getElementById('mailbox-tab-inbox');
+  const sentBtn = document.getElementById('mailbox-tab-sent');
+  if(inboxBtn) inboxBtn.classList.toggle('active', mailboxTab==='inbox');
+  if(sentBtn) sentBtn.classList.toggle('active', mailboxTab==='sent');
+  refreshMailboxUi();
 }
 function notifPriorityTag(p){
   const cls = p==='緊急' ? 'n-pri-urgent' : (p==='重要' ? 'n-pri-important' : 'n-pri-normal');
@@ -1050,6 +1103,7 @@ function findMailboxItem(id){
 }
 function openMailboxDetail(id){
   mailboxDetailId = id;
+  mailboxDetailTab = mailboxTab;
   const bg = document.getElementById('mailbox-detail-bg');
   if(bg) bg.classList.remove('hidden');
   refreshMailboxDetailUi();
@@ -1058,6 +1112,25 @@ function closeMailboxDetail(){
   mailboxDetailId = null;
   const bg = document.getElementById('mailbox-detail-bg');
   if(bg) bg.classList.add('hidden');
+}
+function mailboxReceiptHtml(item){
+  const recs = Array.isArray(item.recipients) ? item.recipients : [];
+  const stats = notifReadStats(item);
+  const readList = recs.filter(function(r){ return !!r.read; });
+  const unreadList = recs.filter(function(r){ return !r.read; });
+  function rowHtml(r, withTime){
+    const name = escHtml(userName(r.userId) || r.userId || '—');
+    if(withTime && r.readAt) return '<li>'+name+' <span style="color:#90a4ae">（'+escHtml(r.readAt)+'）</span></li>';
+    return '<li>'+name+'</li>';
+  }
+  return '<div class="md-receipts">'
+    +'<h4>已讀回條</h4>'
+    +'<div class="md-receipt-summary">已讀 '+stats.read+'／'+stats.total+'</div>'
+    +'<div style="font-size:12px;font-weight:bold;color:#2e7d32;margin-bottom:4px">已讀</div>'
+    +(readList.length ? '<ul>'+readList.map(function(r){ return rowHtml(r, true); }).join('')+'</ul>' : '<p class="md-receipt-empty">尚無已讀</p>')
+    +'<div style="font-size:12px;font-weight:bold;color:#ef6c00;margin-bottom:4px">未讀</div>'
+    +(unreadList.length ? '<ul>'+unreadList.map(function(r){ return rowHtml(r, false); }).join('')+'</ul>' : '<p class="md-receipt-empty">全部已讀</p>')
+    +'</div>';
 }
 function refreshMailboxDetailUi(){
   if(!mailboxDetailId) return;
@@ -1071,26 +1144,37 @@ function refreshMailboxDetailUi(){
     titleEl.textContent = '通知';
     bodyEl.innerHTML = '<p style="color:#888;font-size:13px">找不到此通知。</p>';
     actionsEl.innerHTML = '';
-    readBtn.className = 'md-read-toggle is-unread';
-    readBtn.textContent = '未讀';
+    readBtn.classList.add('hidden');
     return;
   }
+  const isSentView = mailboxDetailTab === 'sent';
   const uid = currentUser && currentUser.id;
   const rec = uid ? (item.recipients||[]).find(function(r){ return r.userId === uid; }) : null;
   const isRead = !!(rec && rec.read);
   titleEl.textContent = item.title || (item.content||'').slice(0,40) || '（無標題）';
+  const metaTo = isSentView
+    ? '｜收件 '+(Array.isArray(item.recipients)?item.recipients.length:0)+' 人'
+    : '｜來自 '+escHtml(item.fromName||'—');
   bodyEl.innerHTML =
     '<div class="md-meta">'+escHtml(item.category||'一般通知')+'｜'+notifPriorityTag(item.priority)
-    +'｜'+escHtml(item.createdAt||'')+'｜來自 '+escHtml(item.fromName||'—')+'</div>'
+    +'｜'+escHtml(item.createdAt||'')+metaTo+'</div>'
     +'<div class="md-content">'+escHtml(item.content||'（無內容）')+'</div>'
-    +notifAttachHtml(item.attachments);
-  actionsEl.innerHTML = transferMailboxActionsHtml(item);
-  readBtn.className = 'md-read-toggle '+(isRead?'is-read':'is-unread');
-  readBtn.textContent = isRead ? '已讀' : '未讀';
-  readBtn.title = isRead ? '點擊改為未讀' : '點擊改為已讀';
+    +notifAttachHtml(item.attachments)
+    +(isSentView ? mailboxReceiptHtml(item) : '');
+  if(isSentView){
+    actionsEl.innerHTML = '';
+    readBtn.classList.add('hidden');
+  } else {
+    actionsEl.innerHTML = transferMailboxActionsHtml(item);
+    readBtn.classList.remove('hidden');
+    readBtn.className = 'md-read-toggle '+(isRead?'is-read':'is-unread');
+    readBtn.textContent = isRead ? '已讀' : '未讀';
+    readBtn.title = isRead ? '點擊改為未讀' : '點擊改為已讀';
+  }
 }
 async function toggleMailboxDetailRead(){
   if(!mailboxDetailId || !currentUser) return;
+  if(mailboxDetailTab === 'sent') return;
   const item = findMailboxItem(mailboxDetailId);
   if(!item) return;
   const rec = (item.recipients||[]).find(function(r){ return r.userId === currentUser.id; });
@@ -1100,6 +1184,10 @@ async function toggleMailboxDetailRead(){
 function refreshMailboxUi(){
   const badge = document.getElementById('mailbox-badge');
   const list = document.getElementById('mailbox-list');
+  const inboxBtn = document.getElementById('mailbox-tab-inbox');
+  const sentBtn = document.getElementById('mailbox-tab-sent');
+  if(inboxBtn) inboxBtn.classList.toggle('active', mailboxTab==='inbox');
+  if(sentBtn) sentBtn.classList.toggle('active', mailboxTab==='sent');
   if(!badge || !list) return;
   const n = unreadCount();
   if(n > 0){
@@ -1114,22 +1202,35 @@ function refreshMailboxUi(){
     return;
   }
   const items = myMailboxItems();
+  const isSent = mailboxTab === 'sent';
   if(!items.length){
-    list.innerHTML = '<p class="mailbox-empty">暫無通知。</p>';
+    list.innerHTML = '<p class="mailbox-empty">'+(isSent?'尚無發送記錄。':'暫無通知。')+'</p>';
   } else {
     const uid = currentUser.id;
     list.innerHTML = items.map(item=>{
-      const rec = (item.recipients||[]).find(r => r.userId === uid);
-      const isRead = !!(rec && rec.read);
       const title = item.title || (item.content||'').slice(0,40) || '（無標題）';
       const nidAttr = escHtml(String(item.id));
-      return '<div class="mailbox-row '+(isRead?'':'unread')+'" data-nid="'+nidAttr+'" onclick="openMailboxDetail(this.getAttribute(\'data-nid\'))">'
+      let statusHtml;
+      let rowClass = 'mailbox-row';
+      if(isSent){
+        const st = notifReadStats(item);
+        statusHtml = '<span class="mb-status mb-receipt">已讀 '+st.read+'／'+st.total+'</span>';
+      } else {
+        const rec = (item.recipients||[]).find(r => r.userId === uid);
+        const isRead = !!(rec && rec.read);
+        if(!isRead) rowClass += ' unread';
+        statusHtml = '<span class="mb-status">'+(isRead?'已讀':'未讀')+'</span>';
+      }
+      const who = isSent
+        ? '<span class="mb-from">收件 '+(Array.isArray(item.recipients)?item.recipients.length:0)+' 人</span>'
+        : '<span class="mb-from">'+escHtml(item.fromName||'—')+'</span>';
+      return '<div class="'+rowClass+'" data-nid="'+nidAttr+'" onclick="openMailboxDetail(this.getAttribute(\'data-nid\'))">'
         +'<div class="mailbox-row-main"><div class="mailbox-row-line">'
-        +'<span class="mb-status">'+(isRead?'已讀':'未讀')+'</span>'
+        +statusHtml
         +notifPriorityTag(item.priority)
         +'<span class="mb-date">'+escHtml(item.createdAt||'')+'</span>'
         +'<span class="mb-title">'+escHtml(title)+'</span>'
-        +'<span class="mb-from">'+escHtml(item.fromName||'—')+'</span>'
+        +who
         +'</div></div></div>';
     }).join('');
   }

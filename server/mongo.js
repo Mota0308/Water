@@ -945,6 +945,51 @@ export async function getNotificationsState() {
   };
 }
 
+/** 依檢視者過濾：非發送人只能看到自己的 recipient；發送人可見完整已讀名單 */
+export function filterNotificationForViewer(item, viewerId) {
+  if (!item || !viewerId) return null;
+  const vid = String(viewerId);
+  const isSender = String(item.fromUserId || '') === vid;
+  const myRec = (item.recipients || []).find((r) => String(r.userId) === vid);
+  if (!isSender && !myRec) return null;
+  const { recipients: _r, ...rest } = item;
+  if (isSender) {
+    return {
+      ...rest,
+      recipients: Array.isArray(item.recipients)
+        ? item.recipients.map((r) => ({
+            userId: String(r.userId),
+            read: !!r.read,
+            readAt: r.readAt || null,
+          }))
+        : [],
+    };
+  }
+  return {
+    ...rest,
+    recipients: [
+      {
+        userId: String(myRec.userId),
+        read: !!myRec.read,
+        readAt: myRec.readAt || null,
+      },
+    ],
+  };
+}
+
+export async function getNotificationsStateForUser(user) {
+  const state = await getNotificationsState();
+  const me = publicUser(user);
+  const viewerId = me?.id ? String(me.id) : '';
+  if (!viewerId) {
+    return { notifications: [], notifSeq: state.notifSeq };
+  }
+  const notifications = (state.notifications || [])
+    .map((n) => filterNotificationForViewer(n, viewerId))
+    .filter(Boolean);
+  return { notifications, notifSeq: state.notifSeq };
+}
+
 export async function saveNotificationsState(data) {
   await connectMongo();
   const payload = {
