@@ -43,21 +43,20 @@
   .mailbox-modal .mb-head button { background:#eceff1; color:#37474f; border:none; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; }
   #mailbox-list { overflow:auto; flex:1; min-height:120px; }
   .mailbox-row {
-    border-bottom:1px solid #eee; background:#fff;
+    border-bottom:1px solid #eee; background:#fff; cursor:pointer;
   }
   .mailbox-row.unread { background:#f3f8ff; }
-  .mailbox-row.expanded { background:#eef6ff; }
+  .mailbox-row:hover { background:#eef6ff; }
   .mailbox-row-main {
-    display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center;
-    padding:10px 14px; cursor:pointer;
+    display:block; padding:10px 14px;
   }
-  .mailbox-row-main:hover { background:rgba(0,0,0,.03); }
   .mailbox-row-line {
     display:flex; flex-wrap:nowrap; align-items:center; gap:8px; min-width:0; overflow:hidden;
     font-size:13px; color:#455a64;
   }
   .mailbox-row-line .mb-status {
     flex:0 0 auto; font-size:11px; font-weight:bold; padding:2px 7px; border-radius:4px;
+    line-height:1.3;
   }
   .mailbox-row.unread .mb-status { background:#bbdefb; color:#0d47a1; }
   .mailbox-row:not(.unread) .mb-status { background:#eceff1; color:#607d8b; }
@@ -67,13 +66,38 @@
     overflow:hidden; text-overflow:ellipsis;
   }
   .mailbox-row-line .mb-from { flex:0 1 auto; color:#90a4ae; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:140px; }
-  .mailbox-row-actions { display:flex; align-items:center; gap:6px; flex-shrink:0; }
-  .mailbox-row-detail {
-    display:none; padding:0 14px 12px 14px; border-top:1px dashed #e0e6ed;
-  }
-  .mailbox-row.expanded .mailbox-row-detail { display:block; }
-  .mailbox-row-detail .mb-body { font-size:13px; white-space:pre-wrap; color:#444; margin-top:8px; }
   .mailbox-empty { padding:28px 16px; color:#888; font-size:13px; text-align:center; }
+  .mailbox-detail-bg {
+    position:fixed; inset:0; background:rgba(0,0,0,.4); display:flex; align-items:center; justify-content:center;
+    z-index:110; padding:16px;
+  }
+  .mailbox-detail-bg.hidden { display:none !important; }
+  .mailbox-detail {
+    background:#fff; color:#333; border-radius:12px; width:min(560px, 100%);
+    max-height:min(80vh, 640px); display:flex; flex-direction:column;
+    box-shadow:0 12px 40px rgba(0,0,0,.28); border:1px solid #dde3ea; overflow:hidden;
+  }
+  .mailbox-detail .md-head {
+    display:flex; align-items:flex-start; justify-content:space-between; gap:10px;
+    background:#f7f9fc; border-bottom:1px solid #e5e9f0; padding:14px 16px; flex-shrink:0;
+  }
+  .mailbox-detail .md-head h3 { margin:0; font-size:16px; color:#37474f; line-height:1.4; }
+  .mailbox-detail .md-head button { background:#eceff1; color:#37474f; border:none; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; flex-shrink:0; }
+  .mailbox-detail .md-body { padding:14px 16px; overflow:auto; flex:1; min-height:80px; }
+  .mailbox-detail .md-meta { font-size:12px; color:#78909c; margin-bottom:10px; line-height:1.5; }
+  .mailbox-detail .md-content { font-size:14px; white-space:pre-wrap; color:#37474f; line-height:1.55; }
+  .mailbox-detail .md-foot {
+    display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+    border-top:1px solid #e5e9f0; padding:12px 16px; background:#fafbfc; flex-shrink:0;
+  }
+  .mailbox-detail .md-foot-left { display:flex; gap:8px; flex-wrap:wrap; align-items:center; flex:1; min-width:0; }
+  .mailbox-detail .md-read-toggle {
+    margin-left:auto; border:none; border-radius:6px; padding:8px 16px; cursor:pointer;
+    font-size:13px; font-weight:bold; min-width:72px;
+  }
+  .mailbox-detail .md-read-toggle.is-unread { background:#bbdefb; color:#0d47a1; }
+  .mailbox-detail .md-read-toggle.is-read { background:#eceff1; color:#546e7a; }
+  .mailbox-detail .md-read-toggle:hover { filter:brightness(.96); }
   .inv-low { color:#c62828; font-weight:bold; }
   .inv-ok { color:#263238; }
   tr.inv-row { cursor:pointer; }
@@ -281,6 +305,19 @@
       <button type="button" onclick="closeMailbox()">關閉</button>
     </div>
     <div id="mailbox-list"><p class="mailbox-empty">登入後可查看通知。</p></div>
+  </div>
+</div>
+<div id="mailbox-detail-bg" class="mailbox-detail-bg hidden" onclick="if(event.target.id==='mailbox-detail-bg') closeMailboxDetail()">
+  <div class="mailbox-detail" onclick="event.stopPropagation()">
+    <div class="md-head">
+      <h3 id="mailbox-detail-title">通知</h3>
+      <button type="button" onclick="closeMailboxDetail()">關閉</button>
+    </div>
+    <div class="md-body" id="mailbox-detail-body"></div>
+    <div class="md-foot">
+      <div class="md-foot-left" id="mailbox-detail-actions"></div>
+      <button type="button" class="md-read-toggle is-unread" id="mailbox-detail-read-btn" onclick="toggleMailboxDetailRead()">未讀</button>
+    </div>
   </div>
 </div>
 <div id="app-update-banner" class="app-update-banner hidden" role="status" aria-live="polite">
@@ -557,7 +594,7 @@ const NOTIF_KEY = 'store-web-notifications-v1';
 const NOTIF_CATEGORIES = ['補貨','價錢更新','緊急通知','一般通知'];
 const NOTIF_PRIORITIES = ['一般','重要','緊急'];
 let mailboxOpen = false;
-let mailboxExpandedId = null;
+let mailboxDetailId = null;
 let pushDraftFiles = []; // {name, dataUrl} draft attachments for compose
 
 let currentUser = null, currentModule = 'production', currentView = 'home', currentProject = null, currentTab = 'overview', commentFilter = '全部';
@@ -1008,9 +1045,57 @@ function notifPriorityTag(p){
   const cls = p==='緊急' ? 'n-pri-urgent' : (p==='重要' ? 'n-pri-important' : 'n-pri-normal');
   return `<span class="tag ${cls}">${p||'一般'}</span>`;
 }
-function toggleNotifExpand(id){
-  mailboxExpandedId = (mailboxExpandedId === id) ? null : id;
-  refreshMailboxUi();
+function findMailboxItem(id){
+  return (notifications||[]).find(function(n){ return n.id === id; }) || null;
+}
+function openMailboxDetail(id){
+  mailboxDetailId = id;
+  const bg = document.getElementById('mailbox-detail-bg');
+  if(bg) bg.classList.remove('hidden');
+  refreshMailboxDetailUi();
+}
+function closeMailboxDetail(){
+  mailboxDetailId = null;
+  const bg = document.getElementById('mailbox-detail-bg');
+  if(bg) bg.classList.add('hidden');
+}
+function refreshMailboxDetailUi(){
+  if(!mailboxDetailId) return;
+  const titleEl = document.getElementById('mailbox-detail-title');
+  const bodyEl = document.getElementById('mailbox-detail-body');
+  const actionsEl = document.getElementById('mailbox-detail-actions');
+  const readBtn = document.getElementById('mailbox-detail-read-btn');
+  if(!titleEl || !bodyEl || !actionsEl || !readBtn) return;
+  const item = findMailboxItem(mailboxDetailId);
+  if(!item){
+    titleEl.textContent = '通知';
+    bodyEl.innerHTML = '<p style="color:#888;font-size:13px">找不到此通知。</p>';
+    actionsEl.innerHTML = '';
+    readBtn.className = 'md-read-toggle is-unread';
+    readBtn.textContent = '未讀';
+    return;
+  }
+  const uid = currentUser && currentUser.id;
+  const rec = uid ? (item.recipients||[]).find(function(r){ return r.userId === uid; }) : null;
+  const isRead = !!(rec && rec.read);
+  titleEl.textContent = item.title || (item.content||'').slice(0,40) || '（無標題）';
+  bodyEl.innerHTML =
+    '<div class="md-meta">'+escHtml(item.category||'一般通知')+'｜'+notifPriorityTag(item.priority)
+    +'｜'+escHtml(item.createdAt||'')+'｜來自 '+escHtml(item.fromName||'—')+'</div>'
+    +'<div class="md-content">'+escHtml(item.content||'（無內容）')+'</div>'
+    +notifAttachHtml(item.attachments);
+  actionsEl.innerHTML = transferMailboxActionsHtml(item);
+  readBtn.className = 'md-read-toggle '+(isRead?'is-read':'is-unread');
+  readBtn.textContent = isRead ? '已讀' : '未讀';
+  readBtn.title = isRead ? '點擊改為未讀' : '點擊改為已讀';
+}
+async function toggleMailboxDetailRead(){
+  if(!mailboxDetailId || !currentUser) return;
+  const item = findMailboxItem(mailboxDetailId);
+  if(!item) return;
+  const rec = (item.recipients||[]).find(function(r){ return r.userId === currentUser.id; });
+  const isRead = !!(rec && rec.read);
+  await setNotifReadState(mailboxDetailId, !isRead);
 }
 function refreshMailboxUi(){
   const badge = document.getElementById('mailbox-badge');
@@ -1025,42 +1110,33 @@ function refreshMailboxUi(){
   }
   if(!currentUser){
     list.innerHTML = '<p class="mailbox-empty">登入後可查看通知。</p>';
+    closeMailboxDetail();
     return;
   }
   const items = myMailboxItems();
   if(!items.length){
     list.innerHTML = '<p class="mailbox-empty">暫無通知。</p>';
-    return;
-  }
-  const uid = currentUser.id;
-  list.innerHTML = items.map(item=>{
-    const rec = (item.recipients||[]).find(r => r.userId === uid);
-    const isRead = !!(rec && rec.read);
-    const title = item.title || (item.content||'').slice(0,40) || '（無標題）';
-    const expanded = mailboxExpandedId === item.id;
-    const nid = JSON.stringify(String(item.id));
-    const readBtn = isRead
-      ? `<button type="button" class="btn sm gray" onclick="event.stopPropagation();markNotifUnread(${nid})">標為未讀</button>`
-      : `<button type="button" class="btn sm green" onclick="event.stopPropagation();markNotifRead(${nid})">標為已讀</button>`;
-    return `<div class="mailbox-row ${isRead?'':'unread'}${expanded?' expanded':''}">
-      <div class="mailbox-row-main" onclick="toggleNotifExpand(${nid})">
-        <div class="mailbox-row-line">
-          <span class="mb-status">${isRead?'已讀':'未讀'}</span>
-          ${notifPriorityTag(item.priority)}
-          <span class="mb-date">${escHtml(item.createdAt||'')}</span>
-          <span class="mb-title">${escHtml(title)}</span>
-          <span class="mb-from">${escHtml(item.fromName||'—')}</span>
+  } else {
+    const uid = currentUser.id;
+    list.innerHTML = items.map(item=>{
+      const rec = (item.recipients||[]).find(r => r.userId === uid);
+      const isRead = !!(rec && rec.read);
+      const title = item.title || (item.content||'').slice(0,40) || '（無標題）';
+      const nid = JSON.stringify(String(item.id));
+      return `<div class="mailbox-row ${isRead?'':'unread'}" onclick="openMailboxDetail(${nid})">
+        <div class="mailbox-row-main">
+          <div class="mailbox-row-line">
+            <span class="mb-status">${isRead?'已讀':'未讀'}</span>
+            ${notifPriorityTag(item.priority)}
+            <span class="mb-date">${escHtml(item.createdAt||'')}</span>
+            <span class="mb-title">${escHtml(title)}</span>
+            <span class="mb-from">${escHtml(item.fromName||'—')}</span>
+          </div>
         </div>
-        <div class="mailbox-row-actions" onclick="event.stopPropagation()">${readBtn}</div>
-      </div>
-        <div class="mailbox-row-detail">
-        <div style="font-size:12px;color:#78909c;margin-top:8px">${escHtml(item.category||'一般通知')}｜來自 ${escHtml(item.fromName||'—')}</div>
-        <div class="mb-body">${escHtml(item.content||'（無內容）')}</div>
-        ${notifAttachHtml(item.attachments)}
-        ${transferMailboxActionsHtml(item)}
-      </div>
-    </div>`;
-  }).join('');
+      </div>`;
+    }).join('');
+  }
+  if(mailboxDetailId) refreshMailboxDetailUi();
 }
 function transferMailboxActionsHtml(item){
   if(!item || item.actionType!=='transfer_decide' || !item.transferId) return '';
@@ -1171,7 +1247,7 @@ async function toggleMailbox(ev){
 }
 function closeMailbox(){
   mailboxOpen = false;
-  mailboxExpandedId = null;
+  closeMailboxDetail();
   const bg = document.getElementById('mailbox-modal-bg');
   if(bg) bg.classList.add('hidden');
 }
@@ -1187,6 +1263,7 @@ async function setNotifReadState(id, read){
         body: JSON.stringify({ userId: uid })
       });
       await loadNotifications();
+      refreshMailboxUi();
     }catch(e){
       alert2((read?'標為已讀':'標為未讀')+'失敗：'+(e.message||e));
     }
