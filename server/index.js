@@ -127,18 +127,24 @@ function readPackageVersion() {
   }
 }
 
-/** Deploy fingerprint: package version + index.html mtime (changes on each code deploy). */
+/** Deploy fingerprint: package version + app.js/index.html mtime (changes on each code deploy). */
 function getAppVersionInfo() {
   const pkgVersion = readPackageVersion();
-  const indexPath = path.join(webRoot, 'index.html');
+  const candidates = [path.join(webRoot, 'app.js'), path.join(webRoot, 'index.html')];
   let buildId = '0';
   let builtAt = null;
-  try {
-    const st = fs.statSync(indexPath);
-    buildId = String(Math.floor(st.mtimeMs));
-    builtAt = st.mtime.toISOString();
-  } catch {
-    /* ignore */
+  let latestMs = 0;
+  for (const filePath of candidates) {
+    try {
+      const st = fs.statSync(filePath);
+      if (st.mtimeMs > latestMs) {
+        latestMs = st.mtimeMs;
+        buildId = String(Math.floor(st.mtimeMs));
+        builtAt = st.mtime.toISOString();
+      }
+    } catch {
+      /* ignore missing file */
+    }
   }
   return {
     version: `${pkgVersion}-${buildId}`,
@@ -526,7 +532,8 @@ app.get('/api/files/:id', requireAuth, async (req, res) => {
 app.use(
   express.static(webRoot, {
     setHeaders(res, filePath) {
-      if (String(filePath).endsWith('index.html')) {
+      const p = String(filePath).replace(/\\/g, '/');
+      if (p.endsWith('index.html') || p.endsWith('/app.js') || p.endsWith('app.js')) {
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       } else {
         res.setHeader('Cache-Control', 'no-cache');

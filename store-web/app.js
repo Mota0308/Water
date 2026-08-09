@@ -1,0 +1,4408 @@
+/* ═══════════ 基礎資料 ═══════════ */
+const DEV_STAGES = ['企劃選材','技術規格單','打版','樣本修改與確認','量產準備','倉存與物流','陳列銷售'];
+const REP_STAGES = ['銷售分析','打版','樣本修改與確認','量產準備','倉存與物流','陳列銷售'];
+const CATEGORIES = ['成人保暖衣','兒童保暖衣','成人抓毛','兒童抓毛','成人膠衣','兒童膠衣','成人泳裝','兒童泳裝','防曬用品','游水用品','防水袋','其他'];
+
+const USERS_KEY = 'store-web-users-v1';
+const AUTH_TOKEN_KEY = 'store-web-auth-token-v1';
+const STAFF_REGIONS = ['觀塘','荔枝角','灣仔','屯門','國內倉'];
+const SEED_ADMIN = {id:'adm', login:'admin', pw:'admin', name:'系統管理員', dept:'管理層', role:'system_admin', position:'系統管理員', unit:null, units:[], active:true};
+let users = [Object.assign({}, SEED_ADMIN)];
+let userSeq = 1;
+function isAdmin(){ return currentUser && currentUser.role==='system_admin'; }
+function isManager(){ return currentUser && currentUser.role==='manager'; }
+function isPersonal(){ return currentUser && (currentUser.role==='personal' || currentUser.position==='員工'); }
+function canWriteProduction(){ return isAdmin(); }
+function canCreateEmployee(){ return !!(currentUser && (currentUser.role==='system_admin' || currentUser.role==='manager')); }
+/** 可被指派為項目經手人／負責人：僅經理、主管（不含系統帳 admin、不含員工） */
+function listAssignableStaff(){
+  return users.filter(function(u){
+    if(!u || u.active===false || u.login==='admin' || u.id==='adm') return false;
+    if(userNeedsPhoneBind(u)) return false;
+    return u.position==='經理' || u.position==='主管';
+  });
+}
+/** 階段經手人（相容舊單值 handler） */
+function stageHandlers(s){
+  if(!s) return [];
+  if(Array.isArray(s.handlers) && s.handlers.length){
+    return s.handlers.filter(Boolean).filter(function(id,i,a){ return a.indexOf(id)===i; });
+  }
+  return s.handler ? [s.handler] : [];
+}
+function stageHandlersLabel(s){
+  const hs = stageHandlers(s);
+  return hs.length ? hs.map(userName).join('、') : '—';
+}
+function isStageHandler(s, uid){
+  if(!uid) return false;
+  return stageHandlers(s).indexOf(uid)>=0;
+}
+function setStageHandlers(s, ids){
+  const hs = (Array.isArray(ids)?ids:[]).filter(Boolean).filter(function(id,i,a){ return a.indexOf(id)===i; });
+  s.handlers = hs;
+  s.handler = hs[0] || null;
+}
+function userUnits(u){
+  if(!u) return [];
+  if(Array.isArray(u.units) && u.units.length){
+    return u.units.filter(function(x,i,a){ return STAFF_REGIONS.indexOf(x)>=0 && a.indexOf(x)===i; });
+  }
+  if(u.unit && STAFF_REGIONS.indexOf(u.unit)>=0) return [u.unit];
+  if(u.fixedUnit && STAFF_REGIONS.indexOf(u.fixedUnit)>=0) return [u.fixedUnit];
+  return [];
+}
+function normalizePhone(input){
+  if(input==null) return null;
+  let s = String(input).trim().replace(/[\s\-()]/g,'');
+  if(!s) return null;
+  if(s.indexOf('+852')===0) s = s.slice(4);
+  else if(s.indexOf('852')===0 && s.length===11) s = s.slice(3);
+  if(!/^\d{8}$/.test(s)) return null;
+  return s;
+}
+function passwordFromPhone(phone){
+  const p = normalizePhone(phone);
+  return p ? p.slice(-4) : '';
+}
+function userNeedsPhoneBind(u){
+  if(!u) return false;
+  if(u.login==='admin' || u.id==='adm') return false;
+  // 主鍵必須是電話；login 雖像電話但 id 仍為 u1 時仍需補登／遷移
+  if(normalizePhone(u.id)) return false;
+  return true;
+}
+function actorSnapshot(user){
+  user = user || currentUser;
+  if(!user) return { userId:'', userName:'—', userLabel:'—' };
+  const phone = normalizePhone(user.phone) || normalizePhone(user.id) || '';
+  const name = user.name || user.login || '—';
+  const label = phone ? (name+'｜'+phone) : (user.login==='admin' ? name+'｜admin' : name+'｜'+(user.login||user.id||''));
+  return { userId: user.id || '', userName: name, userPhone: phone || null, userLabel: label };
+}
+function normalizeUser(u){
+  if(!u || typeof u!=='object') return u;
+  const out = Object.assign({}, u);
+  let units = userUnits(out);
+  out.units = units;
+  out.unit = units[0] || null;
+  const phone = normalizePhone(out.phone) || normalizePhone(out.id) || normalizePhone(out.login);
+  if(phone){ out.phone = phone; out.id = out.id || phone; }
+  if(!out.position){
+    if(out.login==='admin' || out.role==='system_admin') out.position = out.login==='admin' ? '系統管理員' : '經理';
+    else if(out.role==='manager') out.position = '主管';
+    else out.position = '員工';
+  }
+  if(out.position==='經理' || out.position==='主管') out.role = 'system_admin';
+  else if(out.position==='員工') out.role = 'personal';
+  if(typeof out.active==='undefined') out.active = true;
+  if(!out.dept) out.dept = units.join('、') || (out.position==='員工'?'—':'管理層');
+  out.needsPhoneBind = userNeedsPhoneBind(out);
+  return out;
+}
+/** 舊示範帳（會從名單移除；admin 與之後「創建員工」新增的帳保留） */
+const LEGACY_DEMO_LOGINS = ['manager','kt.staff','tm.staff','kwok','ann','coey','wh.staff'];
+const LEGACY_DEMO_IDS = ['mgr','kt','tm','kwok','ann','coey','wh'];
+function purgeLegacyDemoUsers(){
+  const before = (users||[]).length;
+  users = (users||[]).filter(function(u){
+    if(!u) return false;
+    if(u.login==='admin' || u.id==='adm') return true;
+    const login = String(u.login||'').toLowerCase();
+    if(LEGACY_DEMO_LOGINS.indexOf(login)>=0) return false;
+    if(LEGACY_DEMO_IDS.indexOf(u.id)>=0) return false;
+    return true;
+  });
+  return users.length !== before;
+}
+function ensureAdminUser(){
+  const before = JSON.stringify(users||[]);
+  users = (users||[]).map(normalizeUser).filter(Boolean);
+  purgeLegacyDemoUsers();
+  if(!users.some(function(u){ return u.login==='admin'; })){
+    users.unshift(Object.assign({}, SEED_ADMIN));
+  }
+  let maxN = 0;
+  users.forEach(function(u){
+    const m = String(u.id||'').match(/^u(\d+)$/);
+    if(m) maxN = Math.max(maxN, parseInt(m[1],10));
+  });
+  if(maxN >= userSeq) userSeq = maxN + 1;
+  return before !== JSON.stringify(users);
+}
+function loadUsersLocal(){
+  try{
+    const j = JSON.parse(localStorage.getItem(USERS_KEY)||'null');
+    if(Array.isArray(j) && j.length) users = j;
+  }catch(e){}
+  if(ensureAdminUser()) saveUsersLocal();
+}
+function saveUsersLocal(){
+  ensureAdminUser();
+  try{ localStorage.setItem(USERS_KEY, JSON.stringify(users)); }catch(e){}
+}
+function roleLabel(u){
+  if(!u) return '—';
+  const pos = u.position || (u.role==='system_admin'?'系統管理員':(u.role==='manager'?'主管':'員工'));
+  const units = userUnits(u);
+  if(units.length) return pos+'｜'+units.join('、');
+  return pos;
+}
+const userName = id => { const u = users.find(u=>u.id===id); return (u && u.name) || '—'; };
+const userDept = id => { const u=users.find(x=>x.id===id); return u?(u.dept||userUnits(u).join('、')||''):''; };
+
+/* 狀態定義 */
+const ST = {
+  notstart:'未開始', pending:'待處理', doing:'進行中', wait:'待確認',
+  fix:'需要修改', done:'已完成', skip:'直接下一階段', na:'不適用'
+};
+function stTag(s){
+  const map = {'未開始':'s-notstart','待處理':'s-pending','進行中':'s-doing','待確認':'s-wait',
+    '需要修改':'s-fix','已退回':'s-return','已完成':'s-done','直接下一階段':'s-skip','不適用':'s-na','逾期':'s-overdue',
+    '暫停':'s-pause','已取消':'s-cancel','已封存':'s-archive'};
+  return `<span class="tag ${map[s]||'s-notstart'}">${s}</span>`;
+}
+
+/* ═══════════ 項目資料 ═══════════ */
+function mkStage(name, handlerOrHandlers, status, opts={}){
+  const hs = Array.isArray(handlerOrHandlers)
+    ? handlerOrHandlers.filter(Boolean)
+    : (handlerOrHandlers ? [handlerOrHandlers] : []);
+  return {
+    name,
+    handler: hs[0]||null,
+    handlers: hs,
+    status,
+    deadline:opts.deadline||'',
+    completedAt:opts.completedAt||null,
+    content:opts.content||'',
+    files:opts.files||[],
+    skipReason:opts.skipReason||'',
+    returnReason:opts.returnReason||''
+  };
+}
+let projects = [];
+let projSeq = 1;
+let repProjSeq = 1;
+let moduleLogs = { daily: [], production: [], replenishment: [], push: [] };
+const SAMPLE_PROJECT_IDS = ['P001','P002','P003'];
+const SAMPLE_PROJECT_CODES = ['WS-999','WS-888','WS-777'];
+const SAMPLE_PROJECT_NAMES = ['成人日本光皮長短','1mm兒童抓毛上衣','兒童防曬套裝'];
+const SAMPLE_DAILY_TITLES = ['整理今日到貨箱單','更新門市陳列清單','逾期示範：昨夜未完成點貨'];
+const SAMPLE_TPL_TITLES = ['門市巡檢','倉存點算'];
+const SAMPLE_LOG_RE = /WS-999|WS-888|WS-777|逾期示範|門市巡檢|倉存點算|整理今日到貨|更新門市陳列|成人日本光皮|兒童抓毛上衣|兒童防曬套裝|每日結算/;
+function isSampleDailyWork(w){
+  if(!w) return true;
+  if(SAMPLE_DAILY_TITLES.indexOf(w.title)>=0) return true;
+  if(String(w.title||'').indexOf('逾期示範')>=0) return true;
+  if(w.kind==='settlement' && /每日結算$/.test(String(w.title||''))) return true;
+  if(SAMPLE_TPL_TITLES.indexOf(w.title)>=0) return true;
+  return false;
+}
+function isSampleDailyTemplate(t){
+  return !t || SAMPLE_TPL_TITLES.indexOf(t.title)>=0;
+}
+function purgeSampleProjects(){
+  const before = projects.length;
+  projects = (projects||[]).filter(function(p){
+    if(!p) return false;
+    if(SAMPLE_PROJECT_IDS.indexOf(p.id)>=0) return false;
+    if(SAMPLE_PROJECT_CODES.indexOf(p.code)>=0) return false;
+    if(SAMPLE_PROJECT_NAMES.indexOf(p.name)>=0) return false;
+    return true;
+  });
+  let maxP = 0, maxR = 0;
+  projects.forEach(function(p){
+    const mp = String(p.id||'').match(/^P(\d+)$/i);
+    const mr = String(p.id||'').match(/^R(\d+)$/i);
+    if(mp) maxP = Math.max(maxP, parseInt(mp[1],10));
+    if(mr) maxR = Math.max(maxR, parseInt(mr[1],10));
+  });
+  if(maxP >= projSeq) projSeq = maxP + 1;
+  if(maxR >= repProjSeq) repProjSeq = maxR + 1;
+  if(!projects.length && projSeq < 1) projSeq = 1;
+  return projects.length !== before;
+}
+function purgeSampleModuleLogs(){
+  let changed = false;
+  ['daily','production','replenishment'].forEach(function(mod){
+    const arr = moduleLogs[mod];
+    if(!Array.isArray(arr)) return;
+    const next = arr.filter(function(l){
+      const blob = String((l&&l.detail)||'') + '|' + String((l&&l.action)||'');
+      return !SAMPLE_LOG_RE.test(blob);
+    });
+    if(next.length !== arr.length){ moduleLogs[mod] = next; changed = true; }
+  });
+  return changed;
+}
+function purgeSampleDailyState(s){
+  s = s || loadDailyState();
+  const wBefore = (s.works||[]).length;
+  const tBefore = (s.recurringTemplates||[]).length;
+  const logBefore = (s.opLogs||[]).length;
+  const removedTplIds = {};
+  (s.recurringTemplates||[]).forEach(function(t){
+    if(isSampleDailyTemplate(t)) removedTplIds[t.id]=true;
+  });
+  s.recurringTemplates = (s.recurringTemplates||[]).filter(function(t){ return !isSampleDailyTemplate(t); });
+  s.works = (s.works||[]).filter(function(w){
+    if(isSampleDailyWork(w)) return false;
+    if(w.templateId && removedTplIds[w.templateId]) return false;
+    return true;
+  });
+  s.opLogs = (s.opLogs||[]).filter(function(l){
+    const blob = String((l&&l.detail)||'') + '|' + String((l&&l.action)||'');
+    return !SAMPLE_LOG_RE.test(blob);
+  });
+  return (s.works.length!==wBefore) || (s.recurringTemplates.length!==tBefore) || (s.opLogs.length!==logBefore);
+}
+let notifications = [];
+let notifSeq = 1;
+const NOTIF_KEY = 'store-web-notifications-v1';
+const NOTIF_CATEGORIES = ['補貨','價錢更新','緊急通知','一般通知'];
+const NOTIF_PRIORITIES = ['一般','重要','緊急'];
+let mailboxOpen = false;
+let mailboxTab = 'inbox'; // inbox | sent
+let mailboxDetailId = null;
+let mailboxDetailTab = 'inbox'; // which tab opened the detail
+let pushDraftFiles = []; // {name, dataUrl} draft attachments for compose
+
+let currentUser = null, currentModule = 'production', currentView = 'home', currentProject = null, currentTab = 'overview', commentFilter = '全部';
+let listType = 'dev', fCat='全部', fStatus='全部', fKw='';
+
+/* ═══════════ Cloud API（MongoDB via Node） ═══════════ */
+let apiEnabled = false;
+let apiReady = false;
+let apiBase = (typeof window !== 'undefined' && window.STORE_API_BASE) ? String(window.STORE_API_BASE).replace(/\/$/, '') : '';
+let authToken = '';
+let projectsSaveTimer = null;
+let dailySaveTimer = null;
+function loadAuthToken(){
+  try{ authToken = localStorage.getItem(AUTH_TOKEN_KEY) || ''; }catch(e){ authToken = ''; }
+  return authToken;
+}
+function saveAuthToken(token){
+  authToken = token || '';
+  try{
+    if(authToken) localStorage.setItem(AUTH_TOKEN_KEY, authToken);
+    else localStorage.removeItem(AUTH_TOKEN_KEY);
+  }catch(e){}
+}
+function clearAuthToken(){ saveAuthToken(''); }
+function apiUrl(path){ return apiBase + path; }
+function withFileToken(url){
+  if(!url || !authToken) return url;
+  if(String(url).indexOf('/api/files/')<0) return url;
+  const sep = String(url).indexOf('?')>=0 ? '&' : '?';
+  return String(url)+sep+'access_token='+encodeURIComponent(authToken);
+}
+async function apiFetch(path, opts){
+  opts = opts || {};
+  const headers = Object.assign({}, opts.headers || {});
+  if(authToken && !headers.Authorization) headers.Authorization = 'Bearer '+authToken;
+  const r = await fetch(apiUrl(path), Object.assign({}, opts, { headers: headers, credentials: 'include' }));
+  if(r.status===401){
+    clearAuthToken();
+    if(currentUser){
+      currentUser = null;
+      try{
+        document.getElementById('app').classList.add('hidden');
+        document.getElementById('page-login').classList.remove('hidden');
+      }catch(e){}
+    }
+  }
+  if(!r.ok){
+    let msg = r.statusText;
+    try{ const j = await r.json(); msg = j.error || msg; }catch(_){ try{ msg = await r.text(); }catch(__){} }
+    const err = new Error(msg || ('HTTP '+r.status));
+    err.status = r.status;
+    throw err;
+  }
+  const ct = r.headers.get('content-type')||'';
+  if(ct.includes('application/json')){
+    const text = await r.text();
+    if(!text || !String(text).trim()) return {};
+    try{ return JSON.parse(text); }
+    catch(e){ throw new Error('Invalid JSON from '+path); }
+  }
+  return r;
+}
+function slimFileRef(f){
+  if(!f || typeof f !== 'object') return f;
+  if(f.driveFileId){
+    return { name:f.name, by:f.by, time:f.time, ver:f.ver, latest:f.latest, driveFileId:f.driveFileId, mimeType:f.mimeType };
+  }
+  if(f.dataUrl && String(f.dataUrl).length > 250000){
+    return { name:f.name, by:f.by, time:f.time, ver:f.ver, latest:f.latest, omitted:true };
+  }
+  return f;
+}
+function slimProjectsPayload(){
+  // 開發 → projects collection；補貨 → replenishment_projects；moduleLogs → module_logs
+  const productionProjects = projects.filter(function(p){ return p && p.type!=='rep'; });
+  const replenishmentProjects = projects.filter(function(p){ return p && p.type==='rep'; });
+  const cloned = JSON.parse(JSON.stringify({
+    productionProjects,
+    replenishmentProjects,
+    projects: productionProjects.concat(replenishmentProjects),
+    projSeq,
+    repProjSeq,
+    moduleLogs
+  }));
+  function slimList(list){
+    (list||[]).forEach(function(p){
+      if(p.coverFileId && p.coverUrl && String(p.coverUrl).startsWith('data:')) p.coverUrl = apiUrl('/api/files/'+p.coverFileId);
+      (p.files||[]).forEach(function(f,i){ p.files[i] = slimFileRef(f); });
+      (p.stages||[]).forEach(function(s){
+        if(Array.isArray(s.files)) s.files = s.files.map(slimFileRef);
+      });
+      (p.comments||[]).forEach(function(c){
+        if(c.file && typeof c.file === 'object') c.file = slimFileRef(c.file);
+      });
+    });
+  }
+  slimList(cloned.productionProjects);
+  slimList(cloned.replenishmentProjects);
+  slimList(cloned.projects);
+  return cloned;
+}
+function slimDailyPayload(state){
+  const cloned = JSON.parse(JSON.stringify(state));
+  (cloned.works||[]).forEach(w=>{
+    if(Array.isArray(w.attachments)) w.attachments = w.attachments.map(slimFileRef);
+  });
+  return cloned;
+}
+let cloudSyncMessage = '';
+function refreshCloudSyncStatus(){
+  const el = document.getElementById('cloud-sync-status');
+  if(!el) return;
+  if(!apiEnabled){
+    el.textContent = '⚠ 本機模式';
+    el.style.color = '#ffcc80';
+    el.title = '未連接 MongoDB，資料只在此瀏覽器，其他裝置看不到。';
+    return;
+  }
+  if(cloudSyncMessage){
+    el.textContent = '⚠ 同步失敗';
+    el.style.color = '#ffcdd2';
+    el.title = cloudSyncMessage;
+    return;
+  }
+  el.textContent = '☁ 雲端';
+  el.style.color = '#c8e6c9';
+  el.title = '資料保存在 MongoDB 雲端後端';
+}
+function noteCloudError(e){
+  cloudSyncMessage = String((e && e.message) || e || '同步失敗');
+  console.warn('cloud sync', cloudSyncMessage);
+  refreshCloudSyncStatus();
+}
+function noteCloudOk(){
+  cloudSyncMessage = '';
+  refreshCloudSyncStatus();
+}
+function requireCloud(actionLabel){
+  if(apiEnabled) return true;
+  alert2((actionLabel||'此操作')+'需要連接 MongoDB 雲端。請確認 Railway 已設定 MONGODB_URI，並重新整理頁面。');
+  return false;
+}
+function persistProjects(){
+  if(!apiEnabled) return;
+  clearTimeout(projectsSaveTimer);
+  projectsSaveTimer = setTimeout(function(){
+    persistProjectsNow().catch(noteCloudError);
+  }, 350);
+}
+async function persistProjectsNow(){
+  if(!apiEnabled) return;
+  await apiFetch('/api/projects', {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(slimProjectsPayload())
+  });
+  noteCloudOk();
+}
+async function persistDailyNow(){
+  if(!apiEnabled || !dailyStateCache) return;
+  var seqAtStart = typeof dailyPersistSeq === 'number' ? dailyPersistSeq : 0;
+  await apiFetch('/api/daily', {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(slimDailyPayload(dailyStateCache))
+  });
+  // 僅在沒有更新的本地變更時清 dirty，避免舊 PUT 回覆把新變更標成已同步
+  if(seqAtStart === dailyPersistSeq){
+    try{ localStorage.setItem(DAILY_DIRTY_KEY, '0'); }catch(e){}
+  }
+  noteCloudOk();
+}
+function scheduleDailyCloudSave(){
+  if(!apiEnabled || !dailyStateCache) return;
+  clearTimeout(dailySaveTimer);
+  dailySaveTimer = setTimeout(function(){
+    persistDailyNow().catch(noteCloudError);
+  }, 350);
+}
+async function flushCloudSaves(){
+  if(!apiEnabled) return;
+  clearTimeout(projectsSaveTimer);
+  clearTimeout(dailySaveTimer);
+  projectsSaveTimer = null;
+  dailySaveTimer = null;
+  // 專案與每日工作分開寫入：任一方失敗不得阻擋另一方，否則會出現
+  //「畫面上有任務／刷新後消失」（每日 PUT 被專案錯誤短路）。
+  let lastErr = null;
+  try{
+    await persistProjectsNow();
+  }catch(e){
+    lastErr = e;
+  }
+  try{
+    await persistDailyNow();
+  }catch(e){
+    lastErr = e;
+  }
+  if(lastErr){
+    noteCloudError(lastErr);
+    throw lastErr;
+  }
+  noteCloudOk();
+}
+/**
+ * 雲端 users collection 為唯一正式來源（GET 不含密碼）。
+ * 回傳本機有、雲端沒有的非 admin 賬號，供登入後以 POST /api/users 救援。
+ */
+function applyUsersFromCloud(cloudUsers){
+  const localCopy = (users||[]).map(normalizeUser).filter(Boolean);
+  const orphans = [];
+  if(Array.isArray(cloudUsers) && cloudUsers.length){
+    users = cloudUsers.map(normalizeUser).filter(Boolean);
+    ensureAdminUser();
+    const have = {};
+    users.forEach(function(u){ have[String(u.login||'').toLowerCase()] = true; });
+    localCopy.forEach(function(u){
+      const key = String(u.login||'').toLowerCase();
+      if(!key || key==='admin' || have[key]) return;
+      if(!u.pw) return; // 無密碼無法救援上傳
+      orphans.push(u);
+    });
+  } else {
+    users = localCopy.length ? localCopy : [Object.assign({}, SEED_ADMIN)];
+    ensureAdminUser();
+  }
+  ensureAdminUser();
+  saveUsersLocal();
+  return orphans;
+}
+async function rescueOrphanUsers(orphans){
+  if(!apiEnabled || !authToken || !orphans || !orphans.length) return;
+  if(!canCreateEmployee()) return;
+  for(let i=0;i<orphans.length;i++){
+    const u = orphans[i];
+    try{
+      await apiFetch('/api/users', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          id: u.id, login: u.login, pw: u.pw, name: u.name,
+          position: u.position, role: u.role, units: u.units||[], unit: u.unit||null,
+          dept: u.dept, active: u.active!==false
+        })
+      });
+    }catch(e){ console.warn('rescue user', u.login, e); }
+  }
+  try{
+    const ju = await apiFetch('/api/users');
+    if(Array.isArray(ju.users)){
+      users = ju.users.map(normalizeUser).filter(Boolean);
+      ensureAdminUser();
+      saveUsersLocal();
+    }
+  }catch(e){}
+}
+async function loadCloudAppData(){
+  // 先讀本機快取：若上次雲端寫入失敗（dirty），刷新時不可被舊雲端整包蓋掉。
+  let localDaily = null;
+  let localDirty = false;
+  try{
+    const raw = localStorage.getItem(DAILY_KEY);
+    if(raw) localDaily = dailyNormalizeState(JSON.parse(raw));
+    localDirty = localStorage.getItem(DAILY_DIRTY_KEY) === '1';
+  }catch(e){}
+
+  const daily = await apiFetch('/api/daily');
+  const cloud = dailyNormalizeState(daily);
+  const shouldMerge = !!(localDirty && localDaily);
+
+  if(shouldMerge){
+    dailyStateCache = mergeDailyStates(cloud, localDaily);
+  } else {
+    dailyStateCache = cloud;
+  }
+
+  const dailyChanged = purgeSampleDailyState(dailyStateCache);
+  try{ localStorage.setItem(DAILY_KEY, JSON.stringify(dailyStateCache)); }catch(e){}
+  if(dailyChanged || shouldMerge){
+    try{ await persistDailyNow(); }catch(e){ console.warn('sync daily after load', e); }
+  } else {
+    try{ localStorage.setItem(DAILY_DIRTY_KEY, '0'); }catch(e){}
+  }
+
+  const ps = await apiFetch('/api/projects');
+  if(Array.isArray(ps.productionProjects) || Array.isArray(ps.replenishmentProjects)){
+    projects = [].concat(ps.productionProjects||[], ps.replenishmentProjects||[]);
+  } else if(Array.isArray(ps.projects)){
+    projects = ps.projects;
+  } else {
+    projects = [];
+  }
+  // 正規化階段經手人：舊 handler 單值 → handlers[]
+  projects.forEach(function(p){
+    if(!p || !Array.isArray(p.stages)) return;
+    p.stages.forEach(function(s){ setStageHandlers(s, stageHandlers(s)); });
+  });
+  // 補齊建立時間並依新→舊排序（列表／首頁共用）
+  projects.forEach(function(p){
+    if(!p || Number(p.createdAtMs)>0) return;
+    const ms = projCreatedMs(p);
+    if(ms) p.createdAtMs = ms;
+  });
+  projects = sortProjectsNewestFirst(projects);
+  if(typeof ps.projSeq === 'number') projSeq = ps.projSeq;
+  else if(!projects.filter(function(p){ return p.type!=='rep'; }).length) projSeq = 1;
+  if(typeof ps.repProjSeq === 'number') repProjSeq = ps.repProjSeq;
+  else if(!projects.filter(function(p){ return p.type==='rep'; }).length) repProjSeq = 1;
+  if(ps.moduleLogs && typeof ps.moduleLogs === 'object'){
+    moduleLogs = Object.assign({ daily:[], production:[], replenishment:[], push:[] }, ps.moduleLogs);
+  }
+  const orphans = applyUsersFromCloud(ps.users);
+  let projectsDirty = false;
+  if(purgeSampleProjects()) projectsDirty = true;
+  if(purgeSampleModuleLogs()) projectsDirty = true;
+  if(projectsDirty) await persistProjectsNow();
+  await loadNotifications();
+  if(orphans && orphans.length) await rescueOrphanUsers(orphans);
+}
+async function cloudUploadFile(file){
+  if(!apiEnabled){
+    return { name:file.name, dataUrl: await readFileAsDataUrl(file) };
+  }
+  const fd = new FormData();
+  fd.append('file', file);
+  const j = await apiFetch('/api/files', { method:'POST', body: fd });
+  return {
+    name: j.name || file.name,
+    driveFileId: j.id,
+    mimeType: j.mimeType,
+    dataUrl: withFileToken(apiUrl('/api/files/'+j.id))
+  };
+}
+async function cloudUploadDataUrl(name, dataUrl){
+  if(!apiEnabled) return { name:name, dataUrl:dataUrl };
+  const blob = await (await fetch(dataUrl)).blob();
+  const file = new File([blob], name || 'file.bin', { type: blob.type || 'application/octet-stream' });
+  return cloudUploadFile(file);
+}
+function fileHref(f){
+  if(!f) return '#';
+  if(typeof f === 'string') return '#';
+  if(f.driveFileId) return withFileToken(apiUrl('/api/files/'+f.driveFileId));
+  return f.dataUrl || '#';
+}
+async function initCloud(){
+  apiReady = false;
+  loadAuthToken();
+  try{
+    const health = await apiFetch('/api/health');
+    apiEnabled = !!(health.mongoConfigured || health.configured || health.driveConfigured);
+    if(!apiEnabled){
+      console.warn('API up but MongoDB not configured; using local mode.');
+      loadUsersLocal();
+      apiReady = true;
+      return;
+    }
+    // 未登入時不打受保護 API；有 token 則嘗試恢復工作階段
+    if(authToken){
+      try{
+        const me = await apiFetch('/api/auth/me');
+        if(me && me.user){
+          await loadCloudAppData();
+          enterAppAs(normalizeUser(me.user), { silent:true });
+        } else {
+          clearAuthToken();
+          loadUsersLocal();
+        }
+      }catch(e){
+        clearAuthToken();
+        loadUsersLocal();
+      }
+    } else {
+      loadUsersLocal();
+    }
+  }catch(e){
+    console.warn('Cloud init failed, fallback to local mode:', e);
+    apiEnabled = false;
+    loadUsersLocal();
+    loadNotificationsLocal();
+  }
+  apiReady = true;
+}
+
+/* ═══════════ 信箱／推送通知 ═══════════ */
+function loadNotificationsLocal(){
+  try{
+    const raw = localStorage.getItem(NOTIF_KEY);
+    if(!raw){ notifications = []; notifSeq = 1; return; }
+    const j = JSON.parse(raw);
+    notifications = Array.isArray(j.notifications) ? j.notifications : [];
+    notifSeq = typeof j.notifSeq === 'number' ? j.notifSeq : 1;
+  }catch(e){
+    notifications = [];
+    notifSeq = 1;
+  }
+}
+function saveNotificationsLocal(){
+  try{
+    const slim = notifications.map(n=>{
+      const copy = Object.assign({}, n);
+      if(Array.isArray(copy.attachments)) copy.attachments = copy.attachments.map(slimFileRef);
+      return copy;
+    });
+    localStorage.setItem(NOTIF_KEY, JSON.stringify({ notifications: slim, notifSeq }));
+  }catch(e){}
+}
+async function loadNotifications(){
+  if(!apiEnabled){
+    loadNotificationsLocal();
+    refreshMailboxUi();
+    return;
+  }
+  try{
+    const ns = await apiFetch('/api/notifications');
+    notifications = Array.isArray(ns.notifications) ? ns.notifications : [];
+    notifSeq = typeof ns.notifSeq === 'number' ? ns.notifSeq : 1;
+  }catch(e){
+    console.warn('load notifications', e);
+  }
+  refreshMailboxUi();
+}
+function notifPriorityRank(p){
+  if(p==='緊急') return 0;
+  if(p==='重要') return 1;
+  return 2;
+}
+function isNotifUnreadForMe(n){
+  if(!currentUser || !n) return false;
+  const rec = (n.recipients||[]).find(r => r.userId === currentUser.id);
+  return !!(rec && !rec.read);
+}
+function notifReadStats(n){
+  const recs = Array.isArray(n && n.recipients) ? n.recipients : [];
+  const total = recs.length;
+  const read = recs.filter(function(r){ return !!r.read; }).length;
+  return { read: read, total: total };
+}
+function sortMailboxItems(list, preferUnread){
+  const arr = (list || []).slice();
+  arr.sort(function(a,b){
+    if(preferUnread){
+      const au = isNotifUnreadForMe(a) ? 0 : 1;
+      const bu = isNotifUnreadForMe(b) ? 0 : 1;
+      if(au!==bu) return au - bu;
+    }
+    const dt = (b.createdAtMs||0) - (a.createdAtMs||0);
+    if(dt!==0) return dt;
+    return notifPriorityRank(a.priority) - notifPriorityRank(b.priority);
+  });
+  return arr;
+}
+function myInboxItems(){
+  if(!currentUser) return [];
+  const uid = currentUser.id;
+  return sortMailboxItems(
+    notifications.filter(n => (n.recipients||[]).some(r => r.userId === uid)),
+    true
+  );
+}
+function mySentItems(){
+  if(!currentUser) return [];
+  const uid = String(currentUser.id);
+  return sortMailboxItems(
+    notifications.filter(n => String(n.fromUserId||'') === uid),
+    false
+  );
+}
+function myMailboxItems(){
+  return mailboxTab === 'sent' ? mySentItems() : myInboxItems();
+}
+function unreadCount(){
+  if(!currentUser) return 0;
+  const uid = currentUser.id;
+  return notifications.filter(n => (n.recipients||[]).some(r => r.userId===uid && !r.read)).length;
+}
+function setMailboxTab(tab){
+  mailboxTab = (tab === 'sent') ? 'sent' : 'inbox';
+  const inboxBtn = document.getElementById('mailbox-tab-inbox');
+  const sentBtn = document.getElementById('mailbox-tab-sent');
+  if(inboxBtn) inboxBtn.classList.toggle('active', mailboxTab==='inbox');
+  if(sentBtn) sentBtn.classList.toggle('active', mailboxTab==='sent');
+  refreshMailboxUi();
+}
+function notifPriorityTag(p){
+  const cls = p==='緊急' ? 'n-pri-urgent' : (p==='重要' ? 'n-pri-important' : 'n-pri-normal');
+  return `<span class="tag ${cls}">${p||'一般'}</span>`;
+}
+function findMailboxItem(id){
+  return (notifications||[]).find(function(n){ return n.id === id; }) || null;
+}
+function openMailboxDetail(id){
+  mailboxDetailId = id;
+  mailboxDetailTab = mailboxTab;
+  const bg = document.getElementById('mailbox-detail-bg');
+  if(bg) bg.classList.remove('hidden');
+  refreshMailboxDetailUi();
+}
+function closeMailboxDetail(){
+  mailboxDetailId = null;
+  const bg = document.getElementById('mailbox-detail-bg');
+  if(bg) bg.classList.add('hidden');
+}
+function mailboxReceiptHtml(item){
+  const recs = Array.isArray(item.recipients) ? item.recipients : [];
+  const stats = notifReadStats(item);
+  const readList = recs.filter(function(r){ return !!r.read; });
+  const unreadList = recs.filter(function(r){ return !r.read; });
+  function rowHtml(r, withTime){
+    const name = escHtml(userName(r.userId) || r.userId || '—');
+    if(withTime && r.readAt) return '<li>'+name+' <span style="color:#90a4ae">（'+escHtml(r.readAt)+'）</span></li>';
+    return '<li>'+name+'</li>';
+  }
+  return '<div class="md-receipts">'
+    +'<h4>已讀回條</h4>'
+    +'<div class="md-receipt-summary">已讀 '+stats.read+'／'+stats.total+'</div>'
+    +'<div style="font-size:12px;font-weight:bold;color:#2e7d32;margin-bottom:4px">已讀</div>'
+    +(readList.length ? '<ul>'+readList.map(function(r){ return rowHtml(r, true); }).join('')+'</ul>' : '<p class="md-receipt-empty">尚無已讀</p>')
+    +'<div style="font-size:12px;font-weight:bold;color:#ef6c00;margin-bottom:4px">未讀</div>'
+    +(unreadList.length ? '<ul>'+unreadList.map(function(r){ return rowHtml(r, false); }).join('')+'</ul>' : '<p class="md-receipt-empty">全部已讀</p>')
+    +'</div>';
+}
+function refreshMailboxDetailUi(){
+  if(!mailboxDetailId) return;
+  const titleEl = document.getElementById('mailbox-detail-title');
+  const bodyEl = document.getElementById('mailbox-detail-body');
+  const actionsEl = document.getElementById('mailbox-detail-actions');
+  const readBtn = document.getElementById('mailbox-detail-read-btn');
+  if(!titleEl || !bodyEl || !actionsEl || !readBtn) return;
+  const item = findMailboxItem(mailboxDetailId);
+  if(!item){
+    titleEl.textContent = '通知';
+    bodyEl.innerHTML = '<p style="color:#888;font-size:13px">找不到此通知。</p>';
+    actionsEl.innerHTML = '';
+    readBtn.classList.add('hidden');
+    return;
+  }
+  const isSentView = mailboxDetailTab === 'sent';
+  const uid = currentUser && currentUser.id;
+  const rec = uid ? (item.recipients||[]).find(function(r){ return r.userId === uid; }) : null;
+  const isRead = !!(rec && rec.read);
+  titleEl.textContent = item.title || (item.content||'').slice(0,40) || '（無標題）';
+  const metaTo = isSentView
+    ? '｜收件 '+(Array.isArray(item.recipients)?item.recipients.length:0)+' 人'
+    : '｜來自 '+escHtml(item.fromName||'—');
+  bodyEl.innerHTML =
+    '<div class="md-meta">'+escHtml(item.category||'一般通知')+'｜'+notifPriorityTag(item.priority)
+    +'｜'+escHtml(item.createdAt||'')+metaTo+'</div>'
+    +'<div class="md-content">'+escHtml(item.content||'（無內容）')+'</div>'
+    +notifAttachHtml(item.attachments)
+    +(isSentView ? mailboxReceiptHtml(item) : '');
+  if(isSentView){
+    actionsEl.innerHTML = '';
+    readBtn.classList.add('hidden');
+  } else {
+    actionsEl.innerHTML = transferMailboxActionsHtml(item);
+    readBtn.classList.remove('hidden');
+    readBtn.className = 'md-read-toggle '+(isRead?'is-read':'is-unread');
+    readBtn.textContent = isRead ? '已讀' : '未讀';
+    readBtn.title = isRead ? '點擊改為未讀' : '點擊改為已讀';
+  }
+}
+async function toggleMailboxDetailRead(){
+  if(!mailboxDetailId || !currentUser) return;
+  if(mailboxDetailTab === 'sent') return;
+  const item = findMailboxItem(mailboxDetailId);
+  if(!item) return;
+  const rec = (item.recipients||[]).find(function(r){ return r.userId === currentUser.id; });
+  const isRead = !!(rec && rec.read);
+  await setNotifReadState(mailboxDetailId, !isRead);
+}
+function refreshMailboxUi(){
+  const badge = document.getElementById('mailbox-badge');
+  const list = document.getElementById('mailbox-list');
+  const inboxBtn = document.getElementById('mailbox-tab-inbox');
+  const sentBtn = document.getElementById('mailbox-tab-sent');
+  if(inboxBtn) inboxBtn.classList.toggle('active', mailboxTab==='inbox');
+  if(sentBtn) sentBtn.classList.toggle('active', mailboxTab==='sent');
+  if(!badge || !list) return;
+  const n = unreadCount();
+  if(n > 0){
+    badge.textContent = n > 99 ? '99+' : String(n);
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+  if(!currentUser){
+    list.innerHTML = '<p class="mailbox-empty">登入後可查看通知。</p>';
+    closeMailboxDetail();
+    return;
+  }
+  const items = myMailboxItems();
+  const isSent = mailboxTab === 'sent';
+  if(!items.length){
+    list.innerHTML = '<p class="mailbox-empty">'+(isSent?'尚無發送記錄。':'暫無通知。')+'</p>';
+  } else {
+    const uid = currentUser.id;
+    list.innerHTML = items.map(item=>{
+      const title = item.title || (item.content||'').slice(0,40) || '（無標題）';
+      const nidAttr = escHtml(String(item.id));
+      let statusHtml;
+      let rowClass = 'mailbox-row';
+      if(isSent){
+        const st = notifReadStats(item);
+        statusHtml = '<span class="mb-status mb-receipt">已讀 '+st.read+'／'+st.total+'</span>';
+      } else {
+        const rec = (item.recipients||[]).find(r => r.userId === uid);
+        const isRead = !!(rec && rec.read);
+        if(!isRead) rowClass += ' unread';
+        statusHtml = '<span class="mb-status">'+(isRead?'已讀':'未讀')+'</span>';
+      }
+      const who = isSent
+        ? '<span class="mb-from">收件 '+(Array.isArray(item.recipients)?item.recipients.length:0)+' 人</span>'
+        : '<span class="mb-from">'+escHtml(item.fromName||'—')+'</span>';
+      return '<div class="'+rowClass+'" data-nid="'+nidAttr+'">'
+        +'<div class="mailbox-row-main"><div class="mailbox-row-line">'
+        +statusHtml
+        +notifPriorityTag(item.priority)
+        +'<span class="mb-date">'+escHtml(item.createdAt||'')+'</span>'
+        +'<span class="mb-title">'+escHtml(title)+'</span>'
+        +who
+        +'</div></div></div>';
+    }).join('');
+  }
+  if(mailboxDetailId) refreshMailboxDetailUi();
+}
+function bindMailboxDelegates(){
+  const list = document.getElementById('mailbox-list');
+  if(list && list.dataset.bound!=='1'){
+    list.dataset.bound = '1';
+    list.addEventListener('click', function(e){
+      const row = e.target && e.target.closest ? e.target.closest('.mailbox-row') : null;
+      if(!row || !list.contains(row)) return;
+      const id = row.getAttribute('data-nid');
+      if(id) openMailboxDetail(id);
+    });
+  }
+  const actions = document.getElementById('mailbox-detail-actions');
+  if(actions && actions.dataset.bound!=='1'){
+    actions.dataset.bound = '1';
+    actions.addEventListener('click', function(e){
+      const btn = e.target && e.target.closest ? e.target.closest('[data-tid][data-decision]') : null;
+      if(!btn || !actions.contains(btn)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      decideTransferFromMailbox(btn.getAttribute('data-tid'), btn.getAttribute('data-decision'));
+    });
+  }
+}
+function bindStaticChrome(){
+  if(document.body.dataset.chromeBound==='1') return;
+  document.body.dataset.chromeBound = '1';
+  const loginBtn = document.getElementById('btn-login');
+  if(loginBtn) loginBtn.addEventListener('click', function(){ doLogin(); });
+  const logoutBtn = document.getElementById('btn-logout');
+  if(logoutBtn) logoutBtn.addEventListener('click', function(){ logout(); });
+  const mailboxBtn = document.getElementById('mailbox-btn');
+  if(mailboxBtn) mailboxBtn.addEventListener('click', function(e){ toggleMailbox(e); });
+
+  document.addEventListener('click', function(e){
+    const t = e.target;
+    if(!t || !t.closest) return;
+    if(t.id==='mailbox-modal-bg'){ closeMailbox(); return; }
+    if(t.id==='mailbox-detail-bg'){ closeMailboxDetail(); return; }
+    const actionEl = t.closest('[data-action]');
+    const action = actionEl ? actionEl.getAttribute('data-action') : '';
+    if(action==='close-mailbox'){ closeMailbox(); return; }
+    if(action==='close-mailbox-detail'){ closeMailboxDetail(); return; }
+    if(action==='tab-inbox'){ setMailboxTab('inbox'); return; }
+    if(action==='tab-sent'){ setMailboxTab('sent'); return; }
+    if(action==='toggle-read'){ toggleMailboxDetailRead(); return; }
+    if(action==='dismiss-update'){ dismissAppUpdate(); return; }
+    if(action==='apply-update'){ applyAppUpdate(); return; }
+  });
+  bindMailboxDelegates();
+}
+function transferMailboxActionsHtml(item){
+  if(!item || item.actionType!=='transfer_decide' || !item.transferId) return '';
+  if(item.transferResolved){
+    return `<div class="mailbox-transfer-actions"><span style="font-size:12px;color:#78909c">此調動已處理${item.transferDecision?'：'+escHtml(item.transferDecision):''}</span></div>`;
+  }
+  const isOwn = currentUser && String(item.fromUserId||'')===String(currentUser.id);
+  if(isOwn){
+    return '<div class="mailbox-transfer-actions"><span style="font-size:12px;color:#78909c">你是申請人，不可自行審批。</span></div>';
+  }
+  const tidAttr = escHtml(String(item.transferId));
+  return '<div class="mailbox-transfer-actions">'
+    +'<button type="button" class="btn sm green" data-tid="'+tidAttr+'" data-decision="approve">通過</button>'
+    +'<button type="button" class="btn sm red" data-tid="'+tidAttr+'" data-decision="reject">拒絕</button>'
+    +'</div>';
+}
+async function decideTransferFromMailbox(transferId, decision){
+  if(!apiEnabled || !authToken){ alert2('需要連接雲端。'); return; }
+  let reason = '';
+  if(decision==='reject'){
+    reason = prompt('拒絕理由（可留空）：') || '';
+  }else if(!confirm('確認通過此調動？通過後會立即扣減調出店庫存並加入調入店。')){
+    return;
+  }
+  try{
+    await apiFetch('/api/transfer/orders/'+encodeURIComponent(transferId)+'/decide', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ decision, reason })
+    });
+    transferOrdersCache = null;
+    transferInvCache = null;
+    await loadNotifications();
+    if(currentView==='transferInventory' || currentView==='transferHistory'){
+      try{ await loadTransferInventory(true); }catch(_e){}
+      try{ await loadTransferOrders(true); }catch(_e){}
+      render();
+    }else{
+      refreshMailboxUi();
+    }
+    alert2(decision==='approve' ? '已通過，庫存已更新。' : '已拒絕此調動申請。');
+  }catch(e){
+    alert2('處理失敗：'+(e.message||e));
+    await loadNotifications().catch(function(){});
+    refreshMailboxUi();
+  }
+}
+function notifAttachHtml(files){
+  if(!Array.isArray(files) || !files.length) return '';
+  return `<div style="margin-top:4px;font-size:12px">${files.map(function(f,i){
+    const href = (typeof fileHref==='function') ? fileHref(f) : (f.dataUrl||'#');
+    const name = escHtml(f.name||('附件'+(i+1)));
+    return `<a class="file-link" href="${href}" download="${name.replace(/"/g,'')}" target="_blank" rel="noopener" style="display:inline-block;margin:2px 8px 2px 0">📎 ${name}</a>`;
+  }).join('')}</div>`;
+}
+function pushFileListHtml(){
+  if(!pushDraftFiles.length) return '<p style="font-size:12px;color:#888;margin:6px 0">尚未添加附件。</p>';
+  return `<div style="margin:8px 0">${pushDraftFiles.map((f,i)=>`
+    <div class="file-item" style="margin-bottom:6px">
+      <span>📎</span><span>${escHtml(f.name)}</span>
+      <button type="button" class="btn red sm" onclick="pushRemoveDraftFile(${i})">移除</button>
+    </div>`).join('')}</div>`;
+}
+function pushRenderFileList(){
+  const el = document.getElementById('push-file-list');
+  if(el) el.innerHTML = pushFileListHtml();
+}
+function pushRemoveDraftFile(i){
+  pushDraftFiles.splice(i,1);
+  pushRenderFileList();
+}
+async function pushOnFilesPick(input){
+  const files = input && input.files;
+  if(!files || !files.length) return;
+  try{
+    for(let i=0;i<files.length;i++){
+      const f = files[i];
+      pushDraftFiles.push({ name:f.name, dataUrl: await readFileAsDataUrl(f) });
+    }
+  }catch(e){ alert2('讀取附件失敗，請重試。'); }
+  input.value = '';
+  pushRenderFileList();
+}
+async function uploadPushAttachments(){
+  const out = [];
+  for(let i=0;i<pushDraftFiles.length;i++){
+    const f = pushDraftFiles[i];
+    if(apiEnabled){
+      const up = await cloudUploadDataUrl(f.name, f.dataUrl);
+      out.push({ name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType });
+    } else {
+      out.push({ name:f.name, dataUrl:f.dataUrl });
+    }
+  }
+  return out;
+}
+function escHtml(s){
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+async function toggleMailbox(ev){
+  if(ev) ev.stopPropagation();
+  if(mailboxOpen){ closeMailbox(); return; }
+  mailboxOpen = true;
+  bindMailboxDelegates();
+  const bg = document.getElementById('mailbox-modal-bg');
+  if(bg) bg.classList.remove('hidden');
+  await loadNotifications();
+  refreshMailboxUi();
+}
+function closeMailbox(){
+  mailboxOpen = false;
+  closeMailboxDetail();
+  const bg = document.getElementById('mailbox-modal-bg');
+  if(bg) bg.classList.add('hidden');
+}
+async function setNotifReadState(id, read){
+  if(!currentUser) return;
+  const uid = currentUser.id;
+  if(apiEnabled){
+    try{
+      const path = '/api/notifications/'+encodeURIComponent(id)+(read?'/read':'/unread');
+      await apiFetch(path, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ userId: uid })
+      });
+      await loadNotifications();
+      refreshMailboxUi();
+    }catch(e){
+      alert2((read?'標為已讀':'標為未讀')+'失敗：'+(e.message||e));
+    }
+    return;
+  }
+  const item = notifications.find(n => n.id === id);
+  if(!item) return;
+  const rec = (item.recipients||[]).find(r => r.userId === uid);
+  if(!rec) return;
+  rec.read = !!read;
+  rec.readAt = read ? nowStr() : null;
+  saveNotificationsLocal();
+  refreshMailboxUi();
+}
+async function markNotifRead(id){ return setNotifReadState(id, true); }
+async function markNotifUnread(id){ return setNotifReadState(id, false); }
+function pushRecipientCandidates(){
+  if(!currentUser) return [];
+  ensureAdminUser();
+  return users.filter(u => u.active!==false && u.id !== currentUser.id);
+}
+function togglePushRecipients(on){
+  document.querySelectorAll('#push-recipients input[type=checkbox]').forEach(cb=>{ cb.checked = !!on; });
+}
+function selectedPushRecipientIds(){
+  return Array.from(document.querySelectorAll('#push-recipients input[type=checkbox]:checked')).map(cb => cb.value);
+}
+function confirmSendPush(){
+  if(!requireCloud('推送通知')) return;
+  const category = (document.getElementById('push-cat')||{}).value || '一般通知';
+  const priority = (document.getElementById('push-pri')||{}).value || '一般';
+  const title = ((document.getElementById('push-title')||{}).value || '').trim();
+  const content = ((document.getElementById('push-content')||{}).value || '').trim();
+  const recipientIds = selectedPushRecipientIds();
+  if(!content && !pushDraftFiles.length){ alert2('請填寫訊息內容，或至少添加 1 個附件。'); return; }
+  if(!recipientIds.length){ alert2('請至少選擇一位收件人。'); return; }
+  showModal(`<h3>確認推送通知</h3>
+    <p style="font-size:14px;line-height:1.6">
+      類別：<b>${escHtml(category)}</b><br>
+      優先程度：<b>${escHtml(priority)}</b><br>
+      收件人數：<b>${recipientIds.length}</b><br>
+      附件：<b>${pushDraftFiles.length}</b> 個
+    </p>
+    <div class="actions">
+      <button class="btn sm gray" onclick="closeModal()">取消</button>
+      <button class="btn sm green" onclick="closeModal(); sendPushNotification()">確認送出</button>
+    </div>`);
+}
+async function sendPushNotification(){
+  if(!requireCloud('推送通知')) return;
+  const category = (document.getElementById('push-cat')||{}).value || '一般通知';
+  const priority = (document.getElementById('push-pri')||{}).value || '一般';
+  const title = ((document.getElementById('push-title')||{}).value || '').trim();
+  const content = ((document.getElementById('push-content')||{}).value || '').trim();
+  const recipientIds = selectedPushRecipientIds();
+  if((!content && !pushDraftFiles.length) || !recipientIds.length || !currentUser) return;
+  let attachments = [];
+  try{
+    attachments = await uploadPushAttachments();
+  }catch(e){
+    alert2('上傳附件失敗：'+(e.message||e));
+    return;
+  }
+  const payload = {
+    category, priority, title,
+    content: content || (attachments.length ? '（見附件）' : ''),
+    attachments,
+    fromUserId: currentUser.id,
+    fromName: currentUser.name,
+    recipientIds,
+    createdAt: nowStr(),
+    createdAtMs: Date.now()
+  };
+  try{
+    if(apiEnabled){
+      await apiFetch('/api/notifications', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      });
+      await loadNotifications();
+    } else {
+      const id = 'N' + String(notifSeq).padStart(3,'0');
+      notifSeq += 1;
+      notifications.unshift({
+        id,
+        category, priority, title,
+        content: payload.content,
+        attachments,
+        fromUserId: currentUser.id,
+        fromName: currentUser.name,
+        createdAt: payload.createdAt,
+        createdAtMs: payload.createdAtMs,
+        recipients: recipientIds.map(userId => ({ userId, read:false, readAt:null }))
+      });
+      saveNotificationsLocal();
+      refreshMailboxUi();
+    }
+    const titleEl = document.getElementById('push-title');
+    const contentEl = document.getElementById('push-content');
+    if(titleEl) titleEl.value = '';
+    if(contentEl) contentEl.value = '';
+    pushDraftFiles = [];
+    pushRenderFileList();
+    const fileInput = document.getElementById('push-files');
+    if(fileInput) fileInput.value = '';
+    togglePushRecipients(false);
+    const catEl = document.getElementById('push-cat');
+    const priEl = document.getElementById('push-pri');
+    if(catEl) catEl.value = '一般通知';
+    if(priEl) priEl.value = '一般';
+    alert2('已推送通知給 '+recipientIds.length+' 位用戶'+(attachments.length?'（含附件 '+attachments.length+' 個）':'')+'。');
+  }catch(e){
+    alert2('推送失敗：'+e.message);
+  }
+}
+function vPushNotify(){
+  const cands = pushRecipientCandidates();
+  const catOpts = NOTIF_CATEGORIES.map(c=>`<option value="${c}"${c==='一般通知'?' selected':''}>${c}</option>`).join('');
+  const priOpts = NOTIF_PRIORITIES.map(p=>`<option value="${p}"${p==='一般'?' selected':''}>${p}</option>`).join('');
+  const rows = cands.length
+    ? cands.map(u=>`<label class="rc-item"><input type="checkbox" value="${u.id}"> ${escHtml(u.name)} <span style="color:#888">（${escHtml(roleLabel(u))}）</span></label>`).join('')
+    : '<p style="color:#888;font-size:13px;margin:0">目前沒有可選收件人。</p>';
+  setTimeout(pushRenderFileList, 0);
+  return `<div class="card">
+    <h2>📢 推送通知</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:8px">填寫內容並選擇收件人，送出後對方可在「信箱通知」查看並標為已讀。訊息可附加檔案。</p>
+    <label>通知類別</label>
+    <select id="push-cat">${catOpts}</select>
+    <label>優先程度</label>
+    <select id="push-pri">${priOpts}</select>
+    <label>標題（選填）</label>
+    <input type="text" id="push-title" placeholder="簡短標題，可留空">
+    <label>訊息內容</label>
+    <textarea id="push-content" placeholder="輸入要推送的內容（可與附件擇一或同時使用）" style="min-height:110px"></textarea>
+    <label>附件</label>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0">
+      <button type="button" class="btn green sm" onclick="document.getElementById('push-files').click()">📎 添加附件</button>
+      <span style="font-size:12px;color:#888">可多選、可多次添加（圖片／PDF／Office 等）</span>
+    </div>
+    <input type="file" id="push-files" multiple onchange="pushOnFilesPick(this)" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">
+    <div id="push-file-list">${pushFileListHtml()}</div>
+    <label>收件人（可多選）</label>
+    <div class="recipient-box" id="push-recipients">
+      <div class="rc-tools">
+        <button type="button" class="btn sm gray" onclick="togglePushRecipients(true)">全選</button>
+        <button type="button" class="btn sm gray" onclick="togglePushRecipients(false)">取消全選</button>
+      </div>
+      ${rows}
+    </div>
+    <button type="button" class="btn green" onclick="confirmSendPush()">送出推送</button>
+  </div>`;
+}
+
+/* ═══════════ 貨品調動｜庫存查詢／調動記錄 ═══════════ */
+const TRANSFER_STORES_FE = ['觀塘','荔枝角','灣仔','屯門'];
+let transferInvCache = null; // { stores, categories, rows }
+let transferInvKw = '';
+let transferInvCat = '全部';
+let transferInvLoading = false;
+let transferOrdersCache = null; // array
+let transferOrdersLoading = false;
+let transferHistoryExpandedId = null;
+
+async function loadTransferInventory(force){
+  if(!apiEnabled || !authToken){
+    transferInvCache = { stores: TRANSFER_STORES_FE.slice(), categories: [], rows: [] };
+    return transferInvCache;
+  }
+  if(transferInvCache && !force) return transferInvCache;
+  transferInvLoading = true;
+  try{
+    const data = await apiFetch('/api/transfer/inventory');
+    transferInvCache = {
+      stores: Array.isArray(data.stores) && data.stores.length ? data.stores : TRANSFER_STORES_FE.slice(),
+      categories: Array.isArray(data.categories) ? data.categories : [],
+      rows: Array.isArray(data.rows) ? data.rows : []
+    };
+  }catch(e){
+    noteCloudError(e);
+    transferInvCache = transferInvCache || { stores: TRANSFER_STORES_FE.slice(), categories: [], rows: [] };
+    throw e;
+  }finally{
+    transferInvLoading = false;
+  }
+  return transferInvCache;
+}
+async function loadTransferOrders(force){
+  if(!apiEnabled || !authToken){
+    transferOrdersCache = [];
+    return transferOrdersCache;
+  }
+  if(transferOrdersCache && !force) return transferOrdersCache;
+  transferOrdersLoading = true;
+  try{
+    const data = await apiFetch('/api/transfer/orders');
+    transferOrdersCache = Array.isArray(data.orders) ? data.orders : [];
+  }catch(e){
+    noteCloudError(e);
+    transferOrdersCache = transferOrdersCache || [];
+    throw e;
+  }finally{
+    transferOrdersLoading = false;
+  }
+  return transferOrdersCache;
+}
+function setTransferInvKw(v){ transferInvKw = String(v||''); render(); }
+function setTransferInvCat(v){ transferInvCat = v||'全部'; render(); }
+function refreshTransferInventory(){
+  transferInvCache = null;
+  loadTransferInventory(true).then(function(){ render(); }).catch(function(e){
+    alert2('載入庫存失敗：'+(e.message||e));
+    render();
+  });
+}
+function refreshTransferOrders(){
+  transferOrdersCache = null;
+  loadTransferOrders(true).then(function(){ render(); }).catch(function(e){
+    alert2('載入調動記錄失敗：'+(e.message||e));
+    render();
+  });
+}
+function findTransferInvRow(productId, size){
+  const rows = (transferInvCache && transferInvCache.rows) || [];
+  return rows.find(function(r){ return r.productId===productId && r.size===size; }) || null;
+}
+function transferStoreOptions(selected, exclude){
+  return TRANSFER_STORES_FE.map(function(s){
+    if(exclude && s===exclude) return '';
+    return '<option value="'+escHtml(s)+'"'+(selected===s?' selected':'')+'>'+escHtml(s)+'</option>';
+  }).join('');
+}
+function openTransferApplyModal(productId, size){
+  if(!currentUser){ alert2('請先登入。'); return; }
+  const row = findTransferInvRow(productId, size);
+  if(!row){ alert2('找不到該庫存列，請重新整理後再試。'); return; }
+  const stockLine = TRANSFER_STORES_FE.map(function(s){
+    const q = (row.qty && row.qty[s]!=null) ? row.qty[s] : 0;
+    return escHtml(s)+' '+q;
+  }).join(' ｜ ');
+  const pid = JSON.stringify(String(productId));
+  const sz = JSON.stringify(String(size));
+  showModal(
+    '<h3>申請貨品調動</h3>'
+    +'<p style="font-size:13px;line-height:1.55;margin:0 0 10px">'
+    +'<b>'+escHtml(row.productId)+'</b> '+escHtml(row.name||'')
+    +'｜尺碼 <b>'+escHtml(row.size)+'</b>'
+    +(row.color?'｜'+escHtml(row.color):'')
+    +'<br><span style="color:#78909c;font-size:12px">現庫：'+stockLine+'</span></p>'
+    +'<label>發起點（調入店）</label>'
+    +'<select id="tf-to">'+transferStoreOptions('觀塘')+'</select>'
+    +'<label>調動點（調出店）</label>'
+    +'<select id="tf-from">'+transferStoreOptions('荔枝角')+'</select>'
+    +'<label>調動數量</label>'
+    +'<input type="number" id="tf-qty" min="1" step="1" value="1">'
+    +'<p style="font-size:12px;color:#666;margin:8px 0 0;line-height:1.5">送出後會通知調動點（調出店）相關人員信箱審批；通過後立即扣出／調入庫存。不可審批自己的申請。</p>'
+    +'<div class="actions">'
+    +'<button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'
+    +'<button type="button" class="btn green" onclick="submitTransferApply('+pid+','+sz+')">申請調動</button>'
+    +'</div>'
+  );
+}
+async function submitTransferApply(productId, size){
+  const toStore = (document.getElementById('tf-to')||{}).value;
+  const fromStore = (document.getElementById('tf-from')||{}).value;
+  const quantity = Number((document.getElementById('tf-qty')||{}).value);
+  if(!toStore || !fromStore){ alert2('請選擇發起點與調動點。'); return; }
+  if(toStore===fromStore){ alert2('發起點與調動點不可相同。'); return; }
+  if(!Number.isFinite(quantity) || quantity<1 || Math.floor(quantity)!==quantity){
+    alert2('調動數量須為正整數。'); return;
+  }
+  try{
+    const data = await apiFetch('/api/transfer/orders', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ productId, size, toStore, fromStore, quantity })
+    });
+    closeModal();
+    transferOrdersCache = null;
+    transferInvCache = null;
+    await loadNotifications().catch(function(){});
+    await loadTransferInventory(true).catch(function(){});
+    render();
+    const id = data && data.order && data.order.id ? data.order.id : '';
+    alert2('已送出調動申請'+(id?'（'+id+'）':'')+'，請等待調動點人員在信箱審批。');
+  }catch(e){
+    alert2('申請失敗：'+(e.message||e));
+  }
+}
+function transferStatusLabel(st){
+  if(st==='pending') return '<span class="tf-status-pending">待審批</span>';
+  if(st==='approved') return '<span class="tf-status-approved">已通過</span>';
+  if(st==='rejected') return '<span class="tf-status-rejected">已拒絕</span>';
+  return escHtml(st||'—');
+}
+function toggleTransferHistoryExpand(id){
+  transferHistoryExpandedId = (transferHistoryExpandedId===id) ? null : id;
+  render();
+}
+function vTransferInventory(){
+  if(!currentUser){
+    return '<div class="card"><h2>📦 庫存查詢</h2><p>請先登入。</p></div>';
+  }
+  if(!apiEnabled){
+    return '<div class="card"><h2>📦 庫存查詢</h2><p style="color:#c62828">需要連接 MongoDB 雲端才能查看庫存。</p></div>';
+  }
+  if(!transferInvCache && !transferInvLoading){
+    loadTransferInventory(true).then(function(){ render(); }).catch(function(){ render(); });
+    return '<div class="card"><h2>📦 庫存查詢</h2><p style="color:#888">正在載入庫存…</p></div>';
+  }
+  if(transferInvLoading && !transferInvCache){
+    return '<div class="card"><h2>📦 庫存查詢</h2><p style="color:#888">正在載入庫存…</p></div>';
+  }
+  const data = transferInvCache || { stores: TRANSFER_STORES_FE, categories: [], rows: [] };
+  const stores = data.stores;
+  const cats = data.categories || [];
+  const kw = transferInvKw.trim().toLowerCase();
+  let rows = data.rows || [];
+  if(transferInvCat && transferInvCat!=='全部'){
+    rows = rows.filter(function(r){ return r.category===transferInvCat; });
+  }
+  if(kw){
+    rows = rows.filter(function(r){
+      return String(r.productId||'').toLowerCase().indexOf(kw)>=0
+        || String(r.name||'').toLowerCase().indexOf(kw)>=0
+        || String(r.color||'').toLowerCase().indexOf(kw)>=0;
+    });
+  }
+  const lowCount = rows.filter(function(r){
+    return stores.some(function(s){ return r.low && r.low[s]; });
+  }).length;
+  const catOpts = ['全部'].concat(cats).map(function(c){
+    return '<option value="'+escHtml(c)+'"'+(transferInvCat===c?' selected':'')+'>'+escHtml(c)+'</option>';
+  }).join('');
+  const head = '<tr><th>產品編號</th><th>名稱</th><th>類別</th><th>顏色</th><th>尺碼</th><th>安全存量</th>'
+    + stores.map(function(s){ return '<th>'+escHtml(s)+'</th>'; }).join('')
+    + '<th>合計</th></tr>';
+  const body = !rows.length
+    ? '<tr><td colspan="'+(7+stores.length)+'" style="color:#888;text-align:center">沒有符合條件的庫存列。</td></tr>'
+    : rows.map(function(r){
+      const cells = stores.map(function(s){
+        const q = (r.qty && r.qty[s]!=null) ? r.qty[s] : 0;
+        const isLow = !!(r.low && r.low[s]);
+        return '<td class="'+(isLow?'inv-low':'inv-ok')+'">'+q+'</td>';
+      }).join('');
+      const pid = JSON.stringify(String(r.productId));
+      const sz = JSON.stringify(String(r.size));
+      return '<tr class="inv-row" title="點擊申請調動" onclick="openTransferApplyModal('+pid+','+sz+')">'
+        +'<td><b>'+escHtml(r.productId)+'</b></td>'
+        +'<td>'+escHtml(r.name)+'</td>'
+        +'<td>'+escHtml(r.category)+'</td>'
+        +'<td>'+escHtml(r.color||'—')+'</td>'
+        +'<td>'+escHtml(r.size)+'</td>'
+        +'<td>'+escHtml(String(r.safetyStock))+'</td>'
+        +cells
+        +'<td><b>'+(r.total!=null?r.total:0)+'</b></td>'
+        +'</tr>';
+    }).join('');
+  return '<div class="card">'
+    +'<h2>📦 庫存查詢</h2>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">四間港店（觀塘／荔枝角／灣仔／屯門）· 一列＝款號＋尺碼。'
+    +'點擊列可申請調動（發起點＝調入、調動點＝調出）。低於安全存量以<span class="inv-low">紅色</span>標示。篩選列中有 <b>'+lowCount+'</b> 列含預警。</p>'
+    +'<div class="filters">'
+    +'<input type="text" placeholder="搜尋編號／名稱／顏色" value="'+escHtml(transferInvKw)+'" onchange="setTransferInvKw(this.value)" onkeydown="if(event.key===\'Enter\'){setTransferInvKw(this.value)}">'
+    +'<select onchange="setTransferInvCat(this.value)">'+catOpts+'</select>'
+    +'<button type="button" class="btn gray sm" onclick="refreshTransferInventory()">重新整理</button>'
+    +'</div>'
+    +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 列</p>'
+    +'</div>'
+    +'<div class="card"><div class="table-wrap"><table>'+head+body+'</table></div></div>';
+}
+function vTransferHistory(){
+  if(!currentUser){
+    return '<div class="card"><h2>📋 調動記錄</h2><p>請先登入。</p></div>';
+  }
+  if(!apiEnabled){
+    return '<div class="card"><h2>📋 調動記錄</h2><p style="color:#c62828">需要連接 MongoDB 雲端。</p></div>';
+  }
+  if(!transferOrdersCache && !transferOrdersLoading){
+    loadTransferOrders(true).then(function(){ render(); }).catch(function(){ render(); });
+    return '<div class="card"><h2>📋 調動記錄</h2><p style="color:#888">正在載入…</p></div>';
+  }
+  if(transferOrdersLoading && !transferOrdersCache){
+    return '<div class="card"><h2>📋 調動記錄</h2><p style="color:#888">正在載入…</p></div>';
+  }
+  const orders = transferOrdersCache || [];
+  const head = '<tr><th>單號</th><th>時間</th><th>商品</th><th>尺碼</th><th>數量</th><th>發起點（調入）</th><th>調動點（調出）</th><th>申請人</th><th>狀態</th><th></th></tr>';
+  const body = !orders.length
+    ? '<tr><td colspan="10" style="color:#888;text-align:center">尚無調動記錄。</td></tr>'
+    : orders.map(function(o){
+      const expanded = transferHistoryExpandedId===o.id;
+      const tid = JSON.stringify(String(o.id));
+      const logs = Array.isArray(o.logs)?o.logs:[];
+      const logHtml = logs.length
+        ? '<ul class="tf-logs">'+logs.map(function(l){
+            return '<li><b>'+escHtml(l.time||'')+'</b> '+escHtml(l.userName||'')+'｜'+escHtml(l.action||'')
+              +(l.detail?' — '+escHtml(l.detail):'')+'</li>';
+          }).join('')+'</ul>'
+        : '<p style="font-size:12px;color:#888;margin:8px 0 0">無操作時間軸。</p>';
+      return '<tr>'
+        +'<td><b>'+escHtml(o.id)+'</b></td>'
+        +'<td style="white-space:nowrap;font-size:12px">'+escHtml(o.createdAt||'')+'</td>'
+        +'<td>'+escHtml(o.productId)+' '+escHtml(o.productName||'')+'</td>'
+        +'<td>'+escHtml(o.size)+'</td>'
+        +'<td>'+escHtml(String(o.quantity))+'</td>'
+        +'<td>'+escHtml(o.toStore)+'</td>'
+        +'<td>'+escHtml(o.fromStore)+'</td>'
+        +'<td>'+escHtml(o.createdByName||'')+'</td>'
+        +'<td>'+transferStatusLabel(o.status)+'</td>'
+        +'<td><button type="button" class="btn sm gray" onclick="toggleTransferHistoryExpand('+tid+')">'+(expanded?'收合':'時間軸')+'</button></td>'
+        +'</tr>'
+        +(expanded?'<tr><td colspan="10" style="background:#fafafa">'+logHtml+'</td></tr>':'');
+    }).join('');
+  return '<div class="card">'
+    +'<h2>📋 調動記錄</h2>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">所有已登入人員可查看全部調動單與操作時間軸（申請／通過／拒絕）。</p>'
+    +'<div class="filters"><button type="button" class="btn gray sm" onclick="refreshTransferOrders()">重新整理</button></div>'
+    +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+orders.length+' 筆</p>'
+    +'</div>'
+    +'<div class="card"><div class="table-wrap"><table>'+head+body+'</table></div></div>';
+}
+
+/* ═══════════ 個人設置（更改密碼） ═══════════ */
+function vPersonalSettings(){
+  if(!currentUser){
+    return '<div class="card"><h2>⚙️ 個人設置</h2><p>請先登入。</p></div>';
+  }
+  const u = currentUser;
+  const account = u.phone || u.login || u.id || '—';
+  const units = (typeof userUnits==='function' ? userUnits(u) : (u.units||[])).join('、') || '—';
+  return `<div class="card">
+    <h2>⚙️ 個人設置</h2>
+    <div class="table-wrap" style="margin-bottom:16px">
+      <table>
+        <tr><th style="width:120px">登入帳號</th><td>${escHtml(account)}</td></tr>
+        <tr><th>姓名</th><td>${escHtml(u.name||'—')}</td></tr>
+        <tr><th>職位</th><td>${escHtml(u.position||roleLabel(u))}</td></tr>
+        <tr><th>地區／單位</th><td>${escHtml(units)}</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <h2>🔑 更改密碼</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:10px">更改後請用新密碼登入。員工初始密碼多為電話末四位，建議首次登入後修改。</p>
+    <label>目前密碼</label>
+    <input type="password" id="set-pw-current" autocomplete="current-password" placeholder="輸入目前密碼">
+    <label>新密碼</label>
+    <input type="password" id="set-pw-new" autocomplete="new-password" placeholder="至少 4 個字元">
+    <label>確認新密碼</label>
+    <input type="password" id="set-pw-confirm" autocomplete="new-password" placeholder="再輸入一次新密碼">
+    <div class="actions" style="margin-top:12px">
+      <button type="button" class="btn" onclick="submitChangePassword()">儲存新密碼</button>
+    </div>
+  </div>`;
+}
+async function submitChangePassword(){
+  if(!currentUser){ alert2('請先登入。'); return; }
+  if(!requireCloud('更改密碼')) return;
+  const currentPw = ((document.getElementById('set-pw-current')||{}).value||'');
+  const newPw = ((document.getElementById('set-pw-new')||{}).value||'');
+  const confirmPw = ((document.getElementById('set-pw-confirm')||{}).value||'');
+  if(!currentPw){ alert2('請輸入目前密碼。'); return; }
+  if(newPw.length < 4){ alert2('新密碼至少 4 個字元。'); return; }
+  if(newPw !== confirmPw){ alert2('兩次輸入的新密碼不一致。'); return; }
+  if(newPw === currentPw){ alert2('新密碼不可與目前密碼相同。'); return; }
+  try{
+    await apiFetch('/api/auth/change-password', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ currentPw, newPw, confirmPw })
+    });
+    const local = users.find(function(x){ return x && x.id === currentUser.id; });
+    if(local){ local.pw = newPw; saveUsersLocal(); }
+    try{ addModuleLog('push','更改密碼', currentUser.login || currentUser.id || ''); }catch(e){}
+    ['set-pw-current','set-pw-new','set-pw-confirm'].forEach(function(id){
+      const el = document.getElementById(id); if(el) el.value = '';
+    });
+    alert2('密碼已更新。下次請用新密碼登入。');
+  }catch(e){
+    alert2('更改密碼失敗：'+(e.message||e));
+  }
+}
+
+/* ═══════════ 創建員工（電話 = 主鍵／登入） ═══════════ */
+function passwordFromLogin(login){
+  const phone = normalizePhone(login);
+  if(phone) return passwordFromPhone(phone);
+  const s = String(login||'');
+  return s.length>=4 ? s.slice(-4) : '';
+}
+function staffListRowsHtml(){
+  ensureAdminUser();
+  return users.map(function(u){
+    const sys = u.login==='admin' ? ' <span class="tag dept">系統帳</span>' : '';
+    const units = userUnits(u);
+    const phone = normalizePhone(u.phone) || normalizePhone(u.id) || '';
+    const account = phone || u.login || u.id || '';
+    const need = userNeedsPhoneBind(u);
+    let actions = '—';
+    if(u.login!=='admin' && canCreateEmployee()){
+      if(need){
+        actions = '<button class="btn sm" onclick=\'promptAssignPhone('+JSON.stringify(String(u.id))+')\'>補登電話</button>';
+      } else if(phone){
+        actions = '<button class="btn sm gray" onclick=\'promptChangePhone('+JSON.stringify(String(phone))+')\'>更換電話</button>';
+      }
+    }
+    return '<tr>'+
+      '<td>'+escHtml(account)+sys+(need?' <span class="tag s-fix">待補電話</span>':'')+'</td>'+
+      '<td>'+escHtml(u.name||'')+'</td>'+
+      '<td>'+escHtml(u.position||roleLabel(u))+'</td>'+
+      '<td>'+escHtml(units.length?units.join('、'):'—')+'</td>'+
+      '<td>'+(u.active===false?'停用':'啟用')+'</td>'+
+      '<td>'+actions+'</td>'+
+      '</tr>';
+  }).join('');
+}
+function vCreateStaff(){
+  if(!canCreateEmployee()){
+    return '<div class="card"><h2>👤 創建員工</h2><p>只有經理／主管／系統管理員可以創建員工。</p></div>';
+  }
+  const regionChecks = STAFF_REGIONS.map(function(r){
+    return '<label class="rc-item"><input type="checkbox" class="staff-region" value="'+r+'"> '+r+'</label>';
+  }).join('');
+  const pending = users.filter(userNeedsPhoneBind);
+  const pendingBox = pending.length
+    ? `<div class="card" style="border-left:4px solid #ef6c00">
+        <h3>⚠ 待補登電話（${pending.length}）</h3>
+        <p style="font-size:13px;color:#666;margin-bottom:8px">舊賬號必須補上香港 8 位電話後，才能以電話登入；補登後密碼改為電話末四位，並自動改寫項目經手人等關聯。</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>舊賬號</th><th>名稱</th><th>操作</th></tr></thead>
+          <tbody>${pending.map(function(u){
+            return '<tr><td>'+escHtml(u.login||u.id)+'</td><td>'+escHtml(u.name||'')+'</td>'+
+              '<td><button class="btn sm" onclick="promptAssignPhone(\''+String(u.id).replace(/'/g,'')+'\')">補登電話</button></td></tr>';
+          }).join('')}</tbody>
+        </table></div>
+      </div>`
+    : '';
+  return pendingBox+`<div class="card">
+    <h2>👤 創建員工</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:8px">以<strong>香港 8 位電話</strong>為登入 ID；初始密碼自動為電話最後四位。系統帳 admin 除外。</p>
+    <label>電話號碼（必填）</label>
+    <input type="tel" id="staff-phone" placeholder="例如 91234567" autocomplete="off" oninput="staffPreviewPw()">
+    <label>顯示名稱（選填）</label>
+    <input type="text" id="staff-name" placeholder="留空則使用電話號碼">
+    <label>初始密碼（自動＝電話末四位）</label>
+    <input type="text" id="staff-pw-preview" value="" readonly style="background:#f5f5f5;color:#555">
+    <p id="staff-pw-hint" style="font-size:12px;color:#888;margin:4px 0 0">輸入 8 位電話後顯示密碼。</p>
+    <label>職位</label>
+    <select id="staff-position">
+      <option value="經理">經理（等同管理員權限，可創建員工）</option>
+      <option value="主管">主管（第一版權限與經理相同）</option>
+      <option value="員工" selected>員工</option>
+    </select>
+    <label>隸屬地區（可多選；員工至少選 1 個，經理／主管可不選）</label>
+    <div class="recipient-box" style="max-height:180px">${regionChecks}</div>
+    <button type="button" class="btn green" onclick="submitCreateStaff()">建立員工</button>
+  </div>
+  <div class="card">
+    <h3>員工列表</h3>
+    <p style="font-size:12px;color:#888;margin-bottom:8px">電話即為 ID。可補登／更換電話（管理員）。</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>電話／賬號</th><th>顯示名稱</th><th>職位</th><th>地區</th><th>狀態</th><th>操作</th></tr></thead>
+      <tbody id="staff-list-body">${staffListRowsHtml()}</tbody>
+    </table></div>
+  </div>`;
+}
+function staffPreviewPw(){
+  const raw = ((document.getElementById('staff-phone')||document.getElementById('staff-login')||{}).value||'').trim();
+  const phone = normalizePhone(raw);
+  const pwEl = document.getElementById('staff-pw-preview');
+  const hint = document.getElementById('staff-pw-hint');
+  const pw = passwordFromPhone(phone);
+  if(pwEl) pwEl.value = pw || '';
+  if(hint){
+    if(raw && !phone){
+      hint.textContent = '請輸入有效的香港 8 位電話（可含 +852）。';
+      hint.style.color = '#c62828';
+    } else {
+      hint.textContent = pw ? ('初始密碼將為：'+pw) : '輸入電話後顯示末四位。';
+      hint.style.color = '#888';
+    }
+  }
+}
+function selectedStaffRegions(){
+  return Array.from(document.querySelectorAll('.staff-region:checked')).map(function(cb){ return cb.value; })
+    .filter(function(x,i,a){ return STAFF_REGIONS.indexOf(x)>=0 && a.indexOf(x)===i; });
+}
+function promptAssignPhone(userId){
+  const u = users.find(function(x){ return String(x.id)===String(userId); });
+  const prefill = u ? (normalizePhone(u.phone)||normalizePhone(u.login)||'') : '';
+  showModal(`<h3>補登／遷移電話主鍵</h3>
+    <p style="font-size:13px;color:#666">舊 ID：<b>${escHtml(userId)}</b>${u&&u.login?'（login：'+escHtml(u.login)+'）':''}。確認後主鍵改為電話，密碼改為末四位，並改寫經手人關聯。</p>
+    <label>香港 8 位電話</label>
+    <input type="tel" id="assign-phone-input" placeholder="91234567" value="${escHtml(prefill)}">
+    <div class="actions">
+      <button class="btn gray sm" onclick="closeModal()">取消</button>
+      <button class="btn sm" onclick='submitAssignPhone(${JSON.stringify(String(userId))})'>確認補登</button>
+    </div>`);
+}
+async function submitAssignPhone(userId){
+  const phone = ((document.getElementById('assign-phone-input')||{}).value||'').trim();
+  if(!normalizePhone(phone)){ alert2('請輸入有效的香港 8 位電話。'); return; }
+  try{
+    const res = await apiFetch('/api/users/'+encodeURIComponent(userId)+'/assign-phone', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phone })
+    });
+    await loadCloudAppData();
+    closeModal();
+    alert2('已補登電話 '+normalizePhone(phone)+'，密碼為末四位。');
+    if(currentView==='createStaff') render();
+    else if(res && res.user){ /* ok */ }
+  }catch(e){ alert2('補登失敗：'+(e.message||e)); }
+}
+function promptChangePhone(oldPhone){
+  showModal(`<h3>更換電話</h3>
+    <p style="font-size:13px;color:#666">目前電話：<b>${escHtml(oldPhone)}</b>。更換後密碼改為新電話末四位，並改寫全庫關聯。</p>
+    <label>新電話（8 位）</label>
+    <input type="tel" id="change-phone-input" placeholder="91234567">
+    <div class="actions">
+      <button class="btn gray sm" onclick="closeModal()">取消</button>
+      <button class="btn sm" onclick='submitChangePhone(${JSON.stringify(String(oldPhone))})'>確認更換</button>
+    </div>`);
+}
+async function submitChangePhone(oldPhone){
+  const phone = ((document.getElementById('change-phone-input')||{}).value||'').trim();
+  if(!normalizePhone(phone)){ alert2('請輸入有效的新電話。'); return; }
+  try{
+    await apiFetch('/api/users/'+encodeURIComponent(oldPhone)+'/change-phone', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phone })
+    });
+    await loadCloudAppData();
+    closeModal();
+    alert2('已更換為 '+normalizePhone(phone)+'。');
+    if(currentView==='createStaff') render();
+  }catch(e){ alert2('更換失敗：'+(e.message||e)); }
+}
+function showBindPhoneGate(){
+  showModal(`<h3>請綁定電話號碼</h3>
+    <p style="font-size:13px;color:#666;line-height:1.6">此為舊賬號，必須綁定香港 8 位電話後才能使用系統。綁定後請用<strong>電話 + 末四位密碼</strong>登入。</p>
+    <label>電話號碼</label>
+    <input type="tel" id="bind-phone-input" placeholder="91234567">
+    <div class="actions">
+      <button class="btn gray sm" onclick="logout()">登出</button>
+      <button class="btn sm" onclick="submitBindPhone()">確認綁定</button>
+    </div>`);
+}
+async function submitBindPhone(){
+  const phone = ((document.getElementById('bind-phone-input')||{}).value||'').trim();
+  if(!normalizePhone(phone)){ alert2('請輸入有效的香港 8 位電話。'); return; }
+  try{
+    const res = await apiFetch('/api/auth/bind-phone', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ phone })
+    });
+    if(res && res.user){
+      currentUser = normalizeUser(res.user);
+      await loadCloudAppData();
+      closeModal();
+      alert2('已綁定電話。之後請用電話 '+normalizePhone(phone)+' 與末四位密碼登入。');
+      enterAppAs(currentUser, { silent:true });
+    }
+  }catch(e){ alert2('綁定失敗：'+(e.message||e)); }
+}
+async function submitCreateStaff(){
+  if(!canCreateEmployee()){ alert2('沒有權限創建員工。'); return; }
+  if(!requireCloud('創建員工')) return;
+  if(!authToken){ alert2('請先登入後再創建員工。'); return; }
+  const phoneRaw = ((document.getElementById('staff-phone')||{}).value||'').trim();
+  const phone = normalizePhone(phoneRaw);
+  let name = ((document.getElementById('staff-name')||{}).value||'').trim();
+  const position = ((document.getElementById('staff-position')||{}).value||'員工').trim();
+  const regions = selectedStaffRegions();
+  if(!phone){ alert2('請輸入有效的香港 8 位電話號碼。'); return; }
+  if(['經理','主管','員工'].indexOf(position)<0){ alert2('請選擇有效職位。'); return; }
+  if(position==='員工' && !regions.length){ alert2('員工必須至少選擇 1 個隸屬地區。'); return; }
+  ensureAdminUser();
+  if(users.some(function(u){
+    const up = normalizePhone(u.phone) || normalizePhone(u.id) || normalizePhone(u.login);
+    return up === phone || String(u.login||'') === phone || String(u.id||'') === phone;
+  })){
+    alert2('此電話號碼已存在，請換一個。');
+    return;
+  }
+  if(!name) name = phone;
+  const pw = passwordFromPhone(phone);
+  const role = position==='員工' ? 'personal' : 'system_admin';
+  const payload = {
+    id: phone,
+    login: phone,
+    phone: phone,
+    pw: pw,
+    name: name,
+    position: position,
+    role: role,
+    units: regions,
+    unit: regions[0]||null,
+    dept: regions.join('、') || (position==='員工'?'—':'管理層'),
+    active: true
+  };
+  let syncNote = '';
+  let nu = normalizeUser(payload);
+  try{
+    const res = await apiFetch('/api/users', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    if(res && res.user) nu = normalizeUser(Object.assign({}, res.user, { pw: pw }));
+    users.push(nu);
+    saveUsersLocal();
+    syncNote = '<br><span style="color:#2e7d32">已寫入 users collection（電話為 ID），其他裝置可用此電話登入。</span>';
+    noteCloudOk();
+  }catch(e){
+    alert2('創建失敗：'+(e.message||e));
+    return;
+  }
+  addModuleLog('push','創建員工', position+'｜'+phone+'｜'+(regions.length?regions.join('、'):'無地區'));
+  try{ await persistProjectsNow(); }catch(e){ noteCloudError(e); }
+  const copyText = '電話：'+phone+'\n密碼：'+pw+'\n職位：'+position+'\n地區：'+(regions.length?regions.join('、'):'—');
+  showModal(`<h3>✅ 已建立員工</h3>
+    <p style="font-size:14px;line-height:1.7">
+      電話／登入：<b>${escHtml(phone)}</b><br>
+      初始密碼：<b>${escHtml(pw)}</b><br>
+      職位：<b>${escHtml(position)}</b><br>
+      地區：<b>${escHtml(regions.length?regions.join('、'):'—')}</b>
+      ${syncNote}
+    </p>
+    <div class="actions">
+      <button class="btn sm gray" onclick="closeModal()">關閉</button>
+      <button class="btn sm green" onclick='copyStaffCreds(${JSON.stringify(copyText)})'>複製賬號與密碼</button>
+    </div>`);
+  const phoneEl = document.getElementById('staff-phone');
+  const nameEl = document.getElementById('staff-name');
+  if(phoneEl) phoneEl.value = '';
+  if(nameEl) nameEl.value = '';
+  document.querySelectorAll('.staff-region').forEach(function(cb){ cb.checked=false; });
+  staffPreviewPw();
+  const body = document.getElementById('staff-list-body');
+  if(body) body.innerHTML = staffListRowsHtml();
+  else render();
+}
+async function copyStaffCreds(text){
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    alert2('已複製到剪貼簿。');
+  }catch(e){
+    alert2('複製失敗，請手動選取密碼。');
+  }
+}
+
+/* ═══════════ 工具 ═══════════ */
+function nowStr(){ const d=new Date(); return d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日 '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+function todayStr(){ const d=new Date(); return d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日'; }
+/** 解析「2026年8月6日」或帶時間的字串 → ms；失敗回 0 */
+function parseZhDateMs(s){
+  const m = String(s||'').match(/(\d{4})年(\d{1,2})月(\d{1,2})日(?:\s+(\d{1,2}):(\d{2}))?/);
+  if(!m) return 0;
+  const hh = m[4]!=null ? Number(m[4]) : 0;
+  const mm = m[5]!=null ? Number(m[5]) : 0;
+  return new Date(Number(m[1]), Number(m[2])-1, Number(m[3]), hh, mm).getTime();
+}
+function projIdSeq(p){
+  const m = String(p&&p.id||'').match(/^[PR](\d+)$/i);
+  return m ? parseInt(m[1], 10) : 0;
+}
+/** 項目建立時間（越新越大）；優先 createdAtMs，其次建立日誌／建立日期／編號序號 */
+function projCreatedMs(p){
+  if(!p) return 0;
+  if(Number(p.createdAtMs)>0) return Number(p.createdAtMs);
+  const createLog = Array.isArray(p.logs) ? p.logs.find(function(l){ return l && l.action==='建立項目'; }) : null;
+  if(createLog && createLog.time){
+    const t = parseZhDateMs(createLog.time);
+    if(t) return t;
+  }
+  const day = parseZhDateMs(p.created);
+  if(day) return day + projIdSeq(p);
+  return projIdSeq(p);
+}
+function compareProjectsNewestFirst(a, b){
+  const diff = projCreatedMs(b) - projCreatedMs(a);
+  if(diff) return diff;
+  const seq = projIdSeq(b) - projIdSeq(a);
+  if(seq) return seq;
+  return String(b&&b.id||'').localeCompare(String(a&&a.id||''));
+}
+function sortProjectsNewestFirst(list){
+  return (Array.isArray(list) ? list.slice() : []).sort(compareProjectsNewestFirst);
+}
+function moduleForProject(p){ return p && p.type==='rep' ? 'replenishment' : 'production'; }
+function addModuleLog(mod, action, detail){
+  if(!moduleLogs[mod]) moduleLogs[mod] = [];
+  const snap = actorSnapshot(currentUser);
+  moduleLogs[mod].unshift({
+    time: nowStr(),
+    user: snap.userLabel,
+    userId: snap.userId,
+    userName: snap.userName,
+    userPhone: snap.userPhone,
+    action,
+    detail: detail || ''
+  });
+  persistProjects();
+}
+/** @deprecated use addModuleLog — kept for call sites; scopes to currentModule */
+function addSysLog(action, detail){ addModuleLog(currentModule || 'daily', action, detail); }
+function addProjLog(p, action, detail){
+  const snap = actorSnapshot(currentUser);
+  p.logs.unshift({
+    time:nowStr(),
+    user: snap.userLabel,
+    userId: snap.userId,
+    userName: snap.userName,
+    userPhone: snap.userPhone,
+    action,
+    detail
+  });
+  addModuleLog(moduleForProject(p), action, p.code+'｜'+detail);
+}
+
+function stageDone(s){ return s.status==='已完成' || s.status==='直接下一階段' || s.status==='不適用'; }
+function projProgress(p){
+  const applicable = p.stages.filter(s=>s.status!=='不適用');
+  const done = applicable.filter(s=>s.status==='已完成'||s.status==='直接下一階段').length;
+  return applicable.length ? Math.round(done/applicable.length*100) : 0;
+}
+function currentStage(p){
+  const s = p.stages.find(x=>!stageDone(x));
+  return s ? s.name : '全部完成';
+}
+function isProjectLocked(p){
+  return !!(p && ['暫停','已取消','已封存'].indexOf(p.status)>=0);
+}
+function projStatus(p){
+  if(p.status==='已取消'||p.status==='暫停'||p.status==='已封存') return p.status;
+  if(p.stages.every(stageDone)) return '已完成';
+  if(p.stages.some(s=>s.status==='待確認')) return '待確認';
+  if(p.stages.some(s=>s.status==='需要修改')) return '需要修改';
+  return '進行中';
+}
+function typeTag(t){ return t==='dev'?'<span class="tag t-dev">開發及生產</span>':'<span class="tag t-rep">補貨</span>'; }
+function projectAssigneeOpts(selectedId){
+  const pool = listAssignableStaff();
+  const selected = selectedId ? String(selectedId) : '';
+  const opts = pool.map(function(u){
+    const phone = normalizePhone(u.phone)||normalizePhone(u.id)||'';
+    const label = escHtml(u.name)+(phone?('｜'+phone):'')+'（'+escHtml(u.position||roleLabel(u))+'）';
+    return `<option value="${u.id}"${u.id===selected?' selected':''}>${label}</option>`;
+  }).join('');
+  if(!opts) return `<option value="">（尚無經理／主管賬號，請先「創建員工」）</option>`;
+  return `<option value="">— 未分配 —</option>`+opts;
+}
+/** 階段經手人多選 checkbox（僅經理／主管） */
+function projectAssigneeChecksHtml(selectedIds, inputClass){
+  const pool = listAssignableStaff();
+  const selected = {};
+  (Array.isArray(selectedIds)?selectedIds:(selectedIds?[selectedIds]:[])).forEach(function(id){
+    if(id) selected[String(id)] = true;
+  });
+  const cls = inputClass || 'stage-handler-cb';
+  if(!pool.length){
+    return '<p style="font-size:12px;color:#c62828;margin:0">尚無經理／主管可選。請先創建職位為「經理」或「主管」的賬號。</p>';
+  }
+  return '<div class="recipient-box" style="max-height:160px;min-width:220px">'+
+    pool.map(function(u){
+      const phone = normalizePhone(u.phone)||normalizePhone(u.id)||'';
+      const label = escHtml(u.name)+'（'+escHtml(u.position||'')+(phone?'｜'+phone:'')+'）';
+      const checked = selected[String(u.id)] ? ' checked' : '';
+      return '<label class="rc-item"><input type="checkbox" class="'+cls+'" value="'+escHtml(u.id)+'"'+checked+'> '+label+'</label>';
+    }).join('')+
+    '</div>';
+}
+function readCheckedHandlerIds(rootSel, inputClass){
+  const root = typeof rootSel==='string' ? document.querySelector(rootSel) : rootSel;
+  if(!root) return [];
+  const cls = inputClass || 'stage-handler-cb';
+  return Array.from(root.querySelectorAll('input.'+cls+':checked')).map(function(cb){ return cb.value; }).filter(Boolean);
+}
+function projThumbHtml(p,size){
+  size=size||44;
+  const fs=size>=60?32:22;
+  if(p&&p.coverUrl){
+    let src = p.coverUrl;
+    if(p.coverFileId) src = withFileToken(apiUrl('/api/files/'+p.coverFileId));
+    else src = withFileToken(src);
+    return `<div class="thumb" style="width:${size}px;height:${size}px"><img src="${src}" alt=""></div>`;
+  }
+  return `<div class="thumb" style="width:${size}px;height:${size}px;font-size:${fs}px">${p&&p.icon?p.icon:'🆕'}</div>`;
+}
+function canOperateStage(p, s){
+  if(isProjectLocked(p)) return false;
+  if(isAdmin()) return true; // 經理／主管／admin
+  if(isManager()) return false;
+  return !!(currentUser && isStageHandler(s, currentUser.id));
+}
+function fmtMention(text){
+  return String(text||'').replace(/@([^\s@，,。]+)/g,'<span class="mention">@$1</span>');
+}
+function ensureFilePayload(f){
+  if(!f) return f;
+  if(typeof f==='string') return {name:f};
+  if(f.driveFileId){
+    f.dataUrl = withFileToken(apiUrl('/api/files/'+f.driveFileId));
+    return f;
+  }
+  return f;
+}
+function fileLinkHtml(fileOrName, label){
+  const f = ensureFilePayload(typeof fileOrName==='string'?{name:fileOrName}:fileOrName);
+  const name = f.name||'附件';
+  const href = fileHref(f);
+  return `<a class="file-link" href="${href}" download="${name.replace(/"/g,'')}" target="_blank" rel="noopener">${label||('📎 '+name)}</a>`;
+}
+function mentionCandidates(q){
+  const qq = (q||'').toLowerCase();
+  return users.filter(u=>u.active && (!currentUser || u.id!==currentUser.id))
+    .filter(u=>!qq || u.name.toLowerCase().includes(qq) || (u.login||'').toLowerCase().includes(qq) || (u.dept||'').toLowerCase().includes(qq));
+}
+function bindMentionInput(textareaId){
+  const ta = document.getElementById(textareaId);
+  if(!ta || ta.dataset.mentionBound==='1') return;
+  ta.dataset.mentionBound='1';
+  const wrap = document.createElement('div');
+  wrap.className='mention-wrap';
+  ta.parentNode.insertBefore(wrap, ta);
+  wrap.appendChild(ta);
+  const box = document.createElement('div');
+  box.className='mention-box';
+  box.id = textareaId+'-mention';
+  wrap.appendChild(box);
+  let activeIdx = 0;
+  const hide = ()=> box.classList.remove('show');
+  const insertMention = (name)=>{
+    const val = ta.value, pos = ta.selectionStart||val.length;
+    const before = val.slice(0,pos);
+    const at = before.lastIndexOf('@');
+    if(at<0) return;
+    const after = val.slice(pos);
+    ta.value = before.slice(0,at)+'@'+name+' '+after;
+    const np = at+name.length+2;
+    ta.focus(); ta.setSelectionRange(np,np);
+    hide();
+  };
+  const renderBox = (list)=>{
+    if(!list.length){ hide(); return; }
+    box.innerHTML = list.slice(0,8).map((u,i)=>`
+      <button type="button" class="mention-item${i===activeIdx?' active':''}" data-name="${u.name}">
+        <b>@${u.name}</b><span class="mid">${u.dept||u.role||''}</span>
+      </button>`).join('');
+    box.classList.add('show');
+    [...box.querySelectorAll('.mention-item')].forEach(btn=>{
+      btn.onmousedown = (e)=>{ e.preventDefault(); insertMention(btn.dataset.name); };
+    });
+  };
+  ta.addEventListener('input', ()=>{
+    const pos = ta.selectionStart||0;
+    const before = ta.value.slice(0,pos);
+    const m = before.match(/@([^\s@]*)$/);
+    if(!m){ hide(); return; }
+    activeIdx = 0;
+    renderBox(mentionCandidates(m[1]));
+  });
+  ta.addEventListener('keydown', (e)=>{
+    if(!box.classList.contains('show')) return;
+    const items = [...box.querySelectorAll('.mention-item')];
+    if(!items.length) return;
+    if(e.key==='ArrowDown'){ e.preventDefault(); activeIdx=(activeIdx+1)%items.length; renderBox(mentionCandidates((ta.value.slice(0,ta.selectionStart).match(/@([^\s@]*)$/)||['',''])[1])); }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); activeIdx=(activeIdx-1+items.length)%items.length; renderBox(mentionCandidates((ta.value.slice(0,ta.selectionStart).match(/@([^\s@]*)$/)||['',''])[1])); }
+    else if(e.key==='Enter' || e.key==='Tab'){ e.preventDefault(); insertMention(items[activeIdx].dataset.name); }
+    else if(e.key==='Escape'){ hide(); }
+  });
+  ta.addEventListener('blur', ()=> setTimeout(hide, 150));
+}
+function readFileAsDataUrl(file){
+  return new Promise((resolve,reject)=>{
+    const r = new FileReader();
+    r.onload = ()=> resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+function afterProjectChatRender(){
+  if(currentView==='project' && currentTab==='chat'){
+    setTimeout(()=> bindMentionInput('c-text'), 0);
+  }
+}
+
+/* ═══════════ 登入/登出 ═══════════ */
+function enterAppAs(user, opts){
+  opts = opts || {};
+  currentUser = normalizeUser(user);
+  if(userNeedsPhoneBind(currentUser)){
+    document.getElementById('page-login').classList.add('hidden');
+    document.getElementById('app').classList.add('hidden');
+    refreshCloudSyncStatus();
+    showBindPhoneGate();
+    return;
+  }
+  document.getElementById('page-login').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  const pos = currentUser.position || '';
+  const phone = normalizePhone(currentUser.phone) || normalizePhone(currentUser.id);
+  if(currentUser.role==='system_admin'){
+    document.getElementById('top-user').textContent = '👑 '+currentUser.name+'（'+(pos||'系統管理員')+'）';
+  } else if(currentUser.role==='manager'){
+    document.getElementById('top-user').textContent = '🧭 '+currentUser.name+'（'+(pos||'主管')+'）';
+  } else {
+    document.getElementById('top-user').textContent = '👤 '+currentUser.name+(phone?'｜'+phone:'｜'+roleLabel(currentUser));
+  }
+  refreshCloudSyncStatus();
+  currentModule = 'daily'; currentView='dailyToday'; currentProject=null;
+  ensureDailySeed(); generateRecurringForToday();
+  if(!opts.silent) addDailyOpLog('登入系統','進入每日工作流程');
+  render();
+  // 登入／恢復工作階段後立刻把「今日恆常實例」寫回雲端，避免只留在本機快取
+  if(typeof flushCloudSaves==='function'){
+    flushCloudSaves().catch(function(e){ if(typeof noteCloudError==='function') noteCloudError(e); });
+  }
+}
+async function doLogin(){
+  const u = document.getElementById('login-user').value.trim();
+  const p = document.getElementById('login-pw').value;
+  const err = document.getElementById('login-err');
+  if(!apiReady){ err.style.color='#c62828'; err.textContent='資料儲存仍在初始化，請稍候再登入。'; err.style.display='block'; return; }
+  if(!apiEnabled){
+    err.style.color='#c62828';
+    err.textContent='未連接 MongoDB 雲端，無法登入。所有裝置必須使用同一雲端資料庫。請確認 Railway 已設定 MONGODB_URI。';
+    err.style.display='block';
+    return;
+  }
+  err.style.color='#1565c0';
+  err.textContent='正在驗證帳號…';
+  err.style.display='block';
+  try{
+    const result = await apiFetch('/api/auth/login', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ login:u, pw:p })
+    });
+    if(!result || !result.token || !result.user){
+      throw new Error('登入回應無效');
+    }
+    saveAuthToken(result.token);
+    if(result.needsPhoneBind || userNeedsPhoneBind(result.user)){
+      err.style.display='none';
+      currentUser = normalizeUser(result.user);
+      showBindPhoneGate();
+      return;
+    }
+    err.textContent='正在載入雲端資料…';
+    await loadCloudAppData();
+    err.style.display='none'; err.style.color='';
+    enterAppAs(result.user);
+    try{ await flushCloudSaves(); }catch(e){ noteCloudError(e); }
+  }catch(e){
+    clearAuthToken();
+    err.style.color='#c62828';
+    err.textContent= (e && e.message) ? String(e.message) : '登入失敗';
+    err.style.display='block';
+  }
+}
+async function logout(){
+  if(currentModule==='daily' && typeof addDailyOpLog==='function'){
+    try{ addDailyOpLog('登出系統',''); }catch(e){ addModuleLog('daily','登出系統',''); }
+  } else {
+    addModuleLog(currentModule||'daily','登出系統','');
+  }
+  try{ await flushCloudSaves(); }catch(e){}
+  try{
+    if(apiEnabled) await apiFetch('/api/auth/logout', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+  }catch(e){}
+  clearAuthToken();
+  currentUser=null;
+  closeMailbox();
+  refreshMailboxUi();
+  document.getElementById('app').classList.add('hidden');
+  document.getElementById('page-login').classList.remove('hidden');
+  document.getElementById('login-pw').value='';
+}
+
+/* ═══════════ 導航及渲染 ═══════════ */
+function setModule(m){
+  currentModule = m; currentProject=null;
+  closeMailbox();
+  if(m==='daily'){ currentView='dailyToday'; ensureDailySeed(); generateRecurringForToday(); }
+  else if(m==='production'){
+    // 員工進入開發及生產時直達「我的工作」，方便處理被指派階段
+    currentView = isPersonal() ? 'myTasks' : 'home';
+    listType='dev';
+  }
+  else if(m==='push'){ currentView='pushNotify'; }
+  else if(m==='createStaff'){ currentView='createStaff'; }
+  else if(m==='settings'){ currentView='settings'; }
+  else if(m==='transfer'){ currentView='transferInventory'; }
+  else {
+    currentView = isPersonal() ? 'myTasks' : 'home';
+    listType='rep';
+  }
+  fCat='全部'; fStatus='全部'; fKw='';
+  render();
+}
+function render(){
+  const modNav = document.getElementById('module-nav');
+  // 所有登入角色（含員工）皆可使用每日／開發及生產／補貨／推送
+  const modules = [['daily','📅 每日工作流程'],['production','📐 開發及生產'],['replenishment','🔄 補貨'],['transfer','📦 貨品調動'],['push','📢 推送通知']];
+  if(canCreateEmployee()) modules.push(['createStaff','👤 創建員工']);
+  modules.push(['settings','⚙️ 個人設置']);
+  modNav.innerHTML = modules.map(([k,l])=>`<button class="${currentModule===k?'active':''}" onclick="setModule('${k}')">${l}</button>`).join('');
+  const nav = document.getElementById('nav');
+  let items = [];
+  if(currentModule==='daily'){
+    items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyRecords','我的記錄']];
+    if(isAdmin()||isManager()) items.push(['dailyNew','新增突發'],['dailyRecurring','恆常任務'],['dailyOpLogs','操作記錄']);
+  } else if(currentModule==='production'){
+    // 員工：我的工作優先；仍可看首頁與項目列表
+    items = isPersonal()
+      ? [['myTasks','我的工作'],['devList','項目列表'],['home','首頁']]
+      : [['home','首頁'],['devList','項目列表'],['myTasks','我的工作']];
+    if(isAdmin()) items.push(['addProject','建立項目']);
+    if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
+  } else if(currentModule==='push'){
+    items = [['pushNotify','撰寫推送']];
+  } else if(currentModule==='createStaff'){
+    items = [];
+  } else if(currentModule==='settings'){
+    items = [['settings','更改密碼']];
+  } else if(currentModule==='transfer'){
+    items = [['transferInventory','庫存查詢'],['transferHistory','調動記錄']];
+  } else {
+    items = isPersonal()
+      ? [['myTasks','我的工作'],['repList','項目列表'],['home','首頁']]
+      : [['home','首頁'],['repList','項目列表'],['myTasks','我的工作']];
+    if(isAdmin()) items.push(['addProject','建立項目']);
+    if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
+  }
+  const subActive = (k)=> currentView===k || (currentView==='project' && ((k==='devList'&&currentModule==='production')||(k==='repList'&&currentModule==='replenishment')));
+  nav.innerHTML = items.map(([k,l])=>`<button class="${subActive(k)?'active':''}" onclick="go('${k}')">${l}</button>`).join('');
+  nav.style.display = items.length ? '' : 'none';
+  const views = {
+    home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : vHomeFiltered('dev'),
+    devList:()=>vList('dev'), repList:()=>vList('rep'), myTasks:vMyTasks, addProject:vAddProject, sysLogs:vSysLogs, project:vProject,
+    dailyToday:()=>vDailyToday(currentUser), dailyProgress:()=>vDailyProgress(currentUser),
+    dailyUnit:()=>vDailyUnit(currentUser), dailyRecords:()=>vDailyRecords(currentUser),
+    dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser),
+    dailyOpLogs:()=>vDailyOpLogs(currentUser),
+    pushNotify: vPushNotify,
+    createStaff: vCreateStaff,
+    settings: vPersonalSettings,
+    transferInventory: vTransferInventory,
+    transferHistory: vTransferHistory
+  };
+  document.getElementById('main').innerHTML = (views[currentView]||views.home)();
+  afterProjectChatRender();
+  refreshMailboxUi();
+  refreshCloudSyncStatus();
+}
+function go(v){
+  currentView=v; currentProject=null;
+  if(v==='devList'){ listType='dev'; currentModule='production'; }
+  if(v==='repList'){ listType='rep'; currentModule='replenishment'; }
+  if(v==='pushNotify'){ currentModule='push'; }
+  if(v==='createStaff'){ currentModule='createStaff'; }
+  if(v==='settings'){ currentModule='settings'; }
+  if(v==='transferInventory' || v==='transferHistory'){ currentModule='transfer'; }
+  fCat='全部'; fStatus='全部'; fKw='';
+  render();
+}
+function vHomeFiltered(type){
+  const scoped = projects.filter(p=>p.type===type);
+  const waitConfirm = scoped.filter(p=>p.stages.some(s=>s.status==='待確認')).length;
+  const needFix = scoped.filter(p=>p.stages.some(s=>s.status==='需要修改')).length;
+  const myTasks = getMyTasks().filter(t=>{ const p=projects.find(x=>x.id===t.pid); return p && p.type===type; });
+  const allComments = scoped.flatMap(p=>p.comments.filter(c=>!c.removed).map(c=>({...c, pname:p.name, pid:p.id}))).slice(0,3);
+  const title = type==='dev' ? '開發及生產首頁' : '補貨首頁';
+  return `<div class="card">
+    <h2>🏭 ${title}｜${todayStr()}</h2>
+    <div class="stats">
+      <div class="stat"><div class="num blue">${scoped.length}</div><div class="lbl">項目總數</div></div>
+      <div class="stat"><div class="num orange">${waitConfirm}</div><div class="lbl">待確認</div></div>
+      <div class="stat"><div class="num red">${needFix}</div><div class="lbl">需要修改</div></div>
+      <div class="stat"><div class="num green">${myTasks.length}</div><div class="lbl">我的待辦</div></div>
+    </div>
+  </div>
+  ${!isAdmin() ? `<div class="card"><h2>📌 我的待辦工作（${myTasks.length}）</h2>
+    ${myTasks.length? `<div class="table-wrap"><table><tr><th>項目</th><th>產品編號</th><th>工作階段</th><th>期限</th><th>狀態</th></tr>
+    ${myTasks.map(t=>`<tr class="clickable" onclick="openProject('${t.pid}','flow')"><td>${t.pname}</td><td>${t.code}</td><td>${t.stage}</td><td>${t.deadline||'—'}</td><td>${stTag(t.status)}</td></tr>`).join('')}
+    </table></div>` : '<p style="color:#888">暫時沒有待辦工作。</p>'}
+  </div>`:''}
+  <div class="card"><h2>💬 最新留言</h2>
+    ${allComments.length? allComments.map(c=>`<div class="msg" style="cursor:pointer" onclick="openProject('${c.pid}','chat')">
+      <div class="mhead"><span class="mname">${userName(c.by)}</span><span class="tag dept">${userDept(c.by)}</span>
+      <span class="mtime">${c.time}</span><span class="tag s-pending">${c.pname}</span></div>
+      <div class="mbody">${fmtMention(c.text)}</div></div>`).join('') : '<p style="color:#888">暫無留言。</p>'}
+  </div>
+  <div class="card"><h2>📂 項目列表</h2>${projTable(scoped)}</div>`;
+}
+function openProject(pid, tab){ const p=projects.find(x=>x.id===pid); if(p) currentModule = p.type==='rep'?'replenishment':'production'; currentProject=pid; currentView='project'; currentTab=tab||'overview'; commentFilter='全部'; render(); }
+function setTab(t){ currentTab=t; render(); }
+
+/* ═══════════ 首頁 ═══════════ */
+function vHome(){
+  const dev = projects.filter(p=>p.type==='dev'), rep = projects.filter(p=>p.type==='rep');
+  const waitConfirm = projects.filter(p=>p.stages.some(s=>s.status==='待確認')).length;
+  const needFix = projects.filter(p=>p.stages.some(s=>s.status==='需要修改')).length;
+  const myTasks = getMyTasks();
+  const allComments = projects.flatMap(p=>p.comments.filter(c=>!c.removed).map(c=>({...c, pname:p.name, pid:p.id}))).slice(0,3);
+  return `<div class="card">
+    <h2>🏭 生產部首頁｜${todayStr()}</h2>
+    <div class="stats">
+      <div class="stat"><div class="num blue">${dev.length}</div><div class="lbl">開發及生產項目</div></div>
+      <div class="stat"><div class="num purple">${rep.length}</div><div class="lbl">補貨項目</div></div>
+      <div class="stat"><div class="num orange">${waitConfirm}</div><div class="lbl">待確認</div></div>
+      <div class="stat"><div class="num red">${needFix}</div><div class="lbl">需要修改</div></div>
+    </div>
+  </div>
+  ${!isAdmin() ? `<div class="card"><h2>📌 我的待辦工作（${myTasks.length}）</h2>
+    ${myTasks.length? `<div class="table-wrap"><table><tr><th>項目</th><th>產品編號</th><th>工作階段</th><th>期限</th><th>狀態</th></tr>
+    ${myTasks.map(t=>`<tr class="clickable" onclick="openProject('${t.pid}','flow')"><td>${t.pname}</td><td>${t.code}</td><td>${t.stage}</td><td>${t.deadline||'—'}</td><td>${stTag(t.status)}</td></tr>`).join('')}
+    </table></div>` : '<p style="color:#888">暫時沒有待辦工作。</p>'}
+  </div>`:''}
+  <div class="card"><h2>💬 最新留言</h2>
+    ${allComments.length? allComments.map(c=>`<div class="msg" style="cursor:pointer" onclick="openProject('${c.pid}','chat')">
+      <div class="mhead"><span class="mname">${userName(c.by)}</span><span class="tag dept">${userDept(c.by)}</span>
+      <span class="mtime">${c.time}</span><span class="tag s-pending">${c.pname}</span></div>
+      <div class="mbody">${fmtMention(c.text)}</div></div>`).join('') : '<p style="color:#888">暫無留言。</p>'}
+  </div>
+  <div class="card"><h2>📂 全部項目</h2>${projTable(projects)}</div>`;
+}
+function getProjectTodosForUser(user){
+  user=user||currentUser;
+  if(!user) return [];
+  // 員工（personal）看自己的經手階段；管理員也可在「我的工作」看到自己被指派的
+  if(!(user.role==='personal' || user.position==='員工' || user.role==='system_admin')) return [];
+  const out=[];
+  projects.forEach(p=>{
+    if(isProjectLocked(p)) return;
+    p.stages.forEach((s,idx)=>{
+      if(!isStageHandler(s, user.id)||stageDone(s)) return;
+      if(!['進行中','待處理','需要修改','待確認','未開始'].includes(s.status)) return;
+      const prevDone=idx===0||p.stages.slice(0,idx).every(stageDone);
+      if(!(prevDone||s.status!=='未開始')) return;
+      out.push({
+        pid:p.id, idx:idx, pname:p.name, code:p.code, stage:s.name,
+        deadline:s.deadline, status:s.status, type:p.type,
+        content:s.content||'', files:s.files||[]
+      });
+    });
+  });
+  return out;
+}
+function getMyTasks(){
+  return getProjectTodosForUser(currentUser).map(t=>({
+    pid:t.pid, pname:t.pname, code:t.code, stage:t.stage, deadline:t.deadline, status:t.status
+  }));
+}
+
+/* ═══════════ 項目列表 ═══════════ */
+function projTable(list){
+  const rows = sortProjectsNewestFirst(list);
+  if(!rows.length) return '<p style="color:#888">沒有符合條件的項目。</p>';
+  return `<div class="table-wrap"><table>
+    <tr><th>建立日期</th><th>圖片</th><th>產品編號</th><th>項目簡介</th><th>類別</th><th>類型</th><th>目前階段</th><th>狀態</th><th>完成進度</th></tr>
+    ${rows.map(p=>{const pct=projProgress(p);return `<tr class="clickable" onclick="openProject('${p.id}')">
+      <td style="font-size:12px">${p.created}</td><td>${projThumbHtml(p,44)}</td>
+      <td><b>${p.code}</b></td><td>${p.name}</td><td>${p.cat}</td><td>${typeTag(p.type)}</td>
+      <td>${currentStage(p)}</td><td>${stTag(projStatus(p))}</td>
+      <td style="min-width:100px"><div class="pbar"><div style="width:${pct}%"></div></div><div style="font-size:11px;text-align:right;color:#2e7d32">${pct}%</div></td>
+    </tr>`;}).join('')}</table></div>`;
+}
+function vList(type){
+  listType = type;
+  let list = projects.filter(p=>p.type===type);
+  if(fCat!=='全部') list = list.filter(p=>p.cat===fCat);
+  if(fStatus!=='全部') list = list.filter(p=>projStatus(p)===fStatus);
+  if(fKw) list = list.filter(p=>(p.code+p.name+p.desc+p.cat).toLowerCase().includes(fKw.toLowerCase()));
+  return `<div class="card">
+    <h2>${type==='dev'?'📐 開發及生產項目':'🔄 補貨項目'}（${list.length}）</h2>
+    <div class="filters">
+      <select onchange="fCat=this.value;render()"><option ${fCat==='全部'?'selected':''}>全部</option>${CATEGORIES.map(c=>`<option ${fCat===c?'selected':''}>${c}</option>`).join('')}</select>
+      <select onchange="fStatus=this.value;render()">${['全部','進行中','待確認','需要修改','已完成','暫停','已取消','已封存'].map(s=>`<option ${fStatus===s?'selected':''}>${s}</option>`).join('')}</select>
+      <input type="text" placeholder="搜尋編號／名稱／內容" value="${fKw}" onchange="fKw=this.value;render()">
+      ${isAdmin()?`<button class="btn sm" onclick="go('addProject')">＋ 建立新項目</button><button class="btn gray sm" onclick="exportProjectsCsv('${type}')">匯出資料</button>`:''}
+    </div>
+    ${projTable(list)}
+  </div>`;
+}
+
+/* ═══════════ 我的工作 ═══════════ */
+function vMyTasks(){
+  if(isAdmin() && !isPersonal()){
+    // 純管理層：顯示待確認及各經手人概況
+    const waits = [];
+    projects.forEach(p=>p.stages.forEach(s=>{ if(s.status==='待確認') waits.push({p,s}); }));
+    const staffRows = listAssignableStaff().map(u=>{
+      let n=0; projects.forEach(p=>p.stages.forEach(s=>{ if(isStageHandler(s,u.id)&&!stageDone(s)) n++; }));
+      return `<tr><td>${escHtml(u.name)}</td><td>${escHtml(u.position||u.dept||'')}</td><td><b>${n}</b></td></tr>`;
+    }).join('');
+    return `<div class="card"><h2>✅ 等待管理層確認（${waits.length}）</h2>
+      ${waits.length?`<div class="table-wrap"><table><tr><th>項目</th><th>階段</th><th>經手人</th><th>操作</th></tr>
+      ${waits.map(({p,s})=>`<tr><td>${p.code} ${p.name}</td><td>${s.name}</td><td>${escHtml(stageHandlersLabel(s))}</td>
+        <td><button class="btn sm" onclick="openProject('${p.id}','flow')">處理</button></td></tr>`).join('')}</table></div>`:'<p style="color:#888">沒有等待確認的階段。</p>'}
+    </div>
+    <div class="card"><h2>👥 各經手人待辦工作（經理／主管）</h2>
+      <div class="table-wrap"><table><tr><th>經手人</th><th>職位</th><th>待辦階段數</th></tr>
+      ${staffRows||'<tr><td colspan="3" style="color:#888">尚無經理／主管。請先創建職位為「經理」或「主管」的賬號並指派經手人。</td></tr>'}
+      </table></div></div>`;
+  }
+  const tasks = getMyTasks();
+  const doneList = [];
+  projects.forEach(p=>p.stages.forEach(s=>{ if(isStageHandler(s,currentUser.id)&&s.status==='已完成') doneList.push({p,s}); }));
+  const emptyHint = '<p style="color:#888">暫時沒有待辦。請在項目工作流程把階段經手人指派給經理／主管後，即可在此處理。</p>';
+  return `<div class="card"><h2>📌 我的待辦工作（${tasks.length}）</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:10px">開發及生產／補貨中指派給你的階段會顯示於此，可點擊進入處理。</p>
+    ${tasks.length?`<div class="table-wrap"><table><tr><th>項目</th><th>產品編號</th><th>工作階段</th><th>完成期限</th><th>狀態</th><th>操作</th></tr>
+    ${tasks.map(t=>`<tr><td>${t.pname}</td><td>${t.code}</td><td>${t.stage}</td><td>${t.deadline||'—'}</td><td>${stTag(t.status)}</td>
+      <td><button class="btn sm" onclick="openProject('${t.pid}','flow')">查看／處理</button></td></tr>`).join('')}</table></div>`:emptyHint}
+  </div>
+  <div class="card"><h2>✔️ 我已完成的階段（${doneList.length}）</h2>
+    ${doneList.length?`<div class="table-wrap"><table><tr><th>項目</th><th>階段</th><th>完成日期</th></tr>
+    ${doneList.map(({p,s})=>`<tr class="clickable" onclick="openProject('${p.id}','flow')"><td>${p.code} ${p.name}</td><td>${s.name}</td><td>${s.completedAt||'—'}</td></tr>`).join('')}</table></div>`:'<p style="color:#888">暫無記錄。</p>'}
+  </div>`;
+}
+
+/* ═══════════ 項目詳情 ═══════════ */
+function vProject(){
+  const p = projects.find(x=>x.id===currentProject);
+  if(!p) return vHome();
+  const pct = projProgress(p);
+  const tabs = [['overview','項目概覽'],['flow','工作流程'],['files','文件及圖片'],['chat','項目對話'],['logs','操作記錄']];
+  return `<div class="card">
+    <button class="btn gray sm" onclick="go('${p.type==='dev'?'devList':'repList'}')">← 返回列表</button>
+    <div style="display:flex;gap:14px;align-items:center;margin-top:12px;flex-wrap:wrap">
+      ${projThumbHtml(p,64)}
+      <div style="flex:1;min-width:200px">
+        <h2 style="margin-bottom:4px">${p.code}｜${p.name}</h2>
+        <div style="font-size:13px;color:#777">${typeTag(p.type)} <span class="tag dept">${p.cat}</span> ${stTag(projStatus(p))}
+          <span style="margin-left:6px">負責人：${userName(p.owner)}</span></div>
+      </div>
+      <div style="min-width:140px;text-align:right">
+        <div style="font-size:22px;font-weight:bold;color:#2e7d32">${pct}%</div>
+        <div class="pbar"><div style="width:${pct}%"></div></div>
+        <div style="font-size:11px;color:#888;margin-top:2px">目前階段：${currentStage(p)}</div>
+      </div>
+    </div>
+    <div class="tabs" style="margin-top:14px">
+      ${tabs.map(([k,l])=>`<button class="${currentTab===k?'active':''}" onclick="setTab('${k}')">${l}${k==='chat'?`（${p.comments.filter(c=>!c.removed).length}）`:''}</button>`).join('')}
+    </div>
+    ${{overview:tabOverview, flow:tabFlow, files:tabFiles, chat:tabChat, logs:tabLogs}[currentTab](p)}
+  </div>`;
+}
+
+function tabOverview(p){
+  const lockedNote = isProjectLocked(p)
+    ? `<div class="info-banner" style="margin-bottom:12px">🔒 項目目前為「${escHtml(p.status)}」${p.statusReason?'：'+escHtml(p.statusReason):''}${p.statusChangedAt?'（'+escHtml(p.statusChangedAt)+'）':''}。階段推進已鎖定。</div>`
+    : '';
+  const hist = Array.isArray(p.revisions) && p.revisions.length
+    ? `<div style="margin-top:12px"><h3>修改紀錄（保留修改前版本）</h3>
+        <div class="table-wrap"><table><tr><th>時間</th><th>人員</th><th>變更摘要</th></tr>
+        ${p.revisions.slice(0,10).map(r=>`<tr><td style="font-size:11px;white-space:nowrap">${escHtml(r.time||'')}</td><td>${escHtml(r.byName||'')}</td><td style="font-size:12px">${escHtml(r.summary||'')}</td></tr>`).join('')}
+        </table></div></div>`
+    : '';
+  return `${lockedNote}<div class="table-wrap"><table>
+    <tr><th style="width:130px">項目編號</th><td>${p.id}</td></tr>
+    <tr><th>建立工作日期</th><td>${p.created}</td></tr>
+    <tr><th>項目類型</th><td>${typeTag(p.type)}</td></tr>
+    <tr><th>產品編號</th><td><b>${escHtml(p.code)}</b></td></tr>
+    <tr><th>項目簡介</th><td>${escHtml(p.name)}</td></tr>
+    <tr><th>產品類別</th><td>${escHtml(p.cat)}</td></tr>
+    <tr><th>項目負責人</th><td>${userName(p.owner)}（${userDept(p.owner)}）</td></tr>
+    <tr><th>項目建立人</th><td>${userName(p.createdBy)}</td></tr>
+    <tr><th>預計完成日期</th><td>${escHtml(p.due||'—')}</td></tr>
+    <tr><th>目前階段</th><td>${currentStage(p)}</td></tr>
+    <tr><th>整體狀態</th><td>${stTag(projStatus(p))}</td></tr>
+    <tr><th>項目詳細</th><td style="white-space:pre-wrap">${escHtml(p.desc||'')}</td></tr>
+  </table></div>
+  ${isAdmin()?`<div class="actions-row">
+    <button class="btn warn sm" onclick="askEditProject('${p.id}')">編輯項目資料</button>
+    <button class="btn red sm" onclick="askProjectLifecycle('${p.id}')">暫停／取消／封存</button>
+    ${p.status==='暫停'?`<button class="btn green sm" onclick="resumeProject('${p.id}')">恢復進行</button>`:''}
+  </div>`:''}
+  ${hist}`;
+}
+
+let epCoverDraft = null; // {name, dataUrl} | null
+let epCoverRemove = false;
+
+function epCoverSrc(p){
+  if(!p || !p.coverUrl) return '';
+  if(p.coverFileId) return withFileToken(apiUrl('/api/files/'+p.coverFileId));
+  return withFileToken(p.coverUrl);
+}
+function epCoverPreviewHtml(p){
+  if(epCoverDraft){
+    return `<div style="display:flex;align-items:center;gap:10px;margin:8px 0">
+      <div class="thumb" style="width:64px;height:64px"><img src="${epCoverDraft.dataUrl}" alt=""></div>
+      <div style="font-size:13px">${escHtml(epCoverDraft.name||'新封面')}
+        <div style="color:#888;font-size:12px;margin-top:2px">將於儲存時更新封面</div>
+        <div><button type="button" class="btn gray sm" onclick="epClearCover('${p.id}')">清除</button></div>
+      </div></div>`;
+  }
+  if(epCoverRemove){
+    return `<div style="margin:8px 0">
+      <p style="font-size:12px;color:#888;margin:0 0 6px">已標記清除封面（儲存後使用預設圖示）。</p>
+      <button type="button" class="btn gray sm" onclick="epUndoClearCover('${p.id}')">取消清除</button>
+    </div>`;
+  }
+  if(p && p.coverUrl){
+    return `<div style="display:flex;align-items:center;gap:10px;margin:8px 0">
+      <div class="thumb" style="width:64px;height:64px"><img src="${epCoverSrc(p)}" alt=""></div>
+      <div style="font-size:13px">目前封面
+        <div style="color:#888;font-size:12px;margin-top:2px">可重新上傳以更換</div>
+        <div><button type="button" class="btn gray sm" onclick="epClearCover('${p.id}')">清除封面</button></div>
+      </div></div>`;
+  }
+  return '<p style="font-size:12px;color:#888;margin:6px 0">目前無封面（將使用預設圖示）。可上傳圖片作為封面。</p>';
+}
+function epRenderCoverPreview(pid){
+  const p = projects.find(x=>x.id===pid);
+  const el = document.getElementById('ep-cover-preview');
+  if(el) el.innerHTML = epCoverPreviewHtml(p||{});
+}
+function epClearCover(pid){
+  epCoverDraft = null;
+  epCoverRemove = true;
+  const input = document.getElementById('ep-cover');
+  if(input) input.value = '';
+  epRenderCoverPreview(pid);
+}
+function epUndoClearCover(pid){
+  epCoverRemove = false;
+  epRenderCoverPreview(pid);
+}
+async function epOnCoverPick(input, pid){
+  const f = input.files && input.files[0];
+  if(!f) return;
+  if(!(f.type||'').startsWith('image/')){
+    alert2('封面請選擇圖片檔（JPG／PNG／GIF／WebP）。');
+    input.value = '';
+    return;
+  }
+  try{
+    epCoverDraft = { name:f.name, dataUrl: await readFileAsDataUrl(f) };
+    epCoverRemove = false;
+    epRenderCoverPreview(pid);
+  }catch(e){
+    alert2('讀取封面失敗，請重試。');
+    input.value = '';
+  }
+}
+function askEditProject(pid){
+  if(!isAdmin()){ alert2('只有系統管理員可以編輯項目。'); return; }
+  const p = projects.find(x=>x.id===pid);
+  if(!p) return;
+  epCoverDraft = null;
+  epCoverRemove = false;
+  showModal(`<h3>編輯項目資料</h3>
+    <label>項目封面圖片</label>
+    <input type="file" id="ep-cover" accept="image/*" onchange="epOnCoverPick(this,'${pid}')">
+    <div id="ep-cover-preview">${epCoverPreviewHtml(p)}</div>
+    <p style="font-size:12px;color:#888;margin:4px 0 10px">封面用於列表／標題縮圖，不會加入「文件及圖片」。</p>
+    <label>產品編號</label><input type="text" id="ep-code" value="${escHtml(p.code)}">
+    <label>項目簡介</label><input type="text" id="ep-name" value="${escHtml(p.name)}">
+    <label>產品類別</label><select id="ep-cat">${CATEGORIES.map(c=>`<option${c===p.cat?' selected':''}>${c}</option>`).join('')}</select>
+    <label>項目負責人</label><select id="ep-owner">${projectAssigneeOpts(p.owner)}</select>
+    <label>預計完成日期</label><input type="date" id="ep-due" value="${(p.due&&p.due!=='—')?p.due:''}">
+    <label>項目詳細內容</label><textarea id="ep-desc">${escHtml(p.desc||'')}</textarea>
+    <p style="font-size:12px;color:#888;margin-top:8px">儲存時會保留修改前版本摘要於「修改紀錄」。</p>
+    <div class="actions">
+      <button class="btn sm gray" onclick="closeModal()">取消</button>
+      <button class="btn sm green" onclick="saveProjectEdit('${pid}')">儲存變更</button>
+    </div>`);
+}
+async function saveProjectEdit(pid){
+  if(!isAdmin()){ alert2('只有系統管理員可以編輯項目。'); return; }
+  const p = projects.find(x=>x.id===pid);
+  if(!p) return;
+  const code = ((document.getElementById('ep-code')||{}).value||'').trim();
+  const name = ((document.getElementById('ep-name')||{}).value||'').trim();
+  const cat = ((document.getElementById('ep-cat')||{}).value||p.cat);
+  const owner = ((document.getElementById('ep-owner')||{}).value||p.owner);
+  const due = ((document.getElementById('ep-due')||{}).value||'').trim() || '—';
+  const desc = ((document.getElementById('ep-desc')||{}).value||'').trim();
+  if(!code||!name){ alert2('請輸入產品編號及項目簡介。'); return; }
+  const coverChanged = !!(epCoverDraft || (epCoverRemove && p.coverUrl));
+  if(coverChanged && !requireCloud('更新封面')) return;
+  const before = {
+    code:p.code, name:p.name, cat:p.cat, owner:p.owner, due:p.due, desc:p.desc||'',
+    coverUrl:p.coverUrl||null, coverFileId:p.coverFileId||null
+  };
+  const changes = [];
+  if(before.code!==code) changes.push('編號 '+before.code+' → '+code);
+  if(before.name!==name) changes.push('簡介');
+  if(before.cat!==cat) changes.push('類別 '+before.cat+' → '+cat);
+  if(before.owner!==owner) changes.push('負責人 '+userName(before.owner)+' → '+userName(owner));
+  if(before.due!==due) changes.push('完成日 '+before.due+' → '+due);
+  if(before.desc!==desc) changes.push('詳細內容');
+  if(epCoverDraft) changes.push('更新封面');
+  else if(epCoverRemove && before.coverUrl) changes.push('清除封面');
+  if(!changes.length){ closeModal(); alert2('沒有變更。'); return; }
+  let nextCoverUrl = p.coverUrl || null;
+  let nextCoverFileId = p.coverFileId || null;
+  if(epCoverDraft){
+    try{
+      const up = await cloudUploadDataUrl(epCoverDraft.name, epCoverDraft.dataUrl);
+      nextCoverUrl = up.dataUrl;
+      nextCoverFileId = up.driveFileId || null;
+    }catch(e){
+      alert2('上傳封面失敗：'+(e.message||e));
+      return;
+    }
+  } else if(epCoverRemove){
+    nextCoverUrl = null;
+    nextCoverFileId = null;
+  }
+  if(!Array.isArray(p.revisions)) p.revisions = [];
+  p.revisions.unshift({
+    time: nowStr(),
+    by: currentUser.id,
+    byName: currentUser.name,
+    summary: changes.join('；'),
+    snapshot: before
+  });
+  if(p.revisions.length>30) p.revisions = p.revisions.slice(0,30);
+  p.code = code; p.name = name; p.cat = cat; p.owner = owner; p.due = due; p.desc = desc;
+  p.coverUrl = nextCoverUrl;
+  p.coverFileId = nextCoverFileId;
+  addProjLog(p,'編輯項目資料', changes.join('；'));
+  epCoverDraft = null;
+  epCoverRemove = false;
+  try{
+    await persistProjectsNow();
+  }catch(e){
+    noteCloudError(e);
+    alert2('已套用變更，但雲端同步失敗：'+(e.message||e));
+    closeModal();
+    render();
+    return;
+  }
+  closeModal();
+  render();
+  alert2('已儲存項目資料，並保留修改前版本摘要。');
+}
+function askProjectLifecycle(pid){
+  if(!isAdmin()){ alert2('只有系統管理員可以變更項目狀態。'); return; }
+  const p = projects.find(x=>x.id===pid);
+  if(!p) return;
+  const cur = p.status||'進行中';
+  showModal(`<h3>暫停／取消／封存項目</h3>
+    <p style="font-size:13px;color:#666;margin-bottom:8px">目前狀態：<b>${escHtml(projStatus(p))}</b>。請選擇操作；原因可留空。</p>
+    <label>操作</label>
+    <select id="pl-act">
+      <option value="暫停"${cur==='暫停'?' selected':''}>暫停（可稍後恢復）</option>
+      <option value="已取消"${cur==='已取消'?' selected':''}>取消項目</option>
+      <option value="已封存"${cur==='已封存'?' selected':''}>封存項目</option>
+    </select>
+    <label>原因（選填）</label>
+    <textarea id="pl-reason" placeholder="可留空，例如：物料未到／客戶取消／已完成歸檔">${escHtml(p.statusReason||'')}</textarea>
+    <div class="actions">
+      <button class="btn sm gray" onclick="closeModal()">返回</button>
+      <button class="btn sm red" onclick="applyProjectLifecycle('${pid}')">確認變更</button>
+    </div>`);
+}
+function applyProjectLifecycle(pid){
+  if(!isAdmin()){ alert2('只有系統管理員可以變更項目狀態。'); return; }
+  const p = projects.find(x=>x.id===pid);
+  if(!p) return;
+  const act = ((document.getElementById('pl-act')||{}).value||'').trim();
+  const reason = ((document.getElementById('pl-reason')||{}).value||'').trim();
+  if(['暫停','已取消','已封存'].indexOf(act)<0){ alert2('請選擇有效操作。'); return; }
+  const prev = p.status || '進行中';
+  p.status = act;
+  p.statusReason = reason;
+  p.statusChangedAt = nowStr();
+  p.statusChangedBy = currentUser.id;
+  addProjLog(p, act==='暫停'?'暫停項目':(act==='已取消'?'取消項目':'封存項目'), (prev!==act?(prev+' → '+act):'')+(reason?'｜'+reason:''));
+  persistProjects();
+  closeModal();
+  render();
+  alert2('項目已設為「'+act+'」。');
+}
+function resumeProject(pid){
+  if(!isAdmin()){ alert2('只有系統管理員可以恢復項目。'); return; }
+  const p = projects.find(x=>x.id===pid);
+  if(!p) return;
+  if(p.status!=='暫停'){ alert2('只有「暫停」中的項目可以恢復。'); return; }
+  showModal(`<h3>恢復項目進行？</h3>
+    <p style="font-size:14px">「${escHtml(p.code)}｜${escHtml(p.name)}」將由暫停恢復為可推進狀態。</p>
+    <label>備註（選填）</label><textarea id="pl-resume-note" placeholder="可留空"></textarea>
+    <div class="actions">
+      <button class="btn sm gray" onclick="closeModal()">取消</button>
+      <button class="btn sm green" onclick="confirmResumeProject('${pid}')">確認恢復</button>
+    </div>`);
+}
+function confirmResumeProject(pid){
+  const p = projects.find(x=>x.id===pid);
+  if(!p || !isAdmin()) return;
+  const note = ((document.getElementById('pl-resume-note')||{}).value||'').trim();
+  p.status = '進行中';
+  p.statusReason = note || '';
+  p.statusChangedAt = nowStr();
+  p.statusChangedBy = currentUser.id;
+  addProjLog(p,'恢復項目', note || '暫停 → 進行中');
+  persistProjects();
+  closeModal();
+  render();
+}
+function exportProjectsCsv(type){
+  const list = sortProjectsNewestFirst(projects.filter(p=>p.type===type));
+  const header = ['建立日期','產品編號','項目簡介','類別','類型','目前階段','狀態','完成進度%','負責人','預計完成','項目詳細'];
+  const rows = list.map(p=>[
+    p.created||'', p.code||'', p.name||'', p.cat||'',
+    p.type==='dev'?'開發及生產':'補貨',
+    currentStage(p), projStatus(p), String(projProgress(p)),
+    userName(p.owner), p.due||'', (p.desc||'').replace(/\r?\n/g,' ')
+  ]);
+  const esc = v=>{
+    const s = String(v==null?'':v);
+    if(/[",\n\r]/.test(s)) return '"'+s.replace(/"/g,'""')+'"';
+    return s;
+  };
+  const csv = '\uFEFF'+[header].concat(rows).map(r=>r.map(esc).join(',')).join('\r\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  const stamp = dailyTodayStr ? dailyTodayStr() : new Date().toISOString().slice(0,10);
+  a.href = URL.createObjectURL(blob);
+  a.download = (type==='dev'?'開發及生產':'補貨')+'_項目_'+stamp+'.csv';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  addModuleLog(type==='rep'?'replenishment':'production','匯出資料','CSV｜'+list.length+' 筆');
+}
+
+/* ── 工作流程分頁 ── */
+function tabFlow(p){
+  const curName = currentStage(p);
+  const lockedBanner = isProjectLocked(p)
+    ? `<div class="info-banner" style="margin-bottom:12px">🔒 項目「${escHtml(p.status)}」中，無法推進階段。${p.status==='暫停'&&isAdmin()?' 可於概覽按「恢復進行」。':''}</div>`
+    : '';
+  return lockedBanner + p.stages.map((s,i)=>{
+    const done = stageDone(s);
+    const isCur = s.name===curName && !done;
+    const mine = canOperateStage(p,s);
+    let numCls = done?'done':isCur?'current':'';
+    let actions = '';
+    if(isProjectLocked(p)){
+      // 鎖定時不顯示推進按鈕
+    } else if(!isAdmin() && isStageHandler(s, currentUser.id)){
+      if(['未開始','待處理'].includes(s.status)) actions += `<button class="btn sm" onclick="stageAction('${p.id}',${i},'start')">開始處理</button>`;
+      if(['進行中','需要修改'].includes(s.status)) actions += `<button class="btn green sm" onclick="stageAction('${p.id}',${i},'submit')">提交確認</button>`;
+      if(!done) actions += `<button class="btn purple sm" onclick="askUpload('${p.id}',${i})">上載文件／圖片</button>
+        <button class="btn gray sm" onclick="askContent('${p.id}',${i})">填寫工作內容</button>`;
+    }
+    else if(isAdmin()){
+      // 經理／主管被指派為經手人時，也可直接推進自己的階段
+      if(isStageHandler(s, currentUser.id)){
+        if(['未開始','待處理'].includes(s.status)) actions += `<button class="btn sm" onclick="stageAction('${p.id}',${i},'start')">開始處理</button>`;
+        if(['進行中','需要修改'].includes(s.status)) actions += `<button class="btn green sm" onclick="stageAction('${p.id}',${i},'submit')">提交確認</button>`;
+        if(!done) actions += `<button class="btn purple sm" onclick="askUpload('${p.id}',${i})">上載文件／圖片</button>
+          <button class="btn gray sm" onclick="askContent('${p.id}',${i})">填寫工作內容</button>`;
+      }
+      if(s.status==='待確認') actions += `<button class="btn green sm" onclick="stageAction('${p.id}',${i},'confirm')">✓ 確認完成</button>
+        <button class="btn red sm" onclick="askReturn('${p.id}',${i})">退回修改</button>`;
+      if(!done && s.status!=='待確認') actions += `<button class="btn purple sm" onclick="askSkip('${p.id}',${i})">跳過（直接下一階段）</button>`;
+      actions += `<button class="btn gray sm" onclick="askReassign('${p.id}',${i})">重新分配經手人</button>`;
+      if(s.status==='已完成') actions += `<button class="btn warn sm" onclick="stageAction('${p.id}',${i},'reopen')">重新開啟</button>`;
+    }
+    return `<div class="stage ${isCur?'current-stage':''}">
+      <div class="stage-head" onclick="this.nextElementSibling.classList.toggle('hidden')">
+        <div class="stage-num ${numCls}">${done?'✓':i+1}</div>
+        <div class="stage-name">${s.name}</div>
+        <span class="tag dept">👤 ${escHtml(stageHandlersLabel(s))}</span>
+        ${s.deadline?`<span style="font-size:12px;color:#888">⏰ ${s.deadline}</span>`:''}
+        ${stTag(s.status)}
+      </div>
+      <div class="stage-body ${isCur||s.status==='待確認'?'':'hidden'}">
+        ${s.content?`<div class="row">📋 工作內容：<span style="white-space:pre-wrap">${s.content}</span></div>`:''}
+        ${s.completedAt?`<div class="row">✅ 完成日期：${s.completedAt}</div>`:''}
+        ${s.skipReason?`<div class="row">⏭ 跳過原因：${s.skipReason}</div>`:''}
+        ${s.returnReason?`<div class="row" style="color:#c62828">↩️ 退回原因：${s.returnReason}</div>`:''}
+        ${s.files.length?`<div class="row">📎 文件：${s.files.map(f=>fileLinkHtml(f, f.name+(f.latest?' ✅':''))).join('、 ')}</div>`:''}
+        ${!mine&&!isAdmin()?'<div class="row" style="color:#8d6e00">🔒 此階段由 '+escHtml(stageHandlersLabel(s))+' 負責，你只可查看。</div>':''}
+        <div class="actions-row">${actions}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function stageAction(pid, idx, act){
+  if(isManager()){ alert2('一般管理層只可監督查看，不可推進階段。'); return; }
+  if(['confirm','reopen'].includes(act) && !isAdmin()){ alert2('只有系統管理員可以確認或重開。'); return; }
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法推進階段。'); return; }
+  if(act==='start'){ s.status='進行中'; addProjLog(p,'開始處理', s.name+' → 進行中'); }
+  if(act==='submit'){ s.status='待確認'; s.returnReason=''; addProjLog(p,'提交確認', s.name+' → 待確認'); }
+  if(act==='confirm'){ s.status='已完成'; s.completedAt=todayStr(); addProjLog(p,'確認完成', s.name+'｜經手人：'+stageHandlersLabel(s)); }
+  if(act==='reopen'){ s.status='進行中'; s.completedAt=null; addProjLog(p,'重新開啟階段', s.name); }
+  render();
+}
+function askReturn(pid, idx){
+  if(!isAdmin()){ alert2('只有系統管理員可以退回修改。'); return; }
+  const p0 = projects.find(x=>x.id===pid);
+  if(isProjectLocked(p0)){ alert2('項目已「'+p0.status+'」，無法退回。'); return; }
+  showModal(`<h3>退回修改</h3><label>退回原因（選填）</label><input type="text" id="m-reason" placeholder="可留空">
+    <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
+    <button class="btn red sm" onclick="doReturn('${pid}',${idx})">確認退回</button></div>`);
+}
+function doReturn(pid, idx){
+  const r = document.getElementById('m-reason').value.trim();
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法退回。'); return; }
+  s.status='需要修改'; s.returnReason=r;
+  addProjLog(p,'退回修改', s.name+(r?'｜原因：'+r:''));
+  closeModal(); render();
+}
+function askSkip(pid, idx){
+  if(!isAdmin()){ alert2('只有系統管理員可以跳過階段。'); return; }
+  const p0 = projects.find(x=>x.id===pid);
+  if(isProjectLocked(p0)){ alert2('項目已「'+p0.status+'」，無法跳過。'); return; }
+  showModal(`<h3>跳過此階段（直接下一階段）</h3>
+    <p style="font-size:13px;color:#888">例如：沿用上一批最終確認樣板，產品規格沒有修改。</p>
+    <label>跳過原因（選填）</label><input type="text" id="m-reason" placeholder="可留空">
+    <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
+    <button class="btn purple sm" onclick="doSkip('${pid}',${idx})">確認跳過</button></div>`);
+}
+function doSkip(pid, idx){
+  const r = document.getElementById('m-reason').value.trim();
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法跳過。'); return; }
+  s.status='直接下一階段'; s.skipReason=r; s.completedAt=todayStr();
+  addProjLog(p,'跳過階段', s.name+(r?'｜原因：'+r:''));
+  closeModal(); render();
+}
+function askReassign(pid, idx){
+  if(!isAdmin()){ alert2('只有系統管理員可以重新分配經手人。'); return; }
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法重新分配。'); return; }
+  showModal(`<h3>重新分配經手人（可多選）</h3>
+    <p style="font-size:13px">階段：<b>${s.name}</b>｜現時：<b>${escHtml(stageHandlersLabel(s))}</b></p>
+    <p style="font-size:12px;color:#888;margin:4px 0 8px">僅可選經理／主管，可同時勾選多人。</p>
+    <label>經手人</label>
+    <div id="m-handler-box">${projectAssigneeChecksHtml(stageHandlers(s), 'm-handler-cb')}</div>
+    <label>更改原因（選填）</label><input type="text" id="m-reason" placeholder="可留空">
+    <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
+    <button class="btn sm" onclick="doReassign('${pid}',${idx})">確認更改</button></div>`);
+}
+function doReassign(pid, idx){
+  const r = document.getElementById('m-reason').value.trim();
+  const nh = readCheckedHandlerIds('#m-handler-box', 'm-handler-cb');
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法重新分配。'); return; }
+  const before = stageHandlersLabel(s);
+  setStageHandlers(s, nh);
+  addProjLog(p,'更改經手人', s.name+'：'+before+' → '+stageHandlersLabel(s)+(r?'｜原因：'+r:'')+'（系統已通知相關經手人）');
+  persistProjects();
+  closeModal(); render();
+}
+function askContent(pid, idx){
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法更新工作內容。'); return; }
+  showModal(`<h3>填寫工作內容</h3><p style="font-size:13px">階段：<b>${s.name}</b></p>
+    <label>工作內容</label><textarea id="m-content">${escHtml(s.content||'')}</textarea>
+    <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
+    <button class="btn sm" onclick="doContent('${pid}',${idx})">儲存</button></div>`);
+}
+function doContent(pid, idx){
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法更新工作內容。'); return; }
+  s.content = document.getElementById('m-content').value.trim();
+  addProjLog(p,'更新工作內容', s.name);
+  closeModal(); render();
+}
+function askUpload(pid, idx){
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法上載文件。'); return; }
+  showModal(`<h3>上載文件／圖片</h3><p style="font-size:13px">階段：<b>${s.name}</b>｜支援 JPG、PNG、PDF、Word、Excel、ZIP 等</p>
+    <label>選擇檔案</label><input type="file" id="m-file">
+    <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
+    <button class="btn purple sm" onclick="doUpload('${pid}',${idx})">上載</button></div>`);
+}
+async function doUpload(pid, idx){
+  const p = projects.find(x=>x.id===pid), s = p.stages[idx];
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法上載文件。'); return; }
+  const fi = document.getElementById('m-file');
+  const picked = fi.files && fi.files[0] ? fi.files[0] : null;
+  if(!picked){ alert2('請選擇要上載的檔案。'); return; }
+  let name = picked.name;
+  let uploaded;
+  try{
+    uploaded = await cloudUploadFile(picked);
+  }catch(e){ alert2('上載失敗：'+(e.message||e)); return; }
+  s.files.forEach(f=>f.latest=false);
+  const ver = 'V'+(s.files.length+1);
+  s.files.push({name:uploaded.name||name, by:currentUser.id, time:nowStr(), ver, latest:true, dataUrl:uploaded.dataUrl, driveFileId:uploaded.driveFileId, mimeType:uploaded.mimeType});
+  addProjLog(p,'上載文件', s.name+'｜'+(uploaded.name||name)+'（'+ver+'）');
+  closeModal(); render();
+}
+
+/* ── 文件分頁 ── */
+function tabFiles(p){
+  const all = [];
+  (p.files||[]).forEach(f=>all.push({...ensureFilePayload(f), stage:'建立項目'}));
+  p.stages.forEach(s=>(s.files||[]).forEach(f=>all.push({...ensureFilePayload(f), stage:s.name})));
+  return `<div class="info-banner">📁 同一份文件可有多個版本，舊版本會保留，系統標示最新版本。點擊檔名或下載可開啟／儲存。建立項目時的附件標示為「建立項目」；工作流程／今日工作上傳的附件依階段顯示。</div>
+    ${all.length? all.map(f=>`<div class="file-item">
+      <span>📎</span>${fileLinkHtml(f, f.name)}
+      <span class="tag s-pending">${f.stage}</span><span class="tag dept">${f.ver||''}</span>
+      ${f.latest?'<span class="latest-badge">最新版本</span>':''}
+      <span class="fmeta">上載人：${userName(f.by)}｜${f.time}</span>
+      <a class="btn gray sm" style="display:inline-block;text-decoration:none;color:#fff" href="${fileHref(f)}" download="${(f.name||'file').replace(/"/g,'')}" target="_blank" rel="noopener">下載</a>
+    </div>`).join('') : '<p style="color:#888">此項目暫無文件。</p>'}`;
+}
+
+/* ── 留言板分頁 ── */
+function commentFileHtml(file){
+  if(!file) return '';
+  const f = ensureFilePayload(typeof file==='string'?{name:file}:file);
+  return `<div class="mfile">${fileLinkHtml(f, '📎 附件：'+f.name)}</div>`;
+}
+function tabChat(p){
+  const stageOpts = ['整體項目', ...p.stages.map(s=>s.name)];
+  let comments = p.comments;
+  if(commentFilter!=='全部') comments = comments.filter(c=>c.stage===commentFilter);
+  return `<div class="info-banner">💬 此留言板只顯示「${p.code} ${p.name}」的相關溝通。留言不代表工作完成，經手人仍需在工作流程更新狀態。輸入 @ 可選擇提及同事；自己的留言可刪除。</div>
+    <div class="filters"><span style="font-size:13px;color:#888;align-self:center">按階段篩選：</span>
+      <select onchange="commentFilter=this.value;render()">
+        <option ${commentFilter==='全部'?'selected':''}>全部</option>
+        ${stageOpts.map(s=>`<option ${commentFilter===s?'selected':''}>${s}</option>`).join('')}
+      </select></div>
+    ${comments.length? comments.map((c)=>{
+      const realIdx = p.comments.indexOf(c);
+      const canDelete = c.by===currentUser.id || isAdmin();
+      const removedLabel = c.removedBy==='self'
+        ? '此留言已由發表人刪除。'
+        : '此留言已由管理層移除。（原始記錄保留供管理層查閱）';
+      return `<div class="msg">
+      ${c.removed? `<div class="removed">${removedLabel}</div>` : `
+      <div class="mhead"><span class="mname">${userName(c.by)}</span><span class="tag dept">${userDept(c.by)}</span>
+        <span class="mtime">${c.time}</span><span class="tag s-pending">${c.stage}</span></div>
+      <div class="mbody">${fmtMention(c.text)}</div>
+      ${commentFileHtml(c.file)}
+      ${(c.replies||[]).map((r,ri)=>`<div class="reply"><div class="mhead"><span class="mname">${userName(r.by)}</span>
+        <span class="mtime">${r.time}</span>
+        ${(r.by===currentUser.id||isAdmin())&&!r.removed?`<button class="btn red sm" style="margin-left:auto" onclick="removeReply('${p.id}',${realIdx},${ri})">刪除</button>`:''}
+        </div>
+        ${r.removed?'<div class="removed">此回覆已刪除。</div>':`<div class="mbody">${fmtMention(r.text)}</div>`}
+      </div>`).join('')}
+      <div class="actions-row">
+        <button class="btn gray sm" onclick="askReply('${p.id}',${realIdx})">回覆</button>
+        ${canDelete?`<button class="btn red sm" onclick="removeComment('${p.id}',${realIdx})">${c.by===currentUser.id?'刪除留言':'移除留言'}</button>`:''}
+      </div>`}
+    </div>`;}).join('') : '<p style="color:#888;margin-bottom:12px">暫無留言。</p>'}
+    <div class="card" style="background:#f7f9fc;margin-top:14px">
+      <h3>✏️ 發表新留言</h3>
+      <label>相關工作階段</label>
+      <select id="c-stage">${stageOpts.map(s=>`<option>${s}</option>`).join('')}</select>
+      <label>留言內容（輸入 @ 選擇同事）</label>
+      <textarea id="c-text" placeholder="輸入留言內容… 可用 @ 提及同事"></textarea>
+      <label>附件（選填）</label>
+      <input type="file" id="c-file">
+      <button class="btn" onclick="postComment('${p.id}')">發表留言</button>
+    </div>`;
+}
+async function postComment(pid){
+  const p = projects.find(x=>x.id===pid);
+  const text = document.getElementById('c-text').value.trim();
+  if(!text){ alert2('請輸入留言內容。'); return; }
+  const stage = document.getElementById('c-stage').value;
+  const fi = document.getElementById('c-file');
+  let file = null;
+  if(fi.files && fi.files[0]){
+    const picked = fi.files[0];
+    try {
+      const up = await cloudUploadFile(picked);
+      file = {name:up.name||picked.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType};
+    } catch(e){ alert2('讀取／上載附件失敗：'+(e.message||e)); return; }
+  }
+  p.comments.unshift({by:currentUser.id, time:nowStr(), stage, text, file, removed:false, removedBy:null, replies:[]});
+  addProjLog(p,'發表留言', stage+'｜'+text.slice(0,30)+(text.length>30?'…':''));
+  const mentions = text.match(/@([^\s@，,。]+)/g);
+  if(mentions) addProjLog(p,'留言提及通知', mentions.join('、')+' 將收到系統通知');
+  render();
+}
+function askReply(pid, idx){
+  showModal(`<h3>回覆留言</h3><label>回覆內容（輸入 @ 選擇同事）</label><textarea id="m-reply"></textarea>
+    <div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>
+    <button class="btn sm" onclick="doReply('${pid}',${idx})">回覆</button></div>`);
+  setTimeout(()=> bindMentionInput('m-reply'), 0);
+}
+function doReply(pid, idx){
+  const text = document.getElementById('m-reply').value.trim();
+  if(!text){ alert2('請輸入回覆內容。'); return; }
+  const p = projects.find(x=>x.id===pid);
+  p.comments[idx].replies.push({by:currentUser.id, time:nowStr(), text, removed:false});
+  addProjLog(p,'回覆留言', text.slice(0,30));
+  closeModal(); render();
+}
+function removeComment(pid, idx){
+  const p = projects.find(x=>x.id===pid);
+  const c = p.comments[idx];
+  if(!c) return;
+  if(c.by!==currentUser.id && !isAdmin()){ alert2('只能刪除自己的留言。'); return; }
+  c.removed = true;
+  c.removedBy = c.by===currentUser.id ? 'self' : 'admin';
+  addProjLog(p, c.removedBy==='self'?'刪除自己的留言':'移除留言', '留言人：'+userName(c.by));
+  render();
+}
+function removeReply(pid, cIdx, rIdx){
+  const p = projects.find(x=>x.id===pid);
+  const r = p.comments[cIdx] && p.comments[cIdx].replies[rIdx];
+  if(!r) return;
+  if(r.by!==currentUser.id && !isAdmin()){ alert2('只能刪除自己的回覆。'); return; }
+  r.removed = true;
+  addProjLog(p,'刪除回覆', '回覆人：'+userName(r.by));
+  render();
+}
+
+/* ── 操作記錄分頁 ── */
+function tabLogs(p){
+  return `<div class="table-wrap"><table><tr><th>時間</th><th>操作人員</th><th>操作</th><th>詳情</th></tr>
+    ${p.logs.map(l=>`<tr><td style="font-size:11px;white-space:nowrap">${l.time}</td><td>${l.user}</td><td><b>${l.action}</b></td><td style="font-size:12px">${l.detail}</td></tr>`).join('')}
+  </table></div>`;
+}
+
+/* ═══════════ 建立項目（管理層） ═══════════ */
+let npDraftFiles = []; // {name, dataUrl}
+let npCoverDraft = null; // {name, dataUrl} | null
+
+function npCoverPreviewHtml(){
+  if(!npCoverDraft) return '<p style="font-size:12px;color:#888;margin:6px 0">未選擇封面（將使用預設圖示）。</p>';
+  return `<div style="display:flex;align-items:center;gap:10px;margin:8px 0">
+    <div class="thumb" style="width:64px;height:64px"><img src="${npCoverDraft.dataUrl}" alt=""></div>
+    <div style="font-size:13px">${String(npCoverDraft.name||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+      <div><button type="button" class="btn gray sm" onclick="npClearCover()">清除封面</button></div>
+    </div></div>`;
+}
+function npFileListHtml(){
+  if(!npDraftFiles.length) return '<p style="font-size:12px;color:#888;margin:6px 0">尚未添加附件。</p>';
+  return `<div style="margin:8px 0">${npDraftFiles.map((f,i)=>`
+    <div class="file-item" style="margin-bottom:6px">
+      <span>📎</span><span>${String(f.name||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</span>
+      <button type="button" class="btn red sm" onclick="npRemoveDraftFile(${i})">移除</button>
+    </div>`).join('')}</div>`;
+}
+function npRenderCoverPreview(){
+  const el=document.getElementById('np-cover-preview');
+  if(el) el.innerHTML=npCoverPreviewHtml();
+}
+function npRenderFileList(){
+  const el=document.getElementById('np-file-list');
+  if(el) el.innerHTML=npFileListHtml();
+}
+function npClearCover(){
+  npCoverDraft=null;
+  const input=document.getElementById('np-cover');
+  if(input) input.value='';
+  npRenderCoverPreview();
+}
+function npRemoveDraftFile(i){
+  npDraftFiles.splice(i,1);
+  npRenderFileList();
+}
+async function npOnCoverPick(input){
+  const f=input.files&&input.files[0];
+  if(!f) return;
+  if(!(f.type||'').startsWith('image/')){
+    alert2('封面請選擇圖片檔（JPG／PNG／GIF／WebP）。');
+    input.value='';
+    return;
+  }
+  try{
+    npCoverDraft={name:f.name, dataUrl:await readFileAsDataUrl(f)};
+    npRenderCoverPreview();
+  }catch(e){ alert2('讀取封面失敗，請重試。'); input.value=''; }
+}
+async function npOnFilesPick(input){
+  const files=input.files;
+  if(!files||!files.length) return;
+  try{
+    for(let i=0;i<files.length;i++){
+      const f=files[i];
+      npDraftFiles.push({name:f.name, dataUrl:await readFileAsDataUrl(f)});
+    }
+  }catch(e){ alert2('讀取附件失敗，請重試。'); }
+  input.value='';
+  npRenderFileList();
+}
+function vAddProject(){
+  if(!isAdmin()) return `<div class="card"><h2>➕ 建立新項目</h2><p>只有系統管理員可以建立項目。</p></div>`;
+  const staffOpts = projectAssigneeOpts('');
+  const staffHint = listAssignableStaff().length
+    ? '<p style="font-size:12px;color:#888;margin:4px 0 0">各階段經手人僅可選<strong>經理／主管</strong>，可多選；對方可在「我的工作」看到待辦。</p>'
+    : '<p style="font-size:12px;color:#c62828;margin:4px 0 0">尚未有經理／主管賬號。請先到「創建員工」新增職位為「經理」或「主管」的賬號。</p>';
+  setTimeout(()=>{ renderNpStages(); npRenderCoverPreview(); npRenderFileList(); },0);
+  return `<div class="card"><h2>➕ 建立新項目</h2>
+    <label>項目封面圖片（選填）</label>
+    <input type="file" id="np-cover" accept="image/*" onchange="npOnCoverPick(this)">
+    <div id="np-cover-preview">${npCoverPreviewHtml()}</div>
+    <label>項目類型</label>
+    <select id="np-type" onchange="renderNpStages()">
+      <option value="dev">開發及生產（7個階段）</option>
+      <option value="rep">補貨（6個階段）</option>
+    </select>
+    <label>產品編號</label><input type="text" id="np-code" placeholder="例如：WS-666">
+    <label>項目簡介</label><input type="text" id="np-name" placeholder="例如：成人抓毛套裝">
+    <label>產品類別</label><select id="np-cat">${CATEGORIES.map(c=>`<option>${c}</option>`).join('')}</select>
+    <label>項目詳細內容（支援分行）</label><textarea id="np-desc" placeholder="• 要求一&#10;• 要求二"></textarea>
+    <label>項目負責人（經理／主管）</label><select id="np-owner">${staffOpts}</select>
+    <label>預計完成日期</label><input type="date" id="np-due">
+    <label>項目附件（可多次添加、可多選）</label>
+    <input type="file" id="np-files" multiple onchange="npOnFilesPick(this)">
+    <p style="font-size:12px;color:#888;margin:4px 0 0">附件會顯示在項目「文件及圖片」，標籤為「建立項目」。封面只用於列表／標題縮圖，不進文件列表。</p>
+    <div id="np-file-list">${npFileListHtml()}</div>
+    <h3 style="margin-top:16px">各階段經手人分配（經理／主管，可多選）</h3>
+    ${staffHint}
+    <div id="np-stages"></div>
+    <button class="btn" onclick="askCreateProject()">建立項目</button>
+  </div>`;
+}
+function renderNpStages(){
+  const typeEl=document.getElementById('np-type');
+  if(!typeEl) return;
+  const type = typeEl.value;
+  const stages = type==='dev'?DEV_STAGES:REP_STAGES;
+  document.getElementById('np-stages').innerHTML = stages.map((s,i)=>`
+    <div class="np-stage-row" style="display:flex;gap:12px;align-items:flex-start;margin-bottom:10px;flex-wrap:wrap">
+      <span style="min-width:140px;font-size:13px;padding-top:6px"><b>${i+1}. ${s}</b></span>
+      <div class="np-handler-box" data-stage="${i}">${projectAssigneeChecksHtml([], 'np-handler-cb')}</div>
+    </div>`).join('');
+}
+function askCreateProject(){
+  if(!isAdmin()){ alert2('只有系統管理員可以建立項目。'); return; }
+  if(!requireCloud('建立項目')) return;
+  const type = document.getElementById('np-type').value;
+  const code = document.getElementById('np-code').value.trim();
+  const name = document.getElementById('np-name').value.trim();
+  if(!code||!name){ alert2('請輸入產品編號及項目簡介。'); return; }
+  const typeLabel = type==='dev'?'開發及生產':'補貨';
+  const stages = (type==='dev'?DEV_STAGES:REP_STAGES);
+  const coverNote = npCoverDraft ? '已選封面' : '無封面';
+  const fileNote = npDraftFiles.length ? ('附件 '+npDraftFiles.length+' 個') : '無附件';
+  showModal(
+    '<h3>確認建立項目？</h3>'+
+    '<p style="font-size:14px">即將建立：</p>'+
+    '<ul style="font-size:13px;line-height:1.7;margin:8px 0 12px 18px">'+
+      '<li>類型：'+typeLabel+'（'+stages.length+' 個階段）</li>'+
+      '<li>編號／簡介：<b>'+String(code).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))+'｜'+String(name).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))+'</b></li>'+
+      '<li>'+coverNote+'｜'+fileNote+'</li>'+
+    '</ul>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">返回修改</button>'+
+    '<button class="btn sm" onclick="createProject()">確認建立</button></div>'
+  );
+}
+async function createProject(){
+  if(!isAdmin()){ alert2('只有系統管理員可以建立項目。'); return; }
+  if(!requireCloud('建立項目')) return;
+  const type = document.getElementById('np-type').value;
+  const code = document.getElementById('np-code').value.trim();
+  const name = document.getElementById('np-name').value.trim();
+  if(!code||!name){ alert2('請輸入產品編號及項目簡介。'); return; }
+  const cat = document.getElementById('np-cat').value;
+  const desc = document.getElementById('np-desc').value.trim();
+  const owner = document.getElementById('np-owner').value;
+  const due = document.getElementById('np-due').value || '—';
+  const stages = (type==='dev'?DEV_STAGES:REP_STAGES);
+  const handlerBoxes = [...document.querySelectorAll('.np-handler-box')];
+  const handlers = stages.map((_, i)=>{
+    const box = handlerBoxes.find(b=>String(b.getAttribute('data-stage'))===String(i)) || handlerBoxes[i];
+    return box ? readCheckedHandlerIds(box, 'np-handler-cb') : [];
+  });
+  const assignedN = handlers.filter(hs=>hs && hs.length).length;
+  let coverUrl = null, coverFileId = null;
+  let files = [];
+  try{
+    if(npCoverDraft){
+      const up = await cloudUploadDataUrl(npCoverDraft.name, npCoverDraft.dataUrl);
+      coverUrl = up.dataUrl; coverFileId = up.driveFileId || null;
+    }
+    for(let i=0;i<npDraftFiles.length;i++){
+      const f = npDraftFiles[i];
+      const up = await cloudUploadDataUrl(f.name, f.dataUrl);
+      files.push({
+        name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType,
+        by:currentUser.id, time:nowStr(), ver:'V'+(i+1), latest:i===npDraftFiles.length-1
+      });
+    }
+  }catch(e){ alert2('上傳封面／附件失敗：'+(e.message||e)); return; }
+  const p = {
+    id: type==='rep'
+      ? ('R'+String(repProjSeq++).padStart(3,'0'))
+      : ('P'+String(projSeq++).padStart(3,'0')),
+    type, code, name, cat, icon:type==='dev'?'🆕':'🔄',
+    coverUrl, coverFileId,
+    owner: owner||null, createdBy:currentUser.id, created:todayStr(), createdAtMs: Date.now(), due, desc, status:'進行中',
+    files: files,
+    stages: stages.map((s,i)=>mkStage(s, handlers[i]||[], i===0?'待處理':'未開始')),
+    comments:[], logs:[]
+  };
+  projects.unshift(p);
+  addProjLog(p,'建立項目',(type==='dev'?'開發及生產':'補貨')+'｜'+code+'｜'+name+(p.coverUrl?'｜已設封面':'')+(files.length?'｜附件 '+files.length+' 個':''));
+  addProjLog(p,'分配經手人', assignedN
+    ? ('已指派 '+assignedN+'／'+stages.length+' 個階段（經理／主管可於「我的工作」處理）')
+    : '尚未指派經手人（請稍後在工作流程中更改經手人）');
+  if(files.length) addProjLog(p,'上載文件','建立項目｜'+files.map(f=>f.name).join('、'));
+  npDraftFiles=[]; npCoverDraft=null;
+  try{
+    await persistProjectsNow();
+  }catch(e){
+    noteCloudError(e);
+    alert2('項目已建立於記憶體，但雲端同步失敗：'+(e.message||e));
+    return;
+  }
+  showModal(`<h3>✅ 已建立項目</h3><p>「${code}｜${name}」已建立並同步到雲端，共 ${stages.length} 個階段${files.length?'，附件 '+files.length+' 個':''}。</p>
+    <div class="actions"><button class="btn sm" onclick="closeModal();openProject('${p.id}','files')">查看文件及圖片</button>
+    <button class="btn gray sm" onclick="closeModal();openProject('${p.id}','flow')">查看工作流程</button></div>`);
+}
+
+/* ═══════════ 模組操作記錄（僅顯示當前模組） ═══════════ */
+function vSysLogs(){
+  const mod = currentModule === 'replenishment' ? 'replenishment' : 'production';
+  const type = mod === 'replenishment' ? 'rep' : 'dev';
+  const title = mod === 'replenishment' ? '補貨' : '開發及生產';
+  const fromModule = (moduleLogs[mod] || []).slice();
+  // 種子項目既有 logs：只併入本模組類型，避免跨模組混雜
+  const fromProjects = projects
+    .filter(p => p.type === type)
+    .flatMap(p => (p.logs || []).map(l => ({
+      time: l.time,
+      user: l.user,
+      action: l.action,
+      detail: p.code + '｜' + (l.detail || ''),
+      _seed: true
+    })));
+  // moduleLogs 已含執行期 addProjLog；種子用 fromProjects 補齊。去重：同時間+操作+詳情
+  const seen = new Set();
+  const all = [];
+  [...fromModule, ...fromProjects].forEach(l => {
+    const key = [l.time, l.user, l.action, l.detail].join('|');
+    if (seen.has(key)) return;
+    seen.add(key);
+    all.push(l);
+  });
+  return `<div class="card"><h2>📜 ${title}｜操作記錄</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:10px">只顯示「${title}」模組內的操作，不含每日工作或其他模組。</p>
+    ${all.length ? `<div class="table-wrap"><table><tr><th>時間</th><th>操作人員</th><th>操作</th><th>詳情</th></tr>
+    ${all.map(l=>`<tr><td style="font-size:11px;white-space:nowrap">${l.time}</td><td>${l.user}</td><td><b>${l.action}</b></td><td style="font-size:12px">${l.detail}</td></tr>`).join('')}
+    </table></div>` : '<p style="color:#888">此模組暫無操作記錄。</p>'}
+  </div>`;
+}
+
+/* ═══════════ Part 1 每日工作流程（localStorage v2） ═══════════ */
+var DAILY_KEY='store-web-daily-v6';
+var DAILY_DIRTY_KEY='store-web-daily-v6-dirty';
+var FIXED_UNITS=['觀塘','荔枝角','灣仔','屯門'];
+var STORE_UNITS=['觀塘','荔枝角','灣仔','屯門','國內倉'];
+var PRIORITIES=['高','中','低'];
+var dailyUnitFilter='全部';
+var dailyProgressUnit=null;
+var dailyStateCache=null;
+var dailyPersistSeq=0;
+
+function dailyMergeById(cloudArr, localArr){
+  var m={};
+  (cloudArr||[]).forEach(function(x){ if(x&&x.id!=null) m[String(x.id)]=x; });
+  (localArr||[]).forEach(function(x){ if(x&&x.id!=null) m[String(x.id)]=x; });
+  return Object.keys(m).map(function(k){ return m[k]; });
+}
+function dailyOpLogKey(l){
+  return String((l&&l.time)||'')+'|'+String((l&&(l.userId||l.user))||'')+'|'+String((l&&l.action)||'')+'|'+String((l&&l.detail)||'');
+}
+function dailyMergeOpLogs(cloudArr, localArr){
+  var m={};
+  (cloudArr||[]).forEach(function(l){ m[dailyOpLogKey(l)]=l; });
+  (localArr||[]).forEach(function(l){ m[dailyOpLogKey(l)]=l; });
+  return Object.keys(m).map(function(k){ return m[k]; })
+    .sort(function(a,b){ return String((b&&b.time)||'').localeCompare(String((a&&a.time)||'')); })
+    .slice(0,500);
+}
+/** 合併雲端與本機：保留尚未成功同步的新建恆常／突發任務。 */
+function mergeDailyStates(cloudRaw, localRaw){
+  var cloud=dailyNormalizeState(cloudRaw);
+  var local=dailyNormalizeState(localRaw);
+  return {
+    version:2,
+    works:dailyMergeById(cloud.works, local.works),
+    recurringTemplates:dailyMergeById(cloud.recurringTemplates, local.recurringTemplates),
+    opLogs:dailyMergeOpLogs(cloud.opLogs, local.opLogs)
+  };
+}
+
+function dailyTodayStr(){
+  var d=new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function dailyNowStr(){ return typeof nowStr==='function'?nowStr():new Date().toLocaleString('zh-HK'); }
+function dailyUserId(user){ user=user||currentUser; return user?String(user.id):'system'; }
+function dailyUserName(user){ user=user||currentUser; return user?user.name:'系統'; }
+function dailyUserUnits(user){ user=user||currentUser; return userUnits(user); }
+function dailyUserUnit(user){ const us=dailyUserUnits(user); return us[0]||null; }
+function dailyUserInUnit(user, unit){ return dailyUserUnits(user).indexOf(unit)>=0; }
+function dailyCanManage(user){ user=user||currentUser; return !!(user&&(user.role==='system_admin'||user.role==='manager')); }
+function dailyId(prefix){ return prefix+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7); }
+function dailyEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];}); }
+function dailyBaseState(){ return {version:2,works:[],recurringTemplates:[],opLogs:[]}; }
+function dailyNormalizeState(raw){
+  var s=raw&&typeof raw==='object'?raw:dailyBaseState();
+  s.version=2;
+  s.works=Array.isArray(s.works)?s.works:[];
+  s.recurringTemplates=Array.isArray(s.recurringTemplates)?s.recurringTemplates:[];
+  s.opLogs=Array.isArray(s.opLogs)?s.opLogs:[];
+  return s;
+}
+function addDailyOpLog(action, detail){
+  var s=loadDailyState();
+  var snap = actorSnapshot(currentUser);
+  s.opLogs.unshift({
+    time: dailyNowStr(),
+    user: snap.userLabel || dailyUserName(currentUser),
+    userId: snap.userId,
+    userName: snap.userName,
+    userPhone: snap.userPhone,
+    action: action,
+    detail: detail||''
+  });
+  if(s.opLogs.length>500) s.opLogs=s.opLogs.slice(0,500);
+  saveDailyState(s);
+  addModuleLog('daily', action, detail||'');
+}
+function saveDailyState(next){
+  dailyStateCache=dailyNormalizeState(next||dailyStateCache||dailyBaseState());
+  dailyPersistSeq += 1;
+  try{
+    localStorage.setItem(DAILY_KEY,JSON.stringify(dailyStateCache));
+    // dirty=1：雲端尚未確認寫入。刷新時若仍為 dirty，會與雲端合併以免新建任務消失。
+    localStorage.setItem(DAILY_DIRTY_KEY, '1');
+  }catch(e){}
+  // 有雲端時寫入 MongoDB（localStorage 僅作快取）
+  scheduleDailyCloudSave();
+  return dailyStateCache;
+}
+function loadDailyState(){
+  if(dailyStateCache) return dailyStateCache;
+  try{
+    var raw=localStorage.getItem(DAILY_KEY);
+    dailyStateCache=raw?dailyNormalizeState(JSON.parse(raw)):dailyBaseState();
+  }catch(e){ dailyStateCache=dailyBaseState(); }
+  return dailyStateCache;
+}
+function mkWork(o){
+  var assigneeIds=Array.isArray(o.assigneeIds)?o.assigneeIds.map(String).filter(Boolean).filter(function(id,i,a){ return a.indexOf(id)===i; }):[];
+  var assigneeNames=Array.isArray(o.assigneeNames)?o.assigneeNames.slice():assigneeIds.map(function(id){ return userName(id); });
+  return {
+    id:o.id||dailyId(o.kind||'wrk'),
+    title:o.title||'',
+    content:o.content||'',
+    unit:o.unit,
+    kind:o.kind||'adhoc',
+    status:o.status||'open',
+    dueDate:o.dueDate||dailyTodayStr(),
+    priority:o.priority||'中',
+    templateId:o.templateId||null,
+    requireAttachment:!!o.requireAttachment,
+    attachments:Array.isArray(o.attachments)?o.attachments.slice():[],
+    assigneeIds:assigneeIds,
+    assigneeNames:assigneeNames,
+    completedAt:o.completedAt||null,
+    completedBy:o.completedBy||null,
+    completedByName:o.completedByName||null,
+    createdBy:o.createdBy||'system',
+    updatedAt:o.updatedAt||dailyNowStr()
+  };
+}
+function workAssigneeIds(w){
+  return (w&&Array.isArray(w.assigneeIds))?w.assigneeIds.map(String).filter(Boolean):[];
+}
+function workAssigneesLabel(w){
+  if(!w) return '整單位';
+  var ids=workAssigneeIds(w);
+  if(!ids.length) return '整單位';
+  if(Array.isArray(w.assigneeNames)&&w.assigneeNames.length) return w.assigneeNames.join('、');
+  return ids.map(function(id){ return userName(id); }).join('、');
+}
+/** 可指派完成突發工作的員工（個人賬號）；可依單位過濾。 */
+function listDailyStaffForUnits(units){
+  units=Array.isArray(units)?units:[];
+  return (users||[]).filter(function(u){
+    if(!u || u.active===false) return false;
+    if(!(u.role==='personal' || u.position==='員工')) return false;
+    if(typeof userNeedsPhoneBind==='function' && userNeedsPhoneBind(u)) return false;
+    if(!units.length) return true;
+    var us=dailyUserUnits(u);
+    return us.some(function(unit){ return units.indexOf(unit)>=0; });
+  });
+}
+function isStoreUnit(unit){ return FIXED_UNITS.indexOf(unit)>=0; }
+function isActiveWork(w){ return w&&w.status!=='cancelled'; }
+/**
+ * 今日清單：
+ * - 未完成：期限為今天，或更早（跨日延續／逾期）
+ * - 已完成：只顯示期限為今天的（避免舊完成紀錄刷滿今日）
+ */
+function isDailyTodayWork(w){
+  if(!isActiveWork(w) || !w.dueDate) return false;
+  var today = dailyTodayStr();
+  if(w.status==='done') return w.dueDate===today;
+  return w.dueDate<=today;
+}
+function isOverdue(w){
+  if(!isActiveWork(w)||w.status==='done') return false;
+  if(!w.dueDate) return false;
+  return w.dueDate<dailyTodayStr();
+}
+function workCountsForUnit(unit){
+  var items=loadDailyState().works.filter(function(w){ return isDailyTodayWork(w)&&w.unit===unit; });
+  if(unit==='國內倉') items=items.filter(function(w){ return w.kind!=='settlement'; });
+  var done=items.filter(function(w){ return w.status==='done'; }).length;
+  var overdue=items.filter(isOverdue).length;
+  var total=items.length;
+  var pct=total?Math.round(done/total*100):0;
+  return {unit:unit,total:total,done:done,open:total-done,overdue:overdue,pct:pct,items:items};
+}
+function generateRecurringForToday(){
+  var s=loadDailyState(), today=dailyTodayStr();
+  // 不再自動植入「每日結算」示範工作
+  s.works=(s.works||[]).filter(function(w){ return !isSampleDailyWork(w); });
+  s.recurringTemplates=(s.recurringTemplates||[]).filter(function(t){ return !isSampleDailyTemplate(t); });
+  s.recurringTemplates.forEach(function(t){
+    if(!t||!t.active) return;
+    (t.units||[]).forEach(function(unit){
+      if(STORE_UNITS.indexOf(unit)<0) return;
+      // 同一範本＋單位若仍有未完成實例：跨日延續，不另開第二筆
+      var openExisting=s.works.find(function(w){
+        return w.kind==='recurring'&&w.templateId===t.id&&w.unit===unit&&w.status==='open';
+      });
+      if(openExisting) return;
+      var existsToday=s.works.some(function(w){
+        return w.kind==='recurring'&&w.templateId===t.id&&w.unit===unit&&w.dueDate===today&&w.status!=='cancelled';
+      });
+      if(!existsToday){
+        s.works.push(mkWork({
+          title:t.title, content:t.content||'', unit:unit, kind:'recurring',
+          dueDate:today, priority:t.priority||'中', templateId:t.id,
+          requireAttachment:!!t.requireAttachment, attachments:[], createdBy:'system'
+        }));
+      }
+    });
+  });
+  return saveDailyState(s);
+}
+function syncOpenRecurringFromTemplate(t){
+  var s=loadDailyState();
+  s.works.forEach(function(w){
+    if(w.kind==='recurring'&&w.templateId===t.id&&w.status==='open'){
+      w.requireAttachment=!!t.requireAttachment;
+      w.title=t.title;
+      w.content=t.content||'';
+      w.priority=t.priority||'中';
+      w.updatedAt=dailyNowStr();
+    }
+  });
+  saveDailyState(s);
+}
+function ensureDailySeed(){
+  try{
+    localStorage.removeItem('store-web-daily-v1');
+    localStorage.removeItem('store-web-daily-v2');
+    localStorage.removeItem('store-web-daily-v3');
+    localStorage.removeItem('store-web-daily-v4');
+    localStorage.removeItem('store-web-daily-v5');
+  }catch(e){}
+  var s=loadDailyState();
+  purgeSampleDailyState(s);
+  s.recurringTemplates.forEach(function(t){ if(typeof t.requireAttachment==='undefined') t.requireAttachment=false; });
+  s.works.forEach(function(w){
+    if(typeof w.requireAttachment==='undefined') w.requireAttachment=false;
+    if(!Array.isArray(w.attachments)) w.attachments=[];
+    if(!Array.isArray(w.assigneeIds)) w.assigneeIds=[];
+    if(!Array.isArray(w.assigneeNames)) w.assigneeNames=[];
+  });
+  saveDailyState(s);
+  generateRecurringForToday();
+  return loadDailyState();
+}
+function canTickWork(w,user){
+  if(!w||!user||w.status==='cancelled') return false;
+  if(dailyCanManage(user)) return true;
+  if(!(user.role==='personal' || user.position==='員工')) return false;
+  if(!dailyUserInUnit(user, w.unit)) return false;
+  var ids=workAssigneeIds(w);
+  if(ids.length) return ids.indexOf(String(user.id))>=0;
+  return true;
+}
+function completeDailyWork(id,user,checked,opts){
+  user=user||currentUser;
+  opts=opts||{};
+  var s=loadDailyState();
+  var w=s.works.find(function(x){ return x.id===id; });
+  if(!w||w.status==='cancelled') return false;
+  if(!Array.isArray(w.attachments)) w.attachments=[];
+  if(checked){
+    if(!canTickWork(w,user)) return false;
+    if(w.status==='done') return true;
+    if(w.requireAttachment){
+      var incoming=Array.isArray(opts.attachments)?opts.attachments:[];
+      if(incoming.length) w.attachments=w.attachments.concat(incoming);
+      if(!w.attachments.length) return false;
+    } else if(Array.isArray(opts.attachments)&&opts.attachments.length){
+      w.attachments=w.attachments.concat(opts.attachments);
+    }
+    w.status='done';
+    w.completedAt=dailyNowStr();
+    w.completedBy=dailyUserId(user);
+    w.completedByName=dailyUserName(user);
+    w.updatedAt=dailyNowStr();
+    saveDailyState(s);
+    addDailyOpLog(w.kind==='settlement'?'完成結算':'完成工作', w.unit+'｜'+w.title+(w.attachments.length?'｜附件 '+w.attachments.length+' 個':''));
+  }else{
+    if(!canTickWork(w,user)) return false;
+    w.status='open';
+    w.completedAt=null;
+    w.completedBy=null;
+    w.completedByName=null;
+    w.attachments=[];
+    w.updatedAt=dailyNowStr();
+    saveDailyState(s);
+    addDailyOpLog('取消完成／重開工作', w.unit+'｜'+w.title+'｜已清空附件');
+  }
+  return true;
+}
+function addAttachmentsToWork(id,files,user){
+  user=user||currentUser;
+  var s=loadDailyState();
+  var w=s.works.find(function(x){ return x.id===id; });
+  if(!w||!canTickWork(w,user)) return false;
+  if(!Array.isArray(w.attachments)) w.attachments=[];
+  w.attachments=w.attachments.concat(files||[]);
+  w.updatedAt=dailyNowStr();
+  saveDailyState(s);
+  addDailyOpLog('補傳附件', w.unit+'｜'+w.title+'｜+'+(files||[]).length);
+  return true;
+}
+function cancelAdhocWork(id,user){
+  if(!dailyCanManage(user||currentUser)) return false;
+  var s=loadDailyState();
+  var w=s.works.find(function(x){ return x.id===id; });
+  if(!w||w.kind==='settlement') return false;
+  w.status='cancelled';
+  w.updatedAt=dailyNowStr();
+  saveDailyState(s);
+  addDailyOpLog('取消工作', w.unit+'｜'+w.title);
+  return true;
+}
+function editWorkFields(id,data,user){
+  if(!dailyCanManage(user||currentUser)) return false;
+  var s=loadDailyState();
+  var w=s.works.find(function(x){ return x.id===id; });
+  if(!w||w.status==='cancelled') return false;
+  if(data.title!=null) w.title=String(data.title).trim()||w.title;
+  if(data.content!=null) w.content=String(data.content);
+  if(data.dueDate!=null) w.dueDate=data.dueDate;
+  if(data.priority!=null&&PRIORITIES.indexOf(data.priority)>=0) w.priority=data.priority;
+  w.updatedAt=dailyNowStr();
+  saveDailyState(s);
+  addDailyOpLog('編輯工作', w.unit+'｜'+w.title);
+  return true;
+}
+function createAdhocWork(data,user){
+  user=user||currentUser;
+  if(!dailyCanManage(user)) return false;
+  var title=(data.title||'').trim();
+  var content=data.content||'';
+  var dueDate=data.dueDate||dailyTodayStr();
+  var priority=PRIORITIES.indexOf(data.priority)>=0?data.priority:'中';
+  var units=(data.units||[]).filter(function(u,i,a){ return STORE_UNITS.indexOf(u)>=0&&a.indexOf(u)===i; });
+  if(!title||!units.length) return false;
+  var assigneeIds=(data.assigneeIds||[]).map(String).filter(Boolean).filter(function(id,i,a){ return a.indexOf(id)===i; });
+  var validStaff=listDailyStaffForUnits(units);
+  var validIds={};
+  validStaff.forEach(function(u){ validIds[String(u.id)]=u; });
+  assigneeIds=assigneeIds.filter(function(id){ return !!validIds[id]; });
+  // 有指定員工時，只為「所選員工所屬單位」建立工作
+  if(assigneeIds.length){
+    units=units.filter(function(unit){
+      return assigneeIds.some(function(id){ return dailyUserUnits(validIds[id]).indexOf(unit)>=0; });
+    });
+    if(!units.length) return false;
+  }
+  var s=loadDailyState();
+  var requireAttachment=!!data.requireAttachment;
+  units.forEach(function(unit){
+    var unitAssigneeIds=assigneeIds.filter(function(id){
+      return dailyUserUnits(validIds[id]).indexOf(unit)>=0;
+    });
+    s.works.push(mkWork({
+      title:title, content:content, unit:unit, kind:'adhoc',
+      dueDate:dueDate, priority:priority, createdBy:dailyUserId(user),
+      requireAttachment:requireAttachment, attachments:[],
+      assigneeIds:unitAssigneeIds,
+      assigneeNames:unitAssigneeIds.map(function(id){ return validIds[id].name||userName(id); })
+    }));
+  });
+  saveDailyState(s);
+  var assignLabel=assigneeIds.length
+    ?('｜指派：'+assigneeIds.map(function(id){ return (validIds[id]&&validIds[id].name)||userName(id); }).join('、'))
+    :'｜整單位';
+  addDailyOpLog('建立突發工作', title+'｜單位：'+units.join('、')+'｜期限 '+dueDate+assignLabel+(requireAttachment?'｜需附件':''));
+  return true;
+}
+function createRecurringTemplate(data,user){
+  user=user||currentUser;
+  if(!dailyCanManage(user)) return false;
+  var title=(data.title||'').trim();
+  var content=data.content||'';
+  var priority=PRIORITIES.indexOf(data.priority)>=0?data.priority:'中';
+  var units=(data.units||[]).filter(function(u,i,a){ return STORE_UNITS.indexOf(u)>=0&&a.indexOf(u)===i; });
+  if(!title||!units.length) return false;
+  var s=loadDailyState();
+  var t={
+    id:dailyId('tpl'), title:title, content:content, units:units, priority:priority, active:true,
+    requireAttachment:!!data.requireAttachment
+  };
+  s.recurringTemplates.push(t);
+  saveDailyState(s);
+  generateRecurringForToday();
+  addDailyOpLog('建立恆常任務', title+'｜單位：'+units.join('、')+(t.requireAttachment?'｜需附件':''));
+  return true;
+}
+function setTemplateActive(id,active,user){
+  if(!dailyCanManage(user||currentUser)) return false;
+  var s=loadDailyState();
+  var t=s.recurringTemplates.find(function(x){ return x.id===id; });
+  if(!t) return false;
+  t.active=!!active;
+  saveDailyState(s);
+  // 停用：不再產生新的每日實例，但範本仍留在列表；未完成實例可繼續處理
+  // 啟用：立刻為今日補齊各單位工作
+  if(active) generateRecurringForToday();
+  addDailyOpLog(active?'啟用恆常任務':'停用恆常任務', t.title+(active?'':'｜已停止每日產生'));
+  return true;
+}
+function editTemplate(id,data,user){
+  if(!dailyCanManage(user||currentUser)) return false;
+  var s=loadDailyState();
+  var t=s.recurringTemplates.find(function(x){ return x.id===id; });
+  if(!t) return false;
+  if(data.title!=null) t.title=String(data.title).trim()||t.title;
+  if(data.content!=null) t.content=String(data.content);
+  if(data.priority!=null&&PRIORITIES.indexOf(data.priority)>=0) t.priority=data.priority;
+  if(Array.isArray(data.units)) t.units=data.units.filter(function(u){ return STORE_UNITS.indexOf(u)>=0; });
+  if(typeof data.requireAttachment!=='undefined') t.requireAttachment=!!data.requireAttachment;
+  saveDailyState(s);
+  syncOpenRecurringFromTemplate(t);
+  generateRecurringForToday();
+  addDailyOpLog('編輯恆常任務', t.title+'｜單位：'+(t.units||[]).join('、')+(t.requireAttachment?'｜需附件':''));
+  return true;
+}
+function deleteTemplate(id,user){
+  if(!dailyCanManage(user||currentUser)) return false;
+  var s=loadDailyState();
+  var t=s.recurringTemplates.find(function(x){ return x.id===id; });
+  if(!t) return false;
+  var title=t.title;
+  s.recurringTemplates=s.recurringTemplates.filter(function(x){ return x.id!==id; });
+  s.works.forEach(function(w){
+    if(w.kind==='recurring'&&w.templateId===id&&w.status==='open'){
+      w.status='cancelled';
+      w.updatedAt=dailyNowStr();
+    }
+  });
+  saveDailyState(s);
+  addDailyOpLog('刪除恆常任務', title);
+  return true;
+}
+function getTodayWorksForUser(user){
+  user=user||currentUser;
+  var list=loadDailyState().works.filter(isDailyTodayWork);
+  if(dailyCanManage(user)){
+    if(dailyUnitFilter!=='全部') list=list.filter(function(w){ return w.unit===dailyUnitFilter; });
+  }else{
+    var units=dailyUserUnits(user);
+    var uid=String(user.id);
+    list=list.filter(function(w){
+      if(units.indexOf(w.unit)<0) return false;
+      var ids=workAssigneeIds(w);
+      if(ids.length) return ids.indexOf(uid)>=0;
+      return true;
+    });
+  }
+  return list.sort(function(a,b){
+    var po={高:0,中:1,低:2};
+    return (po[a.priority]-po[b.priority])||a.unit.localeCompare(b.unit,'zh-Hant')||a.title.localeCompare(b.title,'zh-Hant');
+  });
+}
+function getUnitProgress(){
+  var out={};
+  STORE_UNITS.forEach(function(unit){ out[unit]=workCountsForUnit(unit); });
+  return out;
+}
+function priorityTag(p){
+  var cls=p==='高'?'s-fix':(p==='低'?'s-notstart':'s-pending');
+  return '<span class="tag '+cls+'">優先：'+dailyEsc(p||'中')+'</span>';
+}
+function dailyKindTag(w){
+  var m={adhoc:['t-dev','突發'],recurring:['t-rep','恆常'],settlement:['dept','結算']}[w.kind]||['s-na',w.kind];
+  return '<span class="tag '+m[0]+'">'+m[1]+'</span>';
+}
+function dailyStatusTag(w){
+  if(w.status==='cancelled') return '<span class="tag s-cancelled">已取消</span>';
+  if(isOverdue(w)) return '<span class="tag s-overdue">逾期</span>';
+  if(w.status==='done') return '<span class="tag s-done">'+(w.kind==='settlement'?'已結算':'已完成')+'</span>';
+  return '<span class="tag s-pending">'+(w.kind==='settlement'?'待結算':'未完成')+'</span>';
+}
+function goDailyView(v){
+  currentModule='daily';
+  var map={today:'dailyToday',progress:'dailyProgress',new:'dailyNew',recurring:'dailyRecurring',records:'dailyRecords',unit:'dailyUnit',logs:'dailyOpLogs'};
+  currentView=map[v]||'dailyToday';
+  if(v!=='unit') dailyProgressUnit=null;
+  render();
+}
+function setDailyUnitFilter(unit){ dailyUnitFilter=unit||'全部'; render(); }
+function openDailyUnit(unit){ dailyProgressUnit=unit; currentModule='daily'; currentView='dailyUnit'; render(); }
+function dailyToggle(id,el){
+  var s=loadDailyState();
+  var w=s.works.find(function(x){ return x.id===id; });
+  if(!w){ el.checked=!el.checked; return; }
+  if(el.checked){
+    // 要完成：需附件的恆常任務先開上傳窗，成功前不打勾
+    if(w.requireAttachment){
+      el.checked=false;
+      dailyAskCompleteWithFiles(id);
+      return;
+    }
+    var ok=completeDailyWork(id,currentUser,true);
+    if(!ok){ el.checked=false; alert2('無法更新此工作。你只能操作自己所屬單位的工作。'); return; }
+    render();
+    return;
+  }
+  // 取消剔選：確認後清空全部附件並重開
+  el.checked=true;
+  showModal(
+    '<h3>取消完成？</h3>'+
+    '<p style="font-size:14px">將重開「'+dailyEsc(w.title)+'」，並<strong>刪除該工作上的全部附件</strong>。</p>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">返回</button>'+
+    '<button class="btn red sm" onclick="dailyConfirmUntick(\''+id+'\')">確認取消完成</button></div>'
+  );
+}
+function dailyConfirmUntick(id){
+  var ok=completeDailyWork(id,currentUser,false);
+  closeModal();
+  if(!ok){ alert2('無法取消完成。'); return; }
+  render();
+}
+function dailyAskCompleteWithFiles(id){
+  var w=loadDailyState().works.find(function(x){ return x.id===id; });
+  if(!w) return;
+  showModal(
+    '<h3>上傳附件後完成</h3>'+
+    '<p style="font-size:13px;color:#555">「'+dailyEsc(w.title)+'」需要上傳至少 1 個附件（格式不限，可多選）。上傳成功後才會剔選完成。</p>'+
+    '<label>選擇檔案</label><input type="file" id="d-complete-files" multiple>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'+
+    '<button class="btn sm" onclick="dailySubmitCompleteWithFiles(\''+id+'\')">上傳並完成</button></div>'
+  );
+}
+async function dailySubmitCompleteWithFiles(id){
+  var input=document.getElementById('d-complete-files');
+  if(!input||!input.files||!input.files.length) return alert2('請至少選擇 1 個附件。');
+  var files=[];
+  try{
+    for(var i=0;i<input.files.length;i++){
+      var f=input.files[i];
+      var up=await cloudUploadFile(f);
+      files.push({name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType, by:dailyUserId(currentUser), time:dailyNowStr()});
+    }
+  }catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
+  var ok=completeDailyWork(id,currentUser,true,{attachments:files});
+  closeModal();
+  if(!ok){ alert2('無法完成此工作。'); return; }
+  render();
+}
+function dailyAskAddFiles(id){
+  var w=loadDailyState().works.find(function(x){ return x.id===id; });
+  if(!w) return;
+  showModal(
+    '<h3>補傳附件</h3>'+
+    '<p style="font-size:13px;color:#555">「'+dailyEsc(w.title)+'」已完成，可再補傳附件（不影響完成狀態）。</p>'+
+    '<label>選擇檔案</label><input type="file" id="d-add-files" multiple>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'+
+    '<button class="btn sm" onclick="dailySubmitAddFiles(\''+id+'\')">上傳</button></div>'
+  );
+}
+async function dailySubmitAddFiles(id){
+  var input=document.getElementById('d-add-files');
+  if(!input||!input.files||!input.files.length) return alert2('請選擇至少 1 個檔案。');
+  var files=[];
+  try{
+    for(var i=0;i<input.files.length;i++){
+      var f=input.files[i];
+      var up=await cloudUploadFile(f);
+      files.push({name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType, by:dailyUserId(currentUser), time:dailyNowStr()});
+    }
+  }catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
+  var ok=addAttachmentsToWork(id,files,currentUser);
+  closeModal();
+  if(!ok){ alert2('無法補傳附件。'); return; }
+  render();
+}
+function dailyReopen(id){
+  if(!dailyCanManage(currentUser)){ alert2('只有管理層可以重新開啟工作。'); return; }
+  var w=loadDailyState().works.find(function(x){ return x.id===id; });
+  if(!w) return;
+  showModal(
+    '<h3>重新開啟工作？</h3>'+
+    '<p style="font-size:14px">將重開「'+dailyEsc(w.title)+'」，並<strong>刪除該工作上的全部附件</strong>。</p>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">返回</button>'+
+    '<button class="btn red sm" onclick="dailyConfirmUntick(\''+id+'\')">確認重開</button></div>'
+  );
+}
+function dailyCancelWork(id){
+  if(!dailyCanManage(currentUser)) return;
+  cancelAdhocWork(id,currentUser);
+  render();
+}
+function unitChecksHtml(selected){
+  selected=selected||STORE_UNITS.slice();
+  return STORE_UNITS.map(function(u){
+    return '<label style="display:inline-flex;align-items:center;gap:4px;margin:4px 10px 4px 0"><input type="checkbox" class="d-unit" value="'+u+'" '+(selected.indexOf(u)>=0?'checked':'')+' onchange="typeof dailyRefreshAdhocStaffBox===\'function\'&&dailyRefreshAdhocStaffBox()"> '+u+'</label>';
+  }).join('');
+}
+function staffChecksHtml(units, selected){
+  selected=(selected||[]).map(String);
+  var list=listDailyStaffForUnits(units);
+  if(!list.length){
+    return '<p style="color:#888;font-size:12px;margin:0">所選單位暫無可指派員工。不選員工則整單位任何人可完成。</p>';
+  }
+  return list.map(function(u){
+    var labs=dailyUserUnits(u).join('、');
+    return '<label style="display:flex;align-items:center;gap:6px;margin:6px 0">'+
+      '<input type="checkbox" class="d-staff" value="'+dailyEsc(String(u.id))+'" '+(selected.indexOf(String(u.id))>=0?'checked':'')+'> '+
+      '<span>'+dailyEsc(u.name)+(labs?' <span style="color:#888;font-size:11px">（'+dailyEsc(labs)+'）</span>':'')+'</span></label>';
+  }).join('');
+}
+function dailyRefreshAdhocStaffBox(){
+  var box=document.getElementById('d-staff-box');
+  if(!box) return;
+  var units=[].slice.call(document.querySelectorAll('#modal-content .d-unit:checked')).map(function(x){return x.value;});
+  var selected=[].slice.call(document.querySelectorAll('#modal-content .d-staff:checked')).map(function(x){return x.value;});
+  box.innerHTML=staffChecksHtml(units, selected);
+}
+function prioritySelectHtml(val,id){
+  id=id||'d-priority';
+  return '<select id="'+id+'">'+PRIORITIES.map(function(p){ return '<option value="'+p+'" '+(p===(val||'中')?'selected':'')+'>'+p+'</option>'; }).join('')+'</select>';
+}
+function dailyCreateAdhoc(){
+  if(!dailyCanManage(currentUser)) return alert2('只有管理層可以建立突發工作。');
+  if(!requireCloud('建立突發工作')) return;
+  var defaultUnits=STORE_UNITS.slice();
+  showModal(
+    '<h3>🛠️ 建立突發工作</h3>'+
+    '<label>標題</label><input id="d-title" type="text" placeholder="例如：臨時補貨核對">'+
+    '<label>內容</label><textarea id="d-content" placeholder="工作說明"></textarea>'+
+    '<label>完成期限</label><input id="d-due" type="date" value="'+dailyTodayStr()+'">'+
+    '<label>優先級</label>'+prioritySelectHtml('中')+
+    '<label>適用單位（可多選）</label><div class="card" style="padding:10px">'+unitChecksHtml(defaultUnits)+'</div>'+
+    '<label>指定員工（可選）</label><div id="d-staff-box" class="card" style="padding:10px;max-height:180px;overflow:auto">'+staffChecksHtml(defaultUnits)+'</div>'+
+    '<p style="font-size:12px;color:#888;margin-top:4px">不選員工＝該單位任何人可完成；有選則只有指定員工可剔選（管理層仍可操作）。</p>'+
+    '<label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="d-require-attach"> 完成時需要上傳附件</label>'+
+    '<p style="font-size:12px;color:#888;margin-top:4px">勾選後，員工剔選完成前必須先上傳至少 1 個附件（格式不限）。</p>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitAdhoc()">建立</button></div>'
+  );
+}
+async function dailySubmitAdhoc(){
+  var title=(document.getElementById('d-title').value||'').trim();
+  var content=document.getElementById('d-content').value||'';
+  var due=document.getElementById('d-due').value||dailyTodayStr();
+  var priority=document.getElementById('d-priority').value;
+  var requireAttachment=!!(document.getElementById('d-require-attach')||{}).checked;
+  var units=[].slice.call(document.querySelectorAll('#modal-content .d-unit:checked')).map(function(x){return x.value;});
+  var assigneeIds=[].slice.call(document.querySelectorAll('#modal-content .d-staff:checked')).map(function(x){return x.value;});
+  if(!title||!units.length) return alert2('請輸入標題並選擇至少一個單位。');
+  if(!requireCloud('建立突發工作')) return;
+  if(!createAdhocWork({title:title,content:content,dueDate:due,priority:priority,units:units,assigneeIds:assigneeIds,requireAttachment:requireAttachment},currentUser)){
+    return alert2('建立失敗：請確認所選員工屬於已勾選的單位。');
+  }
+  closeModal();
+  try{
+    await flushCloudSaves();
+    render();
+  }catch(e){
+    render();
+    alert2('工作已保存在本機，但雲端同步失敗：'+(e&&e.message?e.message:e)+'。請查看頂欄狀態；暫勿關閉分頁，稍後會自動重試。');
+  }
+}
+function dailyCreateRecurring(){
+  if(!dailyCanManage(currentUser)) return alert2('只有管理層可以建立恆常任務。');
+  if(!requireCloud('建立恆常任務')) return;
+  showModal(
+    '<h3>🔁 建立恆常任務</h3>'+
+    '<label>標題</label><input id="d-title" type="text" placeholder="輸入工作標題">'+
+    '<label>內容</label><textarea id="d-content" placeholder="工作說明"></textarea>'+
+    '<label>優先級</label>'+prioritySelectHtml('中')+
+    '<label>適用單位（可多選）</label><div class="card" style="padding:10px">'+unitChecksHtml()+'</div>'+
+    '<label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="d-require-attach"> 完成時需要上傳附件</label>'+
+    '<p style="font-size:12px;color:#888;margin-top:4px">勾選後，員工剔選完成前必須先上傳至少 1 個附件（格式不限）。</p>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitRecurring()">建立</button></div>'
+  );
+}
+async function dailySubmitRecurring(){
+  var title=(document.getElementById('d-title').value||'').trim();
+  var content=document.getElementById('d-content').value||'';
+  var priority=document.getElementById('d-priority').value;
+  var requireAttachment=!!(document.getElementById('d-require-attach')||{}).checked;
+  var units=[].slice.call(document.querySelectorAll('#modal-content .d-unit:checked')).map(function(x){return x.value;});
+  if(!title||!units.length) return alert2('請輸入標題並選擇至少一個單位。');
+  if(!requireCloud('建立恆常任務')) return;
+  createRecurringTemplate({title:title,content:content,priority:priority,units:units,requireAttachment:requireAttachment},currentUser);
+  closeModal();
+  try{
+    await flushCloudSaves();
+    render();
+  }catch(e){
+    render();
+    alert2('恆常任務已保存在本機，但雲端同步失敗：'+(e&&e.message?e.message:e)+'。請查看頂欄狀態；暫勿關閉分頁，稍後會自動重試。');
+  }
+}
+function dailyEditWork(id){
+  if(!dailyCanManage(currentUser)) return;
+  var w=loadDailyState().works.find(function(x){return x.id===id;});
+  if(!w) return;
+  showModal(
+    '<h3>✏️ 編輯工作</h3>'+
+    '<label>標題</label><input id="d-title" type="text" value="'+dailyEsc(w.title)+'">'+
+    '<label>內容</label><textarea id="d-content">'+dailyEsc(w.content)+'</textarea>'+
+    '<label>完成期限</label><input id="d-due" type="date" value="'+dailyEsc(w.dueDate)+'">'+
+    '<label>優先級</label>'+prioritySelectHtml(w.priority)+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitEditWork(\''+id+'\')">儲存</button></div>'
+  );
+}
+function dailySubmitEditWork(id){
+  editWorkFields(id,{
+    title:document.getElementById('d-title').value,
+    content:document.getElementById('d-content').value,
+    dueDate:document.getElementById('d-due').value,
+    priority:document.getElementById('d-priority').value
+  },currentUser);
+  closeModal(); render();
+}
+function dailyEditTemplate(id){
+  if(!dailyCanManage(currentUser)) return;
+  var t=loadDailyState().recurringTemplates.find(function(x){return x.id===id;});
+  if(!t) return;
+  showModal(
+    '<h3>✏️ 編輯恆常任務</h3>'+
+    '<label>標題</label><input id="d-title" type="text" value="'+dailyEsc(t.title)+'">'+
+    '<label>內容</label><textarea id="d-content">'+dailyEsc(t.content||'')+'</textarea>'+
+    '<label>優先級</label>'+prioritySelectHtml(t.priority||'中')+
+    '<label>適用單位</label><div class="card" style="padding:10px">'+unitChecksHtml(t.units||[])+'</div>'+
+    '<label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="d-require-attach" '+(t.requireAttachment?'checked':'')+'> 完成時需要上傳附件</label>'+
+    '<p style="font-size:12px;color:#888;margin-top:4px">變更會同步到今日尚未完成的實例；已完成工作不受影響。</p>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitEditTemplate(\''+id+'\')">儲存</button></div>'
+  );
+}
+function dailySubmitEditTemplate(id){
+  var units=[].slice.call(document.querySelectorAll('#modal-content .d-unit:checked')).map(function(x){return x.value;});
+  editTemplate(id,{
+    title:document.getElementById('d-title').value,
+    content:document.getElementById('d-content').value,
+    priority:document.getElementById('d-priority').value,
+    units:units,
+    requireAttachment:!!(document.getElementById('d-require-attach')||{}).checked
+  },currentUser);
+  closeModal(); render();
+}
+function dailyToggleTemplate(id,active){
+  setTemplateActive(id,active,currentUser);
+  render();
+}
+function dailyDownloadAttach(workId,idx){
+  var w=loadDailyState().works.find(function(x){ return x.id===workId; });
+  if(!w||!Array.isArray(w.attachments)||!w.attachments[idx]) return;
+  var f=w.attachments[idx];
+  var a=document.createElement('a');
+  a.href=fileHref(f); a.download=f.name||('file-'+idx); a.target='_blank'; a.rel='noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function dailyAttachHtml(w,user,readonly){
+  var files=Array.isArray(w.attachments)?w.attachments:[];
+  var can=canTickWork(w,user);
+  var bits=[];
+  if(w.requireAttachment){
+    bits.push('<span class="tag" style="background:#fff3e0;color:#e65100">需附件</span>');
+  }
+  if(files.length){
+    bits.push('<div style="margin-top:4px;font-size:12px">'+files.map(function(f,i){
+      return '<button type="button" class="btn gray sm" style="margin:2px 4px 2px 0" onclick="dailyDownloadAttach(\''+w.id+'\','+i+')">📎 '+dailyEsc(f.name)+'</button>';
+    }).join('')+'</div>');
+  }else if(w.status==='done'){
+    bits.push('<div style="font-size:11px;color:#aaa;margin-top:2px">無附件</div>');
+  }
+  if(!readonly&&can&&w.status==='done'){
+    bits.push('<div style="margin-top:4px"><button type="button" class="btn gray sm" onclick="dailyAskAddFiles(\''+w.id+'\')">補傳附件</button></div>');
+  }
+  return bits.length?'<div style="margin-top:6px">'+bits.join('')+'</div>':'';
+}
+function dailyWorkRows(list,user,opts){
+  opts=opts||{};
+  var readonly=!!opts.readonly;
+  var mirrors=opts.mirrors||[];
+  if(!list.length&&!mirrors.length) return '<p style="color:#888">沒有工作。</p>';
+  var showAdmin=dailyCanManage(user)&&!readonly;
+  var body=list.map(function(w){
+      var can=canTickWork(w,user);
+      var tick='';
+      if(!readonly){
+        if(w.status==='done'){
+          tick=can
+            ?'<input type="checkbox" checked onchange="dailyToggle(\''+w.id+'\',this)" title="再點一下可取消完成">'
+            :'<input type="checkbox" checked disabled title="已完成（不可操作其他單位）">';
+        }else{
+          tick=can
+            ?'<input type="checkbox" onchange="dailyToggle(\''+w.id+'\',this)" title="'+(w.requireAttachment?'需先上傳附件':'剔選完成')+'">'
+            :'<input type="checkbox" disabled title="不可操作">';
+        }
+      }
+      var doneInfo=w.status==='done'
+        ? dailyEsc(w.completedByName||'—')+'<div style="font-size:11px;color:#888">'+dailyEsc(w.completedAt||'')+'</div>'
+        : '—';
+      var admin='';
+      if(showAdmin){
+        admin='<button class="btn gray sm" onclick="dailyEditWork(\''+w.id+'\')">編輯</button> ';
+        if(w.status==='done') admin+='<button class="btn warn sm" onclick="dailyReopen(\''+w.id+'\')">重開</button> ';
+        if(w.kind!=='settlement'&&w.status!=='cancelled') admin+='<button class="btn red sm" onclick="dailyCancelWork(\''+w.id+'\')">取消</button>';
+      }
+      return '<tr>'+
+        (readonly?'':'<td>'+tick+'</td>')+
+        '<td><b>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+
+          (w.kind==='adhoc'?'<div style="font-size:11px;color:#666;margin-top:4px">指派：'+dailyEsc(workAssigneesLabel(w))+'</div>':'')+
+          dailyAttachHtml(w,user,readonly)+'</td>'+
+        '<td>'+dailyEsc(w.unit)+'</td><td>'+dailyKindTag(w)+'</td><td>'+priorityTag(w.priority)+'</td>'+
+        '<td>'+dailyEsc(w.dueDate||'—')+'</td><td>'+dailyStatusTag(w)+'</td><td>'+doneInfo+'</td>'+
+        (showAdmin?'<td><div class="actions-row">'+admin+'</div></td>':'')+
+        '</tr>';
+    }).join('');
+  body+=mirrors.map(function(t){ return dailyProjectMirrorRow(t,readonly); }).join('');
+  return '<div class="table-wrap"><table><thead><tr>'+
+    (readonly?'':'<th style="width:40px">剔選</th>')+
+    '<th>工作</th><th>單位</th><th>類型</th><th>優先</th><th>期限</th><th>狀態</th><th>完成資訊</th>'+
+    (showAdmin?'<th>管理</th>':'')+
+    '</tr></thead><tbody>'+body+'</tbody></table></div>';
+}
+function dailyProjectMirrorRow(t,readonly){
+  var submitted=t.status==='待確認';
+  var tick='';
+  if(!readonly){
+    tick=submitted
+      ?'<input type="checkbox" checked onchange="dailyToggleProject(\''+t.pid+'\','+t.idx+',this)" title="取消剔選＝撤回提交">'
+      :'<input type="checkbox" onchange="dailyToggleProject(\''+t.pid+'\','+t.idx+',this)" title="剔選＝上傳附件並提交確認">';
+  }
+  var typeLabel=t.type==='rep'?'補貨':'開發';
+  var title='['+typeLabel+'] '+t.code+'｜'+t.stage;
+  var extra=
+    (t.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(t.content)+'</div>':'')+
+    '<div style="margin-top:6px" class="actions-row">'+
+      '<button type="button" class="btn gray sm" onclick="askContent(\''+t.pid+'\','+t.idx+')">填寫工作內容</button> '+
+      '<button type="button" class="btn sm" onclick="openProject(\''+t.pid+'\',\'flow\')">查看項目</button>'+
+    '</div>'+
+    (t.files&&t.files.length?'<div style="font-size:11px;color:#888;margin-top:4px">已有附件 '+t.files.length+' 個（提交時仍須新上傳）</div>':'');
+  return '<tr>'+
+    (readonly?'':'<td>'+tick+'</td>')+
+    '<td><b>'+dailyEsc(title)+'</b><div style="font-size:12px;color:#777;margin-top:2px">'+dailyEsc(t.pname)+'</div>'+extra+'</td>'+
+    '<td>—</td><td>'+typeTag(t.type)+'</td><td>—</td>'+
+    '<td>'+dailyEsc(t.deadline||'—')+'</td><td>'+stTag(t.status)+'</td><td>—</td></tr>';
+}
+function dailyToggleProject(pid,idx,el){
+  if(isManager()){ el.checked=!el.checked; alert2('一般管理層不可推進階段。'); return; }
+  if(!isPersonal()&&!isAdmin()){ el.checked=!el.checked; return; }
+  var p=projects.find(function(x){ return x.id===pid; });
+  if(!p||!p.stages[idx]){ el.checked=!el.checked; return; }
+  var s=p.stages[idx];
+  if(!isStageHandler(s,currentUser.id)&&!isAdmin()){ el.checked=!el.checked; alert2('此階段不是你的待辦。'); return; }
+  if(el.checked){
+    el.checked=false;
+    dailyAskProjectSubmit(pid,idx);
+    return;
+  }
+  el.checked=true;
+  showModal(
+    '<h3>撤回提交？</h3>'+
+    '<p style="font-size:14px">將「'+dailyEsc(p.code)+'｜'+dailyEsc(s.name)+'」由待確認撤回為進行中。</p>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">返回</button>'+
+    '<button class="btn red sm" onclick="dailyConfirmProjectWithdraw(\''+pid+'\','+idx+')">確認撤回</button></div>'
+  );
+}
+function dailyAskProjectSubmit(pid,idx){
+  var p=projects.find(function(x){ return x.id===pid; });
+  if(!p||!p.stages[idx]) return;
+  var s=p.stages[idx];
+  showModal(
+    '<h3>上傳附件後提交確認</h3>'+
+    '<p style="font-size:13px;color:#555">「'+dailyEsc(p.code)+'｜'+dailyEsc(s.name)+'」提交前必須<strong>新上傳</strong>至少 1 個附件（格式不限，可多選）。未開始的階段會自動開始處理。</p>'+
+    '<label>選擇檔案</label><input type="file" id="d-proj-files" multiple>'+
+    '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'+
+    '<button class="btn sm" onclick="dailySubmitProject(\''+pid+'\','+idx+')">上傳並提交</button></div>'
+  );
+}
+async function dailySubmitProject(pid,idx){
+  if(isManager()) return alert2('一般管理層不可推進階段。');
+  var p=projects.find(function(x){ return x.id===pid; });
+  if(!p||!p.stages[idx]) return;
+  var s=p.stages[idx];
+  if(!isStageHandler(s,currentUser.id)&&!isAdmin()) return alert2('此階段不是你的待辦。');
+  var input=document.getElementById('d-proj-files');
+  if(!input||!input.files||!input.files.length) return alert2('請至少選擇 1 個附件。');
+  try{
+    for(var i=0;i<input.files.length;i++){
+      var f=input.files[i];
+      var up=await cloudUploadFile(f);
+      s.files.forEach(function(x){ x.latest=false; });
+      var ver='V'+(s.files.length+1);
+      s.files.push({name:up.name||f.name, by:currentUser.id, time:nowStr(), ver:ver, latest:true, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType});
+      addProjLog(p,'上載文件', s.name+'｜'+(up.name||f.name)+'（'+ver+'）');
+    }
+  }catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
+  if(['未開始','待處理'].includes(s.status)){
+    s.status='進行中';
+    addProjLog(p,'開始處理', s.name+' → 進行中');
+  }
+  if(['進行中','需要修改'].includes(s.status)){
+    s.status='待確認';
+    s.returnReason='';
+    addProjLog(p,'提交確認', s.name+' → 待確認');
+  }else if(s.status!=='待確認'){
+    return alert2('目前狀態無法提交確認：'+s.status);
+  }
+  closeModal(); render();
+}
+function dailyConfirmProjectWithdraw(pid,idx){
+  if(isManager()){ closeModal(); return alert2('一般管理層不可推進階段。'); }
+  var p=projects.find(function(x){ return x.id===pid; });
+  if(!p||!p.stages[idx]){ closeModal(); return; }
+  var s=p.stages[idx];
+  if(!isStageHandler(s,currentUser.id)&&!isAdmin()){ closeModal(); return alert2('此階段不是你的待辦。'); }
+  if(s.status!=='待確認'){ closeModal(); render(); return; }
+  s.status='進行中';
+  addProjLog(p,'撤回提交', s.name+'｜待確認 → 進行中');
+  closeModal(); render();
+}
+function vDailyToday(user){
+  ensureDailySeed();
+  var list=getTodayWorksForUser(user);
+  var mirrors=dailyCanManage(user)?[]:getProjectTodosForUser(user);
+  var done=list.filter(function(w){return w.status==='done';}).length;
+  var overdue=list.filter(isOverdue).length;
+  var filter='';
+  if(dailyCanManage(user)){
+    filter='<select onchange="setDailyUnitFilter(this.value)">'+['全部'].concat(STORE_UNITS).map(function(u){
+      return '<option value="'+u+'"'+(dailyUnitFilter===u?' selected':'')+'>'+u+'</option>';
+    }).join('')+'</select>';
+  }else{
+    var myUnits=dailyUserUnits(user);
+    filter='<span class="tag dept">所屬單位：'+dailyEsc(myUnits.length?myUnits.join('、'):'—')+'</span>';
+  }
+  return '<div class="card"><h2>🗓️ 今日工作｜'+dailyEsc(todayStr())+'</h2>'+
+    '<div class="stats">'+
+    '<div class="stat"><div class="num">'+list.length+'</div><div class="lbl">門市工作</div></div>'+
+    '<div class="stat"><div class="num green">'+done+'</div><div class="lbl">已完成</div></div>'+
+    '<div class="stat"><div class="num orange">'+(list.length-done)+'</div><div class="lbl">未完成</div></div>'+
+    '<div class="stat"><div class="num red">'+overdue+'</div><div class="lbl">逾期</div></div>'+
+    (mirrors.length?'<div class="stat"><div class="num blue">'+mirrors.length+'</div><div class="lbl">項目待辦</div></div>':'')+
+    '</div><div class="filters" style="margin-top:12px">'+filter+'</div>'+
+    (mirrors.length?'<p style="font-size:12px;color:#888;margin-top:8px">項目待辦（開發／補貨）顯示於下方清單，不計入上方門市完成統計。</p>':'')+
+    '</div>'+
+    '<div class="card"><h3>工作清單（剔選完成）</h3>'+dailyWorkRows(list,user,{mirrors:mirrors})+'</div>';
+}
+function vDailyProgress(user){
+  ensureDailySeed();
+  var progress=getUnitProgress();
+  var cards=STORE_UNITS.map(function(unit){
+    var p=progress[unit];
+    return '<div class="card" style="cursor:pointer" onclick="openDailyUnit(\''+unit+'\')">'+
+      '<h3>'+unit+'</h3>'+
+      '<div class="stats">'+
+      '<div class="stat"><div class="num">'+p.total+'</div><div class="lbl">總數</div></div>'+
+      '<div class="stat"><div class="num green">'+p.done+'</div><div class="lbl">已完成</div></div>'+
+      '<div class="stat"><div class="num orange">'+p.open+'</div><div class="lbl">未完成</div></div>'+
+      '<div class="stat"><div class="num red">'+p.overdue+'</div><div class="lbl">逾期</div></div>'+
+      '<div class="stat"><div class="num blue">'+p.pct+'%</div><div class="lbl">完成率</div></div>'+
+      '</div><p style="margin-top:8px;font-size:12px;color:#888">點擊查看唯讀明細</p></div>';
+  }).join('');
+  return '<div class="card"><h2>📊 各單位進度</h2><p style="color:#666;font-size:13px">個人賬號可查看其他單位，但不可替其他單位剔選。</p></div>'+cards;
+}
+function vDailyUnit(user){
+  ensureDailySeed();
+  var unit=dailyProgressUnit||STORE_UNITS[0];
+  var p=workCountsForUnit(unit);
+  var mine=dailyUserInUnit(user, unit);
+  var readonly=!dailyCanManage(user)&&!mine;
+  return '<div class="card"><h2>📍 '+dailyEsc(unit)+' 工作明細</h2>'+
+    '<div class="stats">'+
+    '<div class="stat"><div class="num">'+p.total+'</div><div class="lbl">總數</div></div>'+
+    '<div class="stat"><div class="num green">'+p.done+'</div><div class="lbl">已完成</div></div>'+
+    '<div class="stat"><div class="num red">'+p.overdue+'</div><div class="lbl">逾期</div></div>'+
+    '<div class="stat"><div class="num blue">'+p.pct+'%</div><div class="lbl">完成率</div></div></div>'+
+    '<div class="filters" style="margin-top:12px"><button class="btn gray sm" onclick="goDailyView(\'progress\')">← 返回進度</button></div>'+
+    (readonly?'<div class="info-banner" style="margin-top:10px">🔒 唯讀：非你所屬單位，不可剔選。</div>':'')+
+    '</div><div class="card">'+dailyWorkRows(p.items,user,{readonly:readonly})+'</div>';
+}
+function vDailyNew(user){
+  if(!dailyCanManage(user)) return '<div class="card"><h2>➕ 管理工作</h2><p>個人賬號不可新增工作。</p></div>';
+  ensureDailySeed();
+  var list=loadDailyState().works.filter(function(w){
+    return w && w.kind==='adhoc' && w.status!=='cancelled';
+  }).sort(function(a,b){
+    return String(b.dueDate||'').localeCompare(String(a.dueDate||'')) ||
+      String(b.updatedAt||'').localeCompare(String(a.updatedAt||'')) ||
+      String(a.title||'').localeCompare(String(b.title||''),'zh-Hant');
+  });
+  var rows=!list.length
+    ?'<p style="color:#888">尚未建立突發工作。按上方按鈕新增後，會顯示於此。</p>'
+    :('<div class="table-wrap"><table><thead><tr>'+
+      '<th>工作</th><th>單位</th><th>指派</th><th>優先</th><th>期限</th><th>狀態</th><th>完成資訊</th><th>管理</th>'+
+      '</tr></thead><tbody>'+
+      list.map(function(w){
+        var doneInfo=w.status==='done'
+          ? dailyEsc(w.completedByName||'—')+'<div style="font-size:11px;color:#888">'+dailyEsc(w.completedAt||'')+'</div>'
+          : '—';
+        var admin='<button class="btn gray sm" onclick="dailyEditWork(\''+w.id+'\')">編輯</button> ';
+        if(w.status==='done') admin+='<button class="btn warn sm" onclick="dailyReopen(\''+w.id+'\')">重開</button> ';
+        admin+='<button class="btn red sm" onclick="dailyCancelWork(\''+w.id+'\')">取消</button>';
+        return '<tr>'+
+          '<td><b>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+'</td>'+
+          '<td>'+dailyEsc(w.unit)+'</td>'+
+          '<td style="font-size:12px">'+dailyEsc(workAssigneesLabel(w))+'</td>'+
+          '<td>'+priorityTag(w.priority)+'</td>'+
+          '<td>'+dailyEsc(w.dueDate||'—')+'</td>'+
+          '<td>'+dailyStatusTag(w)+'</td>'+
+          '<td>'+doneInfo+'</td>'+
+          '<td><div class="actions-row">'+admin+'</div></td>'+
+          '</tr>';
+      }).join('')+
+      '</tbody></table></div>');
+  return '<div class="card"><h2>➕ 新增突發工作</h2>'+
+    '<p style="color:#666;font-size:13px;margin-bottom:10px">可指定多個單位、員工、期限與優先級；建立後即出現在下方清單，並進入對應單位今日／期限日清單。</p>'+
+    '<button class="btn" onclick="dailyCreateAdhoc()">🛠️ 建立突發工作</button> '+
+    '<button class="btn gray" onclick="goDailyView(\'recurring\')">前往恆常任務</button></div>'+
+    '<div class="card"><h3>已建立的突發工作（'+list.length+'）</h3>'+rows+'</div>';
+}
+function askDeleteTemplate(id){
+  if(!dailyCanManage(currentUser)) return alert2('只有管理層可以刪除恆常任務。');
+  if(!requireCloud('刪除恆常任務')) return;
+  var t=loadDailyState().recurringTemplates.find(function(x){return x.id===id;});
+  if(!t) return;
+  showModal('<h3>刪除恆常任務？</h3>'+
+    '<p style="font-size:14px;line-height:1.6">確定刪除「<b>'+dailyEsc(t.title)+'</b>」？<br>'+
+    '刪除後<strong>不會再每日出現</strong>於今日工作；尚未完成的相關工作會一併取消。<br>'+
+    '若只想暫停，請用「停用」，不要刪除。</p>'+
+    '<div class="actions">'+
+    '<button class="btn sm gray" onclick="closeModal()">取消</button>'+
+    '<button class="btn sm red" onclick="confirmDeleteTemplate(\''+id+'\')">確認刪除</button>'+
+    '</div>');
+}
+function confirmDeleteTemplate(id){
+  closeModal();
+  if(!requireCloud('刪除恆常任務')) return;
+  if(!deleteTemplate(id,currentUser)) return alert2('刪除失敗。');
+  flushCloudSaves().then(function(){ render(); alert2('已刪除恆常任務。'); }).catch(function(){ render(); alert2('已刪除（雲端同步可能失敗，請查看頂欄狀態）。'); });
+}
+function vDailyRecurring(user){
+  ensureDailySeed();
+  var list=loadDailyState().recurringTemplates;
+  var rows=!list.length?'<p style="color:#888">暫無恆常任務。請按上方按鈕建立。</p>':
+    '<div class="table-wrap"><table><thead><tr><th>任務</th><th>單位</th><th>優先</th><th>附件</th><th>狀態</th>'+(dailyCanManage(user)?'<th>管理</th>':'')+'</tr></thead><tbody>'+
+    list.map(function(t){
+      var admin=dailyCanManage(user)
+        ?('<button class="btn gray sm" onclick="dailyEditTemplate(\''+t.id+'\')">編輯</button> '+
+          (t.active
+            ?'<button class="btn warn sm" onclick="dailyToggleTemplate(\''+t.id+'\',false)">停用</button>'
+            :'<button class="btn green sm" onclick="dailyToggleTemplate(\''+t.id+'\',true)">啟用</button>')+
+          ' <button class="btn red sm" onclick="askDeleteTemplate(\''+t.id+'\')">刪除</button>')
+        :'';
+      return '<tr><td><b>'+dailyEsc(t.title)+'</b>'+(t.content?'<div style="font-size:12px;color:#777">'+dailyEsc(t.content)+'</div>':'')+'</td>'+
+        '<td>'+dailyEsc((t.units||[]).join('、'))+'</td><td>'+priorityTag(t.priority||'中')+'</td>'+
+        '<td>'+(t.requireAttachment?'<span class="tag" style="background:#fff3e0;color:#e65100">需上傳</span>':'<span class="tag s-na">否</span>')+'</td>'+
+        '<td>'+(t.active?'<span class="tag s-done">啟用</span>':'<span class="tag s-na">停用</span>')+'</td>'+
+        (dailyCanManage(user)?'<td><div class="actions-row">'+admin+'</div></td>':'')+'</tr>';
+    }).join('')+'</tbody></table></div>';
+  return '<div class="card"><h2>🔁 恆常任務</h2>'+
+    '<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">啟用中的恆常任務會<strong>每日</strong>出現在「今日工作」（未完成會跨日延續並標示逾期；完成後隔日再產生新一筆）。'+
+    '只有在此列表按<strong>刪除</strong>才會永久停止並取消未完成工作；「停用」僅暫停產生。</p>'+
+    (dailyCanManage(user)?'<button class="btn sm" onclick="dailyCreateRecurring()">＋ 建立恆常任務</button>':'')+
+    '<div style="margin-top:12px">'+rows+'</div></div>';
+}
+function vDailyRecords(user){
+  ensureDailySeed();
+  var s=loadDailyState();
+  var uid=dailyUserId(user);
+  var list=s.works.filter(function(w){
+    return w.status==='done' && w.completedBy===uid;
+  }).sort(function(a,b){ return String(b.completedAt||'').localeCompare(String(a.completedAt||'')); });
+  var rows=!list.length?'<p style="color:#888">暫無你的完成記錄。</p>':
+    '<div class="table-wrap"><table><thead><tr><th>工作</th><th>單位</th><th>類型</th><th>完成時間</th></tr></thead><tbody>'+
+    list.map(function(w){
+      return '<tr><td><b>'+dailyEsc(w.title)+'</b></td><td>'+dailyEsc(w.unit)+'</td><td>'+dailyKindTag(w)+'</td>'+
+        '<td style="font-size:12px">'+dailyEsc(w.completedAt||'—')+'</td></tr>';
+    }).join('')+'</tbody></table></div>';
+  return '<div class="card"><h2>📋 我的完成記錄</h2>'+
+    '<p style="color:#666;font-size:13px;margin-bottom:10px">只顯示你本人剔選完成的工作。</p>'+rows+'</div>';
+}
+function vDailyOpLogs(user){
+  if(!dailyCanManage(user)){
+    return '<div class="card"><h2>📜 操作記錄</h2><p>只有管理層可以查看每日工作流程的操作記錄。</p></div>';
+  }
+  ensureDailySeed();
+  var list=(loadDailyState().opLogs||[]).slice();
+  var rows=!list.length?'<p style="color:#888">暫無操作記錄。</p>':
+    '<div class="table-wrap"><table><thead><tr><th>時間</th><th>操作人員</th><th>操作</th><th>詳情</th></tr></thead><tbody>'+
+    list.map(function(l){
+      return '<tr><td style="font-size:11px;white-space:nowrap">'+dailyEsc(l.time)+'</td><td>'+dailyEsc(l.user)+'</td><td><b>'+dailyEsc(l.action)+'</b></td><td style="font-size:12px">'+dailyEsc(l.detail||'')+'</td></tr>';
+    }).join('')+'</tbody></table></div>';
+  return '<div class="card"><h2>📜 每日工作流程｜操作記錄</h2>'+
+    '<p style="font-size:13px;color:#666;margin-bottom:10px">只顯示每日工作流程內的操作（完成、建立、編輯、停用等），不含開發及生產／補貨。</p>'+
+    rows+'</div>';
+}
+
+
+/* ═══════════ Modal ═══════════ */
+function showModal(html){ document.getElementById('modal-content').innerHTML=html; document.getElementById('modal-bg').classList.remove('hidden'); }
+function closeModal(){ document.getElementById('modal-bg').classList.add('hidden'); }
+function alert2(msg){ showModal(`<h3>提示</h3><p style="font-size:14px">${msg}</p><div class="actions"><button class="btn sm" onclick="closeModal()">確定</button></div>`); }
+document.getElementById('modal-bg').addEventListener('click', e=>{ if(e.target.id==='modal-bg') closeModal(); });
+document.getElementById('login-pw').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+document.addEventListener('keydown', function(e){
+  if(e.key==='Escape' && mailboxOpen) closeMailbox();
+});
+// 建立項目頁初始化階段列表
+const _go = go;
+go = function(v){ _go(v); if(v==='addProject') setTimeout(renderNpStages, 0); };
+
+(async function bootCloud(){
+  const err = document.getElementById('login-err');
+  if(err){
+    err.style.display = 'block';
+    err.textContent = '正在連接資料儲存（MongoDB）…';
+  }
+  loadUsersLocal();
+  await initCloud();
+  ensureAdminUser();
+  if(!apiEnabled){
+    loadUsersLocal();
+    loadNotificationsLocal();
+  }
+  refreshMailboxUi();
+  refreshCloudSyncStatus();
+  if(err && !currentUser){
+    if(apiEnabled){
+      err.style.display = 'block';
+      err.style.color = '#2e7d32';
+      err.textContent = '已連接 MongoDB 雲端。請登入（帳號存於 users collection）。';
+    } else {
+      err.style.display = 'block';
+      err.style.color = '#c62828';
+      err.textContent = '未連接 MongoDB，無法使用正式系統。請在 Railway 設定 MONGODB_URI 後重新整理。';
+    }
+  } else if(err && currentUser){
+    err.style.display = 'none';
+  }
+  document.addEventListener('visibilitychange', function(){
+    if(document.visibilityState==='hidden') flushCloudSaves();
+    if(document.visibilityState==='visible') checkAppVersion();
+  });
+  window.addEventListener('pagehide', function(){ flushCloudSaves(); });
+  window.addEventListener('focus', function(){ checkAppVersion(); });
+  bindStaticChrome();
+  startAppVersionWatcher();
+})();
+
+/* ═══════════ 新版本提示／更新系統 ═══════════ */
+let clientAppVersion = null;
+let appUpdateDismissedFor = null;
+let appVersionTimer = null;
+const APP_VERSION_POLL_MS = 60 * 1000;
+
+async function fetchAppVersion(){
+  const r = await fetch(apiUrl('/api/version'), { cache: 'no-store', credentials: 'include' });
+  if(!r.ok) throw new Error('version HTTP '+r.status);
+  const text = await r.text();
+  if(!text || !String(text).trim()) return {};
+  return JSON.parse(text);
+}
+function showAppUpdateBanner(show){
+  const el = document.getElementById('app-update-banner');
+  if(!el) return;
+  if(show) el.classList.remove('hidden');
+  else el.classList.add('hidden');
+}
+async function checkAppVersion(){
+  try{
+    const info = await fetchAppVersion();
+    const remote = info && info.version ? String(info.version) : '';
+    if(!remote) return;
+    if(!clientAppVersion){
+      clientAppVersion = remote;
+      return;
+    }
+    if(remote === clientAppVersion){
+      if(appUpdateDismissedFor === remote) return;
+      showAppUpdateBanner(false);
+      return;
+    }
+    if(appUpdateDismissedFor === remote) return;
+    showAppUpdateBanner(true);
+  }catch(e){
+    /* 離線或舊伺服器無此 API 時略過 */
+  }
+}
+function dismissAppUpdate(){
+  fetchAppVersion().then(function(info){
+    if(info && info.version) appUpdateDismissedFor = String(info.version);
+  }).catch(function(){});
+  showAppUpdateBanner(false);
+}
+async function applyAppUpdate(){
+  showAppUpdateBanner(false);
+  try{ await flushCloudSaves(); }catch(e){}
+  // Reload root; bootstrap in index.html loads /app.js?v=<build> so code cache is busted cleanly.
+  window.location.replace('/?_v=' + encodeURIComponent(String(Date.now())));
+}
+function startAppVersionWatcher(){
+  checkAppVersion();
+  if(appVersionTimer) clearInterval(appVersionTimer);
+  appVersionTimer = setInterval(checkAppVersion, APP_VERSION_POLL_MS);
+}
