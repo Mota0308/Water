@@ -34,6 +34,7 @@ export async function connectMongo() {
   await transferOrdersCol().createIndex({ id: 1 }, { unique: true });
   await transferOrdersCol().createIndex({ createdAtMs: -1 });
   await transferStockAdjustmentsCol().createIndex({ createdAtMs: -1 });
+  await transferProductChangesCol().createIndex({ createdAtMs: -1 });
   console.log('MongoDB connected:', DB_NAME);
   try {
     await migrateUsersV1();
@@ -109,6 +110,9 @@ function transferOrdersCol() {
 }
 function transferStockAdjustmentsCol() {
   return db.collection('transfer_stock_adjustments');
+}
+function transferProductChangesCol() {
+  return db.collection('transfer_product_changes');
 }
 
 function formatHkDateTime(d = new Date()) {
@@ -1403,18 +1407,288 @@ export async function createTransferProduct(actor, input) {
     }
   }
 
+  const actorName = me.name || me.login || me.id;
   await appendModuleLog({
     module: 'transfer',
     time,
     action: '新增商品',
     detail: `${id}｜${name}｜${category}｜尺碼 ${sizes.join('、')}｜安全存量 ${safetyStock}`,
     userId: me.id,
-    userName: me.name || me.login || me.id,
-    user: me.name || me.login || me.id,
+    userName: actorName,
+    user: actorName,
+  });
+  await recordTransferProductChange({
+    productId: id,
+    productName: name,
+    action: '建立',
+    changes: [
+      { field: '款號', before: '', after: id },
+      { field: '名稱', before: '', after: name },
+      { field: '類別', before: '', after: category },
+      { field: '顏色', before: '', after: color || '—' },
+      { field: '尺碼', before: '', after: sizes.join('、') },
+      { field: '安全存量', before: '', after: String(safetyStock) },
+    ],
+    actor: me,
+    actorName,
+    now,
+    time,
   });
 
   const { _id, ...rest } = product;
   return rest;
+}
+
+function stripTransferProduct(doc) {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return {
+    id: rest.id || String(_id),
+    name: rest.name || '',
+    category: rest.category || '其他',
+    color: rest.color || '',
+    sizes: Array.isArray(rest.sizes) && rest.sizes.length ? rest.sizes.slice() : ['均碼'],
+    safetyStock: Number(rest.safetyStock) || 0,
+    active: rest.active !== false,
+    createdAt: rest.createdAt || null,
+    updatedAt: rest.updatedAt || null,
+  };
+}
+
+async function recordTransferProductChange({ productId, productName, action, changes, actor, actorName, now, time }) {
+  if (!Array.isArray(changes) || !changes.length) return null;
+  const id = 'PC' + String((now || new Date()).getTime()) + '-' + crypto.randomBytes(2).toString('hex');
+  const doc = {
+    _id: id,
+    id,
+    productId,
+    productName: productName || '',
+    action: action || '編輯',
+    changes,
+    createdAt: time || formatHkDateTime(now || new Date()),
+    createdAtMs: (now || new Date()).getTime(),
+    createdBy: String(actor?.id || ''),
+    createdByName: actorName || actor?.name || actor?.login || '',
+  };
+  await transferProductChangesCol().insertOne(doc);
+  return doc;
+}
+
+export async function listTransferProducts() {
+  await connectMongo();
+  await ensureTransferSeed();
+  const docs = await transferProductsCol().find({ active: { $ne: false } }).sort({ id: 1 }).toArray();
+  return docs.map(stripTransferProduct);
+}
+
+export async function listTransferProductChanges(limit = 200) {
+  await connectMongo();
+  const n = Math.min(Math.max(Number(limit) || 200, 1), 500);
+  const docs = await transferProductChangesCol().find({}).sort({ createdAtMs: -1 }).limit(n).toArray();
+  return docs.map((d) => {
+    const { _id, ...rest } = d;
+    return rest;
+  });
+}
+
+async function renameTransferProductId(oldId, newId, now) {
+  const invDocs = await transferInventoryCol().find({ productId: oldId }).toArray();
+  for (const d of invDocs) {
+    const nextId = `${newId}__${d.size}__${d.store}`;
+    const exists = await transferInventoryCol().findOne({ _id: nextId });
+    if (exists) {
+      throw new Error('換號失敗：目標庫存列已存在（' + d.size + '／' + d.store + '）');
+    }
+    await transferInventoryCol().insertOne({
+      _id: nextId,
+      productId: newId,
+      size: d.size,
+      store: d.store,
+      quantity: Number(d.quantity) || 0,
+      createdAt: d.createdAt || now,
+      updatedAt: now,
+    });
+    await transferInventoryCol().deleteOne({ _id: d._id });
+  }
+  await transferOrdersCol().updateMany({ productId: oldId }, { $set: { productId: newId, updatedAt: now } });
+  await transferStockAdjustmentsCol().updateMany({ productId: oldId }, { $set: { productId: newId } });
+  await transferProductChangesCol().updateMany({ productId: oldId }, { $set: { productId: newId } });
+}
+
+/**
+ * 編輯商品主檔：可改名稱／類別／顏色／安全存量／款號／尺碼（增；有條件刪）。
+ * 改款號會級聯更新庫存、調動單、校正與主檔變更記錄中的款號。
+ */
+export async function updateTransferProduct(actor, oldProductId, input) {
+  await connectMongo();
+  await ensureTransferSeed();
+  const me = publicUser(actor);
+  if (!me?.id) throw new Error('未登入');
+
+  const currentId = normalizeProductId(oldProductId);
+  if (!currentId) throw new Error('缺少產品編號');
+
+  const product = await transferProductsCol().findOne({
+    $or: [{ _id: currentId }, { id: currentId }],
+    active: { $ne: false },
+  });
+  if (!product) throw new Error('找不到商品');
+
+  const nextId = normalizeProductId(input?.id || input?.productId || currentId);
+  if (!nextId) throw new Error('請填寫產品編號');
+  if (nextId.length > 64) throw new Error('產品編號過長');
+  if (/[\/\\]/.test(nextId)) throw new Error('產品編號含有不允許的字元');
+
+  if (nextId !== currentId) {
+    const clash = await transferProductsCol().findOne({
+      $or: [{ _id: nextId }, { id: nextId }],
+    });
+    if (clash) throw new Error('產品編號已存在：' + nextId);
+  }
+
+  const name = String(input?.name != null ? input.name : product.name || '').trim();
+  if (!name) throw new Error('請填寫產品名稱');
+  const category = String(input?.category != null ? input.category : product.category || '').trim();
+  if (!category) throw new Error('請選擇或填寫類別');
+  const color = String(input?.color != null ? input.color : product.color || '').trim();
+  const safetyStock = parseNonNegInt(
+    input?.safetyStock != null ? input.safetyStock : product.safetyStock,
+    '安全存量'
+  );
+  const nextSizes = normalizeSizeList(input?.sizes != null ? input.sizes : product.sizes);
+  if (!nextSizes.length) throw new Error('請至少保留 1 個尺碼');
+
+  const prevSizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes.map(String) : ['均碼'];
+  const prevSet = new Set(prevSizes);
+  const nextSet = new Set(nextSizes);
+  const addedSizes = nextSizes.filter((s) => !prevSet.has(s));
+  const removedSizes = prevSizes.filter((s) => !nextSet.has(s));
+
+  for (const size of removedSizes) {
+    for (const store of TRANSFER_STORES) {
+      const q = await getInventoryQty(currentId, size, store);
+      if (q > 0) throw new Error('無法刪除尺碼「' + size + '」：' + store + '仍有庫存 ' + q);
+    }
+    const pending = await transferOrdersCol().countDocuments({
+      productId: currentId,
+      size,
+      status: 'pending',
+    });
+    if (pending > 0) throw new Error('無法刪除尺碼「' + size + '」：尚有待審批調動');
+  }
+
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const actorName = me.name || me.login || me.id;
+  const changes = [];
+  if (nextId !== currentId) changes.push({ field: '款號', before: currentId, after: nextId });
+  if (name !== String(product.name || '')) changes.push({ field: '名稱', before: String(product.name || ''), after: name });
+  if (category !== String(product.category || '')) {
+    changes.push({ field: '類別', before: String(product.category || ''), after: category });
+  }
+  if (color !== String(product.color || '')) {
+    changes.push({ field: '顏色', before: String(product.color || '') || '—', after: color || '—' });
+  }
+  if (safetyStock !== (Number(product.safetyStock) || 0)) {
+    changes.push({
+      field: '安全存量',
+      before: String(Number(product.safetyStock) || 0),
+      after: String(safetyStock),
+    });
+  }
+  if (addedSizes.length || removedSizes.length) {
+    changes.push({
+      field: '尺碼',
+      before: prevSizes.join('、'),
+      after: nextSizes.join('、'),
+    });
+  }
+  if (!changes.length) throw new Error('沒有變更');
+
+  // 先處理尺碼增刪（仍用舊款號），再換號
+  for (const size of addedSizes) {
+    for (const store of TRANSFER_STORES) {
+      const _id = `${currentId}__${size}__${store}`;
+      await transferInventoryCol().updateOne(
+        { _id },
+        {
+          $setOnInsert: {
+            _id,
+            productId: currentId,
+            size,
+            store,
+            quantity: 0,
+            createdAt: now,
+            updatedAt: now,
+          },
+        },
+        { upsert: true }
+      );
+    }
+  }
+  for (const size of removedSizes) {
+    await transferInventoryCol().deleteMany({ productId: currentId, size });
+  }
+
+  if (nextId !== currentId) {
+    await renameTransferProductId(currentId, nextId, now);
+    const newDoc = {
+      _id: nextId,
+      id: nextId,
+      name,
+      category,
+      color,
+      sizes: nextSizes,
+      safetyStock,
+      active: true,
+      createdAt: product.createdAt || now,
+      updatedAt: now,
+      createdBy: product.createdBy || String(me.id),
+      createdByName: product.createdByName || actorName,
+    };
+    await transferProductsCol().insertOne(newDoc);
+    await transferProductsCol().deleteOne({ _id: product._id });
+    await transferOrdersCol().updateMany({ productId: nextId }, { $set: { productName: name } });
+  } else {
+    await transferProductsCol().updateOne(
+      { _id: product._id },
+      {
+        $set: {
+          id: currentId,
+          name,
+          category,
+          color,
+          sizes: nextSizes,
+          safetyStock,
+          updatedAt: now,
+        },
+      }
+    );
+    await transferOrdersCol().updateMany({ productId: currentId }, { $set: { productName: name } });
+  }
+
+  await recordTransferProductChange({
+    productId: nextId,
+    productName: name,
+    action: '編輯',
+    changes,
+    actor: me,
+    actorName,
+    now,
+    time,
+  });
+  await appendModuleLog({
+    module: 'transfer',
+    time,
+    action: '編輯商品',
+    detail: changes.map((c) => c.field + ' ' + c.before + '→' + c.after).join('｜'),
+    userId: me.id,
+    userName: actorName,
+    user: actorName,
+  });
+
+  const updated = await transferProductsCol().findOne({ $or: [{ _id: nextId }, { id: nextId }] });
+  return stripTransferProduct(updated);
 }
 
 /**

@@ -952,6 +952,7 @@ function bindStaticChrome(){
       return;
     }
     if(action==='submit-transfer-product'){ submitTransferProduct(); return; }
+    if(action==='submit-transfer-product-edit'){ submitTransferProductEdit(); return; }
     if(action==='submit-transfer-stock'){
       const pid = actionEl.getAttribute('data-pid');
       const size = actionEl.getAttribute('data-size');
@@ -1019,7 +1020,7 @@ async function decideTransferFromMailbox(transferId, decision){
     transferOrdersCache = null;
     transferInvCache = null;
     await loadNotifications();
-    if(currentView==='transferInventory' || currentView==='transferHistory' || currentView==='transferStockLog'){
+    if(currentView==='transferInventory' || currentView==='transferHistory' || currentView==='transferStockLog' || currentView==='transferProducts' || currentView==='transferProductLog'){
       try{ await loadTransferInventory(true); }catch(_e){}
       try{ await loadTransferOrders(true); }catch(_e){}
       render();
@@ -1281,6 +1282,11 @@ let transferOrdersLoading = false;
 let transferHistoryExpandedId = null;
 let transferAdjCache = null; // array
 let transferAdjLoading = false;
+let transferProductsCache = null; // array
+let transferProductsLoading = false;
+let transferProductChangesCache = null; // array
+let transferProductChangesLoading = false;
+let transferEditOriginalId = null;
 
 async function loadTransferInventory(force){
   if(!apiEnabled || !authToken){
@@ -1379,10 +1385,16 @@ function transferStoreOptions(selected, exclude){
 function transferCategoryOptionsHtml(selected){
   const cats = ((transferInvCache && transferInvCache.categories) || TRANSFER_CATEGORY_FALLBACK).slice();
   TRANSFER_CATEGORY_FALLBACK.forEach(function(c){ if(cats.indexOf(c)<0) cats.push(c); });
+  if(transferProductsCache){
+    transferProductsCache.forEach(function(p){
+      const c = String(p.category||'').trim();
+      if(c && cats.indexOf(c)<0) cats.push(c);
+    });
+  }
   const sel = selected || (cats[0] || '其他');
   return cats.map(function(c){
     return '<option value="'+escHtml(c)+'"'+(c===sel?' selected':'')+'>'+escHtml(c)+'</option>';
-  }).join('') + '<option value="__custom__">自訂類別…</option>';
+  }).join('') + '<option value="__custom__"'+(sel==='__custom__'?' selected':'')+'>自訂類別…</option>';
 }
 function onTransferProductCatChange(){
   const sel = document.getElementById('tp-cat');
@@ -1390,30 +1402,7 @@ function onTransferProductCatChange(){
   if(!sel || !wrap) return;
   wrap.style.display = sel.value==='__custom__' ? '' : 'none';
 }
-function openAddTransferProductModal(){
-  if(!currentUser){ alert2('請先登入。'); return; }
-  const sizeChecks = TRANSFER_SIZE_PRESETS.map(function(s){
-    return '<label style="display:inline-flex;align-items:center;gap:4px;margin:0 10px 6px 0;font-size:13px">'
-      +'<input type="checkbox" class="tp-size" value="'+escHtml(s)+'">'+escHtml(s)+'</label>';
-  }).join('');
-  showModal(
-    '<h3>新增產品</h3>'
-    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">建立主檔後，四店各尺碼庫存從 0 起算；請再到對應列按「改庫存」填入數量。</p>'
-    +'<label>產品編號（款號）</label><input type="text" id="tp-id" placeholder="例如 WS-S002" maxlength="64">'
-    +'<label>名稱</label><input type="text" id="tp-name" placeholder="產品名稱">'
-    +'<label>類別</label><select id="tp-cat" onchange="onTransferProductCatChange()">'+transferCategoryOptionsHtml('其他')+'</select>'
-    +'<div id="tp-cat-custom-wrap" style="display:none"><label>自訂類別</label><input type="text" id="tp-cat-custom" placeholder="輸入新類別"></div>'
-    +'<label>顏色（可留空）</label><input type="text" id="tp-color" placeholder="例如 黑">'
-    +'<label>尺碼</label><div style="margin:4px 0 8px">'+sizeChecks+'</div>'
-    +'<label>自訂尺碼（可多個，用逗號分隔）</label><input type="text" id="tp-size-custom" placeholder="例如 120, 童 L">'
-    +'<label>安全存量</label><input type="number" id="tp-safety" min="0" step="1" value="0">'
-    +'<div class="actions">'
-    +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
-    +'<button type="button" class="btn green" data-action="submit-transfer-product">建立產品</button>'
-    +'</div>'
-  );
-}
-async function submitTransferProduct(){
+function collectTransferProductForm(){
   const id = ((document.getElementById('tp-id')||{}).value||'').trim();
   const name = ((document.getElementById('tp-name')||{}).value||'').trim();
   const catSel = (document.getElementById('tp-cat')||{}).value || '';
@@ -1431,27 +1420,191 @@ async function submitTransferProduct(){
     const t = String(s||'').trim();
     if(t && sizes.indexOf(t)<0) sizes.push(t);
   });
-  if(!id){ alert2('請填寫產品編號。'); return; }
-  if(!name){ alert2('請填寫產品名稱。'); return; }
-  if(!category){ alert2('請選擇或填寫類別。'); return; }
-  if(!sizes.length){ alert2('請至少選擇或新增 1 個尺碼。'); return; }
-  if(!Number.isFinite(safetyStock) || safetyStock<0 || Math.floor(safetyStock)!==safetyStock){
-    alert2('安全存量須為 ≥ 0 的整數。'); return;
+  return { id, name, category, color, sizes, safetyStock };
+}
+function validateTransferProductForm(form){
+  if(!form.id){ alert2('請填寫產品編號。'); return false; }
+  if(!form.name){ alert2('請填寫產品名稱。'); return false; }
+  if(!form.category){ alert2('請選擇或填寫類別。'); return false; }
+  if(!form.sizes.length){ alert2('請至少選擇或新增 1 個尺碼。'); return false; }
+  if(!Number.isFinite(form.safetyStock) || form.safetyStock<0 || Math.floor(form.safetyStock)!==form.safetyStock){
+    alert2('安全存量須為 ≥ 0 的整數。'); return false;
   }
+  return true;
+}
+function transferProductSizeChecksHtml(selectedSizes){
+  const selected = Array.isArray(selectedSizes) ? selectedSizes : [];
+  const selectedSet = {};
+  selected.forEach(function(s){ selectedSet[s] = true; });
+  const presetHtml = TRANSFER_SIZE_PRESETS.map(function(s){
+    return '<label style="display:inline-flex;align-items:center;gap:4px;margin:0 10px 6px 0;font-size:13px">'
+      +'<input type="checkbox" class="tp-size" value="'+escHtml(s)+'"'+(selectedSet[s]?' checked':'')+'>'+escHtml(s)+'</label>';
+  }).join('');
+  const extras = selected.filter(function(s){ return TRANSFER_SIZE_PRESETS.indexOf(s)<0; });
+  const extraHtml = extras.map(function(s){
+    return '<label style="display:inline-flex;align-items:center;gap:4px;margin:0 10px 6px 0;font-size:13px">'
+      +'<input type="checkbox" class="tp-size" value="'+escHtml(s)+'" checked>'+escHtml(s)+'</label>';
+  }).join('');
+  return presetHtml + extraHtml;
+}
+function invalidateTransferCaches(){
+  transferInvCache = null;
+  transferAdjCache = null;
+  transferOrdersCache = null;
+  transferProductsCache = null;
+  transferProductChangesCache = null;
+}
+async function loadTransferProducts(force){
+  if(!apiEnabled || !authToken){
+    transferProductsCache = [];
+    return transferProductsCache;
+  }
+  if(transferProductsCache && !force) return transferProductsCache;
+  transferProductsLoading = true;
+  try{
+    const data = await apiFetch('/api/transfer/products');
+    transferProductsCache = Array.isArray(data.products) ? data.products : [];
+  }catch(e){
+    noteCloudError(e);
+    transferProductsCache = transferProductsCache || [];
+    throw e;
+  }finally{
+    transferProductsLoading = false;
+  }
+  return transferProductsCache;
+}
+function refreshTransferProducts(){
+  transferProductsCache = null;
+  loadTransferProducts(true).then(function(){ render(); }).catch(function(e){
+    alert2('載入貨品失敗：'+(e.message||e));
+    render();
+  });
+}
+async function loadTransferProductChanges(force){
+  if(!apiEnabled || !authToken){
+    transferProductChangesCache = [];
+    return transferProductChangesCache;
+  }
+  if(transferProductChangesCache && !force) return transferProductChangesCache;
+  transferProductChangesLoading = true;
+  try{
+    const data = await apiFetch('/api/transfer/product-changes');
+    transferProductChangesCache = Array.isArray(data.changes) ? data.changes : [];
+  }catch(e){
+    noteCloudError(e);
+    transferProductChangesCache = transferProductChangesCache || [];
+    throw e;
+  }finally{
+    transferProductChangesLoading = false;
+  }
+  return transferProductChangesCache;
+}
+function refreshTransferProductChanges(){
+  transferProductChangesCache = null;
+  loadTransferProductChanges(true).then(function(){ render(); }).catch(function(e){
+    alert2('載入主檔變更記錄失敗：'+(e.message||e));
+    render();
+  });
+}
+function openAddTransferProductModal(){
+  if(!currentUser){ alert2('請先登入。'); return; }
+  transferEditOriginalId = null;
+  showModal(
+    '<h3>新增產品</h3>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">建立主檔後，四店各尺碼庫存從 0 起算；請到「庫存查詢」按「改庫存」填入數量。</p>'
+    +'<label>產品編號（款號）</label><input type="text" id="tp-id" placeholder="例如 WS-S002" maxlength="64">'
+    +'<label>名稱</label><input type="text" id="tp-name" placeholder="產品名稱">'
+    +'<label>類別</label><select id="tp-cat" onchange="onTransferProductCatChange()">'+transferCategoryOptionsHtml('其他')+'</select>'
+    +'<div id="tp-cat-custom-wrap" style="display:none"><label>自訂類別</label><input type="text" id="tp-cat-custom" placeholder="輸入新類別"></div>'
+    +'<label>顏色（可留空）</label><input type="text" id="tp-color" placeholder="例如 黑">'
+    +'<label>尺碼</label><div style="margin:4px 0 8px">'+transferProductSizeChecksHtml([])+'</div>'
+    +'<label>自訂尺碼（可多個，用逗號分隔）</label><input type="text" id="tp-size-custom" placeholder="例如 120, 童 L">'
+    +'<label>安全存量</label><input type="number" id="tp-safety" min="0" step="1" value="0">'
+    +'<div class="actions">'
+    +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
+    +'<button type="button" class="btn green" data-action="submit-transfer-product">建立產品</button>'
+    +'</div>'
+  );
+}
+async function submitTransferProduct(){
+  const form = collectTransferProductForm();
+  if(!validateTransferProductForm(form)) return;
   try{
     await apiFetch('/api/transfer/products', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ id, name, category, color, sizes, safetyStock })
+      body: JSON.stringify(form)
     });
     closeModal();
-    transferInvCache = null;
-    transferAdjCache = null;
-    await loadTransferInventory(true);
+    invalidateTransferCaches();
+    await loadTransferProducts(true);
     render();
-    alert2('已建立產品 '+id+'，庫存均為 0，可用「改庫存」填入數量。');
+    alert2('已建立產品 '+form.id+'，庫存均為 0，可到「庫存查詢」用「改庫存」填入數量。');
   }catch(e){
     alert2('建立失敗：'+(e.message||e));
+  }
+}
+function openEditTransferProductModal(productId){
+  if(!currentUser){ alert2('請先登入。'); return; }
+  const list = transferProductsCache || [];
+  const p = list.find(function(x){ return String(x.id)===String(productId); });
+  if(!p){ alert2('找不到該產品，請重新整理後再試。'); return; }
+  transferEditOriginalId = String(p.id);
+  const sizes = Array.isArray(p.sizes) ? p.sizes : [];
+  const cat = p.category || '其他';
+  const knownCats = ((transferInvCache && transferInvCache.categories) || TRANSFER_CATEGORY_FALLBACK).slice();
+  TRANSFER_CATEGORY_FALLBACK.forEach(function(c){ if(knownCats.indexOf(c)<0) knownCats.push(c); });
+  const catKnown = knownCats.indexOf(cat)>=0;
+  showModal(
+    '<h3>編輯產品</h3>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">可改款號、名稱、類別、顏色、安全存量與尺碼。'
+    +'改款號會一併更新庫存／調動／校正記錄中的編號，並先檢測新號是否已存在。'
+    +'新增尺碼四店從 0；取消勾選尺碼僅在該尺碼四店皆為 0 且無待審批調動時可刪。</p>'
+    +'<label>產品編號（款號）</label><input type="text" id="tp-id" value="'+escHtml(String(p.id))+'" maxlength="64">'
+    +'<label>名稱</label><input type="text" id="tp-name" value="'+escHtml(p.name||'')+'">'
+    +'<label>類別</label><select id="tp-cat" onchange="onTransferProductCatChange()">'
+    +transferCategoryOptionsHtml(catKnown?cat:'__custom__')
+    +'</select>'
+    +'<div id="tp-cat-custom-wrap" style="'+(catKnown?'display:none':'')+'"><label>自訂類別</label><input type="text" id="tp-cat-custom" value="'+(catKnown?'':escHtml(cat))+'" placeholder="輸入新類別"></div>'
+    +'<label>顏色（可留空）</label><input type="text" id="tp-color" value="'+escHtml(p.color||'')+'">'
+    +'<label>尺碼</label><div style="margin:4px 0 8px">'+transferProductSizeChecksHtml(sizes)+'</div>'
+    +'<label>自訂尺碼（可多個，用逗號分隔）</label><input type="text" id="tp-size-custom" placeholder="例如 120, 童 L">'
+    +'<label>安全存量</label><input type="number" id="tp-safety" min="0" step="1" value="'+escHtml(String(p.safetyStock!=null?p.safetyStock:0))+'">'
+    +'<div class="actions">'
+    +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
+    +'<button type="button" class="btn green" data-action="submit-transfer-product-edit">儲存變更</button>'
+    +'</div>'
+  );
+  // 若用 __custom__ 選項，修正 select 實際值
+  const sel = document.getElementById('tp-cat');
+  if(sel && !catKnown){
+    sel.value = '__custom__';
+    onTransferProductCatChange();
+  }
+}
+async function submitTransferProductEdit(){
+  const originalId = transferEditOriginalId;
+  if(!originalId){ alert2('找不到原產品編號。'); return; }
+  const form = collectTransferProductForm();
+  if(!validateTransferProductForm(form)) return;
+  if(form.id!==originalId){
+    if(!confirm('確認將款號由「'+originalId+'」改為「'+form.id+'」？\n系統會檢測新號是否已存在，並一併更新庫存／調動／校正記錄。')) return;
+  }
+  try{
+    await apiFetch('/api/transfer/products/'+encodeURIComponent(originalId), {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(form)
+    });
+    closeModal();
+    transferEditOriginalId = null;
+    invalidateTransferCaches();
+    await loadTransferProducts(true);
+    if(currentView==='transferProductLog') await loadTransferProductChanges(true).catch(function(){});
+    render();
+    alert2('已更新產品。');
+  }catch(e){
+    alert2('更新失敗：'+(e.message||e));
   }
 }
 function openTransferStockEditModal(productId, size){
@@ -1640,10 +1793,93 @@ function vTransferInventory(){
     +'<div class="filters">'
     +'<input type="text" placeholder="搜尋編號／名稱／顏色" value="'+escHtml(transferInvKw)+'" onchange="setTransferInvKw(this.value)" onkeydown="if(event.key===\'Enter\'){setTransferInvKw(this.value)}">'
     +'<select onchange="setTransferInvCat(this.value)">'+catOpts+'</select>'
-    +'<button type="button" class="btn green sm" data-call="openAddTransferProductModal">＋ 新增產品</button>'
     +'<button type="button" class="btn gray sm" data-call="refreshTransferInventory">重新整理</button>'
     +'</div>'
-    +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 列</p>'
+    +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 列 · 新增／編輯產品請到「貨品」</p>'
+    +'</div>'
+    +'<div class="card"><div class="table-wrap"><table>'+head+body+'</table></div></div>';
+}
+function vTransferProducts(){
+  if(!currentUser){
+    return '<div class="card"><h2>🏷️ 貨品</h2><p>請先登入。</p></div>';
+  }
+  if(!apiEnabled){
+    return '<div class="card"><h2>🏷️ 貨品</h2><p style="color:#c62828">需要連接 MongoDB 雲端。</p></div>';
+  }
+  if(!transferProductsCache && !transferProductsLoading){
+    loadTransferProducts(true).then(function(){ render(); }).catch(function(){ render(); });
+    return '<div class="card"><h2>🏷️ 貨品</h2><p style="color:#888">正在載入…</p></div>';
+  }
+  if(transferProductsLoading && !transferProductsCache){
+    return '<div class="card"><h2>🏷️ 貨品</h2><p style="color:#888">正在載入…</p></div>';
+  }
+  const products = transferProductsCache || [];
+  const head = '<tr><th>產品編號</th><th>名稱</th><th>類別</th><th>顏色</th><th>尺碼</th><th>安全存量</th><th></th></tr>';
+  const body = !products.length
+    ? '<tr><td colspan="7" style="color:#888;text-align:center">尚未有產品，請按「新增產品」。</td></tr>'
+    : products.map(function(p){
+      const sizes = Array.isArray(p.sizes) ? p.sizes.join('／') : '—';
+      return '<tr>'
+        +'<td><b>'+escHtml(p.id)+'</b></td>'
+        +'<td>'+escHtml(p.name||'')+'</td>'
+        +'<td>'+escHtml(p.category||'')+'</td>'
+        +'<td>'+escHtml(p.color||'—')+'</td>'
+        +'<td>'+escHtml(sizes)+'</td>'
+        +'<td>'+escHtml(String(p.safetyStock!=null?p.safetyStock:0))+'</td>'
+        +'<td><button type="button" class="btn sm" data-call="openEditTransferProductModal" data-arg0="'+escHtml(String(p.id))+'">編輯</button></td>'
+        +'</tr>';
+    }).join('');
+  return '<div class="card">'
+    +'<h2>🏷️ 貨品</h2>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">一列一款主檔。可新增或編輯款號／名稱／類別／顏色／尺碼／安全存量；庫存數量請在「庫存查詢」調整。</p>'
+    +'<div class="filters">'
+    +'<button type="button" class="btn green sm" data-call="openAddTransferProductModal">＋ 新增產品</button>'
+    +'<button type="button" class="btn gray sm" data-call="refreshTransferProducts">重新整理</button>'
+    +'</div>'
+    +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+products.length+' 款</p>'
+    +'</div>'
+    +'<div class="card"><div class="table-wrap"><table>'+head+body+'</table></div></div>';
+}
+function vTransferProductLog(){
+  if(!currentUser){
+    return '<div class="card"><h2>📑 主檔變更記錄</h2><p>請先登入。</p></div>';
+  }
+  if(!apiEnabled){
+    return '<div class="card"><h2>📑 主檔變更記錄</h2><p style="color:#c62828">需要連接 MongoDB 雲端。</p></div>';
+  }
+  if(!transferProductChangesCache && !transferProductChangesLoading){
+    loadTransferProductChanges(true).then(function(){ render(); }).catch(function(){ render(); });
+    return '<div class="card"><h2>📑 主檔變更記錄</h2><p style="color:#888">正在載入…</p></div>';
+  }
+  if(transferProductChangesLoading && !transferProductChangesCache){
+    return '<div class="card"><h2>📑 主檔變更記錄</h2><p style="color:#888">正在載入…</p></div>';
+  }
+  const rows = transferProductChangesCache || [];
+  const head = '<tr><th>時間</th><th>操作人</th><th>動作</th><th>商品</th><th>變更明細</th></tr>';
+  const body = !rows.length
+    ? '<tr><td colspan="5" style="color:#888;text-align:center">尚無主檔變更記錄。</td></tr>'
+    : rows.map(function(r){
+      const changes = Array.isArray(r.changes) ? r.changes : [];
+      const detail = changes.length
+        ? changes.map(function(c){
+            return '<div><b>'+escHtml(c.field||'')+'</b>：'
+              +escHtml(String(c.before==null||c.before===''?'—':c.before))
+              +' → '+escHtml(String(c.after==null||c.after===''?'—':c.after))+'</div>';
+          }).join('')
+        : '—';
+      return '<tr>'
+        +'<td style="white-space:nowrap;font-size:12px">'+escHtml(r.createdAt||'')+'</td>'
+        +'<td>'+escHtml(r.createdByName||r.createdBy||'')+'</td>'
+        +'<td>'+escHtml(r.action||'編輯')+'</td>'
+        +'<td><b>'+escHtml(r.productId||'')+'</b> '+escHtml(r.productName||'')+'</td>'
+        +'<td style="font-size:12px;line-height:1.55">'+detail+'</td>'
+        +'</tr>';
+    }).join('');
+  return '<div class="card">'
+    +'<h2>📑 主檔變更記錄</h2>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">建立／編輯貨品主檔的痕跡（含改款號、增刪尺碼）。所有已登入可查看。</p>'
+    +'<div class="filters"><button type="button" class="btn gray sm" data-call="refreshTransferProductChanges">重新整理</button></div>'
+    +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 筆</p>'
     +'</div>'
     +'<div class="card"><div class="table-wrap"><table>'+head+body+'</table></div></div>';
 }
@@ -2456,7 +2692,13 @@ function render(){
   } else if(currentModule==='settings'){
     items = [['settings','更改密碼']];
   } else if(currentModule==='transfer'){
-    items = [['transferInventory','庫存查詢'],['transferHistory','調動記錄'],['transferStockLog','庫存校正記錄']];
+    items = [
+      ['transferInventory','庫存查詢'],
+      ['transferHistory','調動記錄'],
+      ['transferStockLog','庫存校正記錄'],
+      ['transferProducts','貨品'],
+      ['transferProductLog','主檔變更記錄']
+    ];
   } else {
     items = isPersonal()
       ? [['myTasks','我的工作'],['repList','項目列表'],['home','首頁']]
@@ -2479,7 +2721,9 @@ function render(){
     settings: vPersonalSettings,
     transferInventory: vTransferInventory,
     transferHistory: vTransferHistory,
-    transferStockLog: vTransferStockLog
+    transferStockLog: vTransferStockLog,
+    transferProducts: vTransferProducts,
+    transferProductLog: vTransferProductLog
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
   afterProjectChatRender();
@@ -2493,7 +2737,7 @@ function go(v){
   if(v==='pushNotify'){ currentModule='push'; }
   if(v==='createStaff'){ currentModule='createStaff'; }
   if(v==='settings'){ currentModule='settings'; }
-  if(v==='transferInventory' || v==='transferHistory' || v==='transferStockLog'){ currentModule='transfer'; }
+  if(v==='transferInventory' || v==='transferHistory' || v==='transferStockLog' || v==='transferProducts' || v==='transferProductLog'){ currentModule='transfer'; }
   fCat='全部'; fStatus='全部'; fKw='';
   render();
 }

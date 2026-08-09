@@ -38,6 +38,9 @@ import {
   createTransferProduct,
   setTransferInventoryQuantities,
   listTransferStockAdjustments,
+  listTransferProducts,
+  updateTransferProduct,
+  listTransferProductChanges,
   TRANSFER_STORES,
   TRANSFER_CATEGORIES,
 } from './mongo.js';
@@ -352,6 +355,15 @@ app.get('/api/transfer/meta', requireAuth, async (_req, res) => {
   });
 });
 
+app.get('/api/transfer/products', requireAuth, async (_req, res) => {
+  try {
+    res.json({ products: await listTransferProducts() });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
 app.post('/api/transfer/products', requireAuth, async (req, res) => {
   try {
     if (!req.body || typeof req.body !== 'object') {
@@ -362,6 +374,28 @@ app.post('/api/transfer/products', requireAuth, async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.put('/api/transfer/products/:id', requireAuth, async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({ error: 'JSON body required' });
+    }
+    const product = await updateTransferProduct(req.user, req.params.id, req.body);
+    res.json({ product });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/transfer/product-changes', requireAuth, async (req, res) => {
+  try {
+    res.json({ changes: await listTransferProductChanges(req.query?.limit) });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
   }
 });
 
