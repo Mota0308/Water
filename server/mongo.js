@@ -29,6 +29,8 @@ export async function connectMongo() {
   await sessionsCol().createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await metaCol().createIndex({ _id: 1 });
   await moduleLogsCol().createIndex({ module: 1, createdAt: -1 });
+  await transferProductsCol().createIndex({ id: 1 }, { unique: true });
+  await transferInventoryCol().createIndex({ productId: 1, size: 1, store: 1 }, { unique: true });
   console.log('MongoDB connected:', DB_NAME);
   try {
     await migrateUsersV1();
@@ -93,6 +95,26 @@ function sessionsCol() {
 function metaCol() {
   return db.collection('meta');
 }
+function transferProductsCol() {
+  return db.collection('transfer_products');
+}
+function transferInventoryCol() {
+  return db.collection('transfer_inventory');
+}
+
+/** 貨品調動：四間港店（與員工地區同名，無「店」字） */
+export const TRANSFER_STORES = ['觀塘', '荔枝角', '灣仔', '屯門'];
+export const TRANSFER_CATEGORIES = [
+  '成人保暖衣',
+  '兒童保暖衣',
+  '成人抓毛',
+  '兒童抓毛',
+  '成人膠衣',
+  '兒童膠衣',
+  '防曬用品',
+  '游水用品',
+  '其他',
+];
 
 function stripProjectDoc(d) {
   const { _id, updatedAt, users: _u, ...rest } = d;
@@ -1088,6 +1110,111 @@ export async function changeOwnPassword(userId, currentPw, newPw) {
 export function canCreateEmployee(user) {
   if (!user) return false;
   return user.role === 'system_admin' || user.role === 'manager' || user.position === '經理' || user.position === '主管' || isAdminAccount(user);
+}
+
+const TRANSFER_SEED_PRODUCTS = [
+  { id: 'WS-S001', name: '成人 2mm 防寒膠衣', category: '成人膠衣', color: '黑', sizes: ['S', 'M', 'L', 'XL'], safetyStock: 4 },
+  { id: 'WS-S002', name: '兒童 2mm 防寒膠衣', category: '兒童膠衣', color: '藍', sizes: ['XS', 'S', 'M', 'L'], safetyStock: 3 },
+  { id: 'WS-F001', name: '成人抓毛套裝', category: '成人抓毛', color: '灰', sizes: ['S', 'M', 'L', 'XL'], safetyStock: 5 },
+  { id: 'WS-F002', name: '兒童抓毛上衣', category: '兒童抓毛', color: '紅', sizes: ['XS', 'S', 'M', 'L'], safetyStock: 4 },
+  { id: 'WS-U001', name: '成人長袖防曬衣', category: '防曬用品', color: '白', sizes: ['S', 'M', 'L', 'XL', 'XXL'], safetyStock: 6 },
+  { id: 'WS-U002', name: '兒童防曬套裝', category: '防曬用品', color: '粉', sizes: ['XS', 'S', 'M', 'L'], safetyStock: 5 },
+  { id: 'WS-W001', name: '成人保暖內衣上衣', category: '成人保暖衣', color: '黑', sizes: ['M', 'L', 'XL'], safetyStock: 4 },
+  { id: 'WS-A001', name: '防水袋 20L', category: '游水用品', color: '螢光橙', sizes: ['均碼'], safetyStock: 8 },
+  { id: 'WS-A002', name: '泳鏡（成人）', category: '游水用品', color: '透明', sizes: ['均碼'], safetyStock: 10 },
+  { id: 'WS-X001', name: '防水手機套', category: '其他', color: '透明', sizes: ['均碼'], safetyStock: 12 },
+];
+
+/** 種子庫存：每店每尺碼給定基準，部分故意低於安全存量以便預警示範 */
+function seedQtyFor(productId, size, store, safetyStock, sizeIndex) {
+  const storeBias = { 觀塘: 1.2, 荔枝角: 1.0, 灣仔: 0.7, 屯門: 0.9 };
+  const base = Math.max(0, Math.round(safetyStock * (storeBias[store] || 1) + (sizeIndex % 3) - 1));
+  // 灣仔部分尺碼刻意偏低，方便標紅演示
+  if (store === '灣仔' && sizeIndex === 0) return Math.max(0, safetyStock - 2);
+  if (productId === 'WS-A001' && store === '屯門') return Math.max(0, safetyStock - 3);
+  return base;
+}
+
+export async function ensureTransferSeed() {
+  await connectMongo();
+  const n = await transferProductsCol().countDocuments();
+  if (n > 0) return { seeded: false };
+  const now = new Date();
+  const products = TRANSFER_SEED_PRODUCTS.map((p) => ({
+    ...p,
+    _id: p.id,
+    active: true,
+    createdAt: now,
+    updatedAt: now,
+  }));
+  await transferProductsCol().insertMany(products);
+  const inv = [];
+  for (const p of TRANSFER_SEED_PRODUCTS) {
+    p.sizes.forEach((size, sizeIndex) => {
+      for (const store of TRANSFER_STORES) {
+        const qty = seedQtyFor(p.id, size, store, p.safetyStock, sizeIndex);
+        inv.push({
+          _id: `${p.id}__${size}__${store}`,
+          productId: p.id,
+          size,
+          store,
+          quantity: qty,
+          updatedAt: now,
+        });
+      }
+    });
+  }
+  if (inv.length) await transferInventoryCol().insertMany(inv);
+  console.log('Seeded transfer products/inventory:', products.length, 'products,', inv.length, 'inventory rows');
+  return { seeded: true, products: products.length, inventory: inv.length };
+}
+
+/**
+ * 庫存矩陣列：一列＝款號＋尺碼，含四店數量與是否低於安全存量。
+ */
+export async function listTransferInventory() {
+  await connectMongo();
+  await ensureTransferSeed();
+  const products = await transferProductsCol().find({ active: { $ne: false } }).sort({ id: 1 }).toArray();
+  const invDocs = await transferInventoryCol().find({}).toArray();
+  const qtyMap = new Map();
+  for (const d of invDocs) {
+    qtyMap.set(`${d.productId}__${d.size}__${d.store}`, Number(d.quantity) || 0);
+  }
+  const rows = [];
+  for (const p of products) {
+    const sizes = Array.isArray(p.sizes) && p.sizes.length ? p.sizes : ['均碼'];
+    const safetyStock = Number(p.safetyStock) || 0;
+    for (const size of sizes) {
+      const qty = {};
+      const low = {};
+      let total = 0;
+      for (const store of TRANSFER_STORES) {
+        const q = qtyMap.has(`${p.id}__${size}__${store}`)
+          ? qtyMap.get(`${p.id}__${size}__${store}`)
+          : 0;
+        qty[store] = q;
+        low[store] = q < safetyStock;
+        total += q;
+      }
+      rows.push({
+        productId: p.id,
+        name: p.name || '',
+        category: p.category || '其他',
+        color: p.color || '',
+        size,
+        safetyStock,
+        qty,
+        low,
+        total,
+      });
+    }
+  }
+  return {
+    stores: TRANSFER_STORES.slice(),
+    categories: TRANSFER_CATEGORIES.slice(),
+    rows,
+  };
 }
 
 export async function closeMongo() {

@@ -29,6 +29,8 @@ import {
   changeUserPhone,
   isAdminAccount,
   appendModuleLog,
+  listTransferInventory,
+  TRANSFER_STORES,
 } from './mongo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -312,6 +314,19 @@ app.post('/api/users/:id/change-phone', requireAuth, async (req, res) => {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });
   }
+});
+
+app.get('/api/transfer/inventory', requireAuth, async (_req, res) => {
+  try {
+    res.json(await listTransferInventory());
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/transfer/stores', requireAuth, async (_req, res) => {
+  res.json({ stores: TRANSFER_STORES });
 });
 
 app.get('/api/daily', requireAuth, async (_req, res) => {

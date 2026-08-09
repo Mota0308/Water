@@ -74,6 +74,8 @@
   .mailbox-row.expanded .mailbox-row-detail { display:block; }
   .mailbox-row-detail .mb-body { font-size:13px; white-space:pre-wrap; color:#444; margin-top:8px; }
   .mailbox-empty { padding:28px 16px; color:#888; font-size:13px; text-align:center; }
+  .inv-low { color:#c62828; font-weight:bold; }
+  .inv-ok { color:#37474f; }
   .tag.n-cat{background:#e3f2fd;color:#1565c0}
   .tag.n-pri-normal{background:#eceff1;color:#546e7a}
   .tag.n-pri-important{background:#fff3e0;color:#ef6c00}
@@ -1284,6 +1286,116 @@ function vPushNotify(){
   </div>`;
 }
 
+/* ═══════════ 貨品調動｜庫存查詢 ═══════════ */
+const TRANSFER_STORES_FE = ['觀塘','荔枝角','灣仔','屯門'];
+let transferInvCache = null; // { stores, categories, rows }
+let transferInvKw = '';
+let transferInvCat = '全部';
+let transferInvLoading = false;
+
+async function loadTransferInventory(force){
+  if(!apiEnabled || !authToken){
+    transferInvCache = { stores: TRANSFER_STORES_FE.slice(), categories: [], rows: [] };
+    return transferInvCache;
+  }
+  if(transferInvCache && !force) return transferInvCache;
+  transferInvLoading = true;
+  try{
+    const data = await apiFetch('/api/transfer/inventory');
+    transferInvCache = {
+      stores: Array.isArray(data.stores) && data.stores.length ? data.stores : TRANSFER_STORES_FE.slice(),
+      categories: Array.isArray(data.categories) ? data.categories : [],
+      rows: Array.isArray(data.rows) ? data.rows : []
+    };
+  }catch(e){
+    noteCloudError(e);
+    transferInvCache = transferInvCache || { stores: TRANSFER_STORES_FE.slice(), categories: [], rows: [] };
+    throw e;
+  }finally{
+    transferInvLoading = false;
+  }
+  return transferInvCache;
+}
+function setTransferInvKw(v){ transferInvKw = String(v||''); render(); }
+function setTransferInvCat(v){ transferInvCat = v||'全部'; render(); }
+function refreshTransferInventory(){
+  transferInvCache = null;
+  loadTransferInventory(true).then(function(){ render(); }).catch(function(e){
+    alert2('載入庫存失敗：'+(e.message||e));
+    render();
+  });
+}
+function vTransferInventory(){
+  if(!currentUser){
+    return '<div class="card"><h2>📦 庫存查詢</h2><p>請先登入。</p></div>';
+  }
+  if(!apiEnabled){
+    return '<div class="card"><h2>📦 庫存查詢</h2><p style="color:#c62828">需要連接 MongoDB 雲端才能查看庫存。</p></div>';
+  }
+  if(!transferInvCache && !transferInvLoading){
+    loadTransferInventory(true).then(function(){ render(); }).catch(function(){ render(); });
+    return '<div class="card"><h2>📦 庫存查詢</h2><p style="color:#888">正在載入庫存…</p></div>';
+  }
+  if(transferInvLoading && !transferInvCache){
+    return '<div class="card"><h2>📦 庫存查詢</h2><p style="color:#888">正在載入庫存…</p></div>';
+  }
+  const data = transferInvCache || { stores: TRANSFER_STORES_FE, categories: [], rows: [] };
+  const stores = data.stores;
+  const cats = data.categories || [];
+  const kw = transferInvKw.trim().toLowerCase();
+  let rows = data.rows || [];
+  if(transferInvCat && transferInvCat!=='全部'){
+    rows = rows.filter(function(r){ return r.category===transferInvCat; });
+  }
+  if(kw){
+    rows = rows.filter(function(r){
+      return String(r.productId||'').toLowerCase().indexOf(kw)>=0
+        || String(r.name||'').toLowerCase().indexOf(kw)>=0
+        || String(r.color||'').toLowerCase().indexOf(kw)>=0;
+    });
+  }
+  const lowCount = rows.filter(function(r){
+    return stores.some(function(s){ return r.low && r.low[s]; });
+  }).length;
+  const catOpts = ['全部'].concat(cats).map(function(c){
+    return '<option value="'+escHtml(c)+'"'+(transferInvCat===c?' selected':'')+'>'+escHtml(c)+'</option>';
+  }).join('');
+  const head = '<tr><th>產品編號</th><th>名稱</th><th>類別</th><th>顏色</th><th>尺碼</th><th>安全存量</th>'
+    + stores.map(function(s){ return '<th>'+escHtml(s)+'</th>'; }).join('')
+    + '<th>合計</th></tr>';
+  const body = !rows.length
+    ? '<tr><td colspan="'+(7+stores.length)+'" style="color:#888;text-align:center">沒有符合條件的庫存列。</td></tr>'
+    : rows.map(function(r){
+      const cells = stores.map(function(s){
+        const q = (r.qty && r.qty[s]!=null) ? r.qty[s] : 0;
+        const isLow = !!(r.low && r.low[s]);
+        return '<td class="'+(isLow?'inv-low':'inv-ok')+'">'+q+'</td>';
+      }).join('');
+      return '<tr>'
+        +'<td><b>'+escHtml(r.productId)+'</b></td>'
+        +'<td>'+escHtml(r.name)+'</td>'
+        +'<td>'+escHtml(r.category)+'</td>'
+        +'<td>'+escHtml(r.color||'—')+'</td>'
+        +'<td>'+escHtml(r.size)+'</td>'
+        +'<td>'+escHtml(String(r.safetyStock))+'</td>'
+        +cells
+        +'<td><b>'+(r.total!=null?r.total:0)+'</b></td>'
+        +'</tr>';
+    }).join('');
+  return '<div class="card">'
+    +'<h2>📦 庫存查詢</h2>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">四間港店（觀塘／荔枝角／灣仔／屯門）· 一列＝款號＋尺碼。'
+    +'低於安全存量的門市數量以<span class="inv-low">紅色</span>標示。目前篩選列中有 <b>'+lowCount+'</b> 列含預警。</p>'
+    +'<div class="filters">'
+    +'<input type="text" placeholder="搜尋編號／名稱／顏色" value="'+escHtml(transferInvKw)+'" onchange="setTransferInvKw(this.value)" onkeydown="if(event.key===\'Enter\'){setTransferInvKw(this.value)}">'
+    +'<select onchange="setTransferInvCat(this.value)">'+catOpts+'</select>'
+    +'<button type="button" class="btn gray sm" onclick="refreshTransferInventory()">重新整理</button>'
+    +'</div>'
+    +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 列</p>'
+    +'</div>'
+    +'<div class="card"><div class="table-wrap"><table>'+head+body+'</table></div></div>';
+}
+
 /* ═══════════ 個人設置（更改密碼） ═══════════ */
 function vPersonalSettings(){
   if(!currentUser){
@@ -1962,6 +2074,7 @@ function setModule(m){
   else if(m==='push'){ currentView='pushNotify'; }
   else if(m==='createStaff'){ currentView='createStaff'; }
   else if(m==='settings'){ currentView='settings'; }
+  else if(m==='transfer'){ currentView='transferInventory'; }
   else {
     currentView = isPersonal() ? 'myTasks' : 'home';
     listType='rep';
@@ -1972,7 +2085,7 @@ function setModule(m){
 function render(){
   const modNav = document.getElementById('module-nav');
   // 所有登入角色（含員工）皆可使用每日／開發及生產／補貨／推送
-  const modules = [['daily','📅 每日工作流程'],['production','📐 開發及生產'],['replenishment','🔄 補貨'],['push','📢 推送通知']];
+  const modules = [['daily','📅 每日工作流程'],['production','📐 開發及生產'],['replenishment','🔄 補貨'],['transfer','📦 貨品調動'],['push','📢 推送通知']];
   if(canCreateEmployee()) modules.push(['createStaff','👤 創建員工']);
   modules.push(['settings','⚙️ 個人設置']);
   modNav.innerHTML = modules.map(([k,l])=>`<button class="${currentModule===k?'active':''}" onclick="setModule('${k}')">${l}</button>`).join('');
@@ -1994,6 +2107,8 @@ function render(){
     items = [];
   } else if(currentModule==='settings'){
     items = [['settings','更改密碼']];
+  } else if(currentModule==='transfer'){
+    items = [['transferInventory','庫存查詢']];
   } else {
     items = isPersonal()
       ? [['myTasks','我的工作'],['repList','項目列表'],['home','首頁']]
@@ -2013,7 +2128,8 @@ function render(){
     dailyOpLogs:()=>vDailyOpLogs(currentUser),
     pushNotify: vPushNotify,
     createStaff: vCreateStaff,
-    settings: vPersonalSettings
+    settings: vPersonalSettings,
+    transferInventory: vTransferInventory
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
   afterProjectChatRender();
@@ -2027,6 +2143,7 @@ function go(v){
   if(v==='pushNotify'){ currentModule='push'; }
   if(v==='createStaff'){ currentModule='createStaff'; }
   if(v==='settings'){ currentModule='settings'; }
+  if(v==='transferInventory'){ currentModule='transfer'; }
   fCat='全部'; fStatus='全部'; fKw='';
   render();
 }
