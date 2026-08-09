@@ -953,6 +953,11 @@ function bindStaticChrome(){
       if(pid!=null && size!=null) submitTransferApply(pid, size);
       return;
     }
+    if(action==='toggle-transfer-timeline'){
+      const tid = actionEl.getAttribute('data-tid');
+      if(tid) toggleTransferHistoryExpand(tid);
+      return;
+    }
   });
   bindMailboxDelegates();
 }
@@ -1467,12 +1472,12 @@ function vTransferHistory(){
     return '<div class="card"><h2>📋 調動記錄</h2><p style="color:#888">正在載入…</p></div>';
   }
   const orders = transferOrdersCache || [];
-  const head = '<tr><th>單號</th><th>時間</th><th>商品</th><th>尺碼</th><th>數量</th><th>發起點（調入）</th><th>調動點（調出）</th><th>申請人</th><th>狀態</th><th></th></tr>';
+  const colCount = 12;
+  const head = '<tr><th>單號</th><th>時間</th><th>商品</th><th>尺碼</th><th>數量</th><th>發起點（調入）</th><th>調動點（調出）</th><th>申請人</th><th>狀態</th><th>通過人／拒絕人</th><th>審批時間</th><th></th></tr>';
   const body = !orders.length
-    ? '<tr><td colspan="10" style="color:#888;text-align:center">尚無調動記錄。</td></tr>'
+    ? '<tr><td colspan="'+colCount+'" style="color:#888;text-align:center">尚無調動記錄。</td></tr>'
     : orders.map(function(o){
       const expanded = transferHistoryExpandedId===o.id;
-      const tid = JSON.stringify(String(o.id));
       const logs = Array.isArray(o.logs)?o.logs:[];
       const logHtml = logs.length
         ? '<ul class="tf-logs">'+logs.map(function(l){
@@ -1480,6 +1485,9 @@ function vTransferHistory(){
               +(l.detail?' — '+escHtml(l.detail):'')+'</li>';
           }).join('')+'</ul>'
         : '<p style="font-size:12px;color:#888;margin:8px 0 0">無操作時間軸。</p>';
+      const decided = o.status==='approved' || o.status==='rejected';
+      const decidedName = decided ? (o.decidedByName || o.decidedBy || '—') : '—';
+      const decidedAt = decided ? (o.decidedAt || '—') : '—';
       return '<tr>'
         +'<td><b>'+escHtml(o.id)+'</b></td>'
         +'<td style="white-space:nowrap;font-size:12px">'+escHtml(o.createdAt||'')+'</td>'
@@ -1490,9 +1498,11 @@ function vTransferHistory(){
         +'<td>'+escHtml(o.fromStore)+'</td>'
         +'<td>'+escHtml(o.createdByName||'')+'</td>'
         +'<td>'+transferStatusLabel(o.status)+'</td>'
-        +'<td><button type="button" class="btn sm gray" onclick="toggleTransferHistoryExpand('+tid+')">'+(expanded?'收合':'時間軸')+'</button></td>'
+        +'<td>'+escHtml(decidedName)+'</td>'
+        +'<td style="white-space:nowrap;font-size:12px">'+escHtml(decidedAt)+'</td>'
+        +'<td><button type="button" class="btn sm gray" data-action="toggle-transfer-timeline" data-tid="'+escHtml(String(o.id))+'">'+(expanded?'收合':'時間軸')+'</button></td>'
         +'</tr>'
-        +(expanded?'<tr><td colspan="10" style="background:#fafafa">'+logHtml+'</td></tr>':'');
+        +(expanded?'<tr><td colspan="'+colCount+'" style="background:#fafafa">'+logHtml+'</td></tr>':'');
     }).join('');
   return '<div class="card">'
     +'<h2>📋 調動記錄</h2>'
