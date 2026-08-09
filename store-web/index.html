@@ -1847,6 +1847,10 @@ function enterAppAs(user, opts){
   ensureDailySeed(); generateRecurringForToday();
   if(!opts.silent) addDailyOpLog('登入系統','進入每日工作流程');
   render();
+  // 登入／恢復工作階段後立刻把「今日恆常實例」寫回雲端，避免只留在本機快取
+  if(typeof flushCloudSaves==='function'){
+    flushCloudSaves().catch(function(e){ if(typeof noteCloudError==='function') noteCloudError(e); });
+  }
 }
 async function doLogin(){
   const u = document.getElementById('login-user').value.trim();
@@ -3056,7 +3060,17 @@ function mkWork(o){
 }
 function isStoreUnit(unit){ return FIXED_UNITS.indexOf(unit)>=0; }
 function isActiveWork(w){ return w&&w.status!=='cancelled'; }
-function isDailyTodayWork(w){ return isActiveWork(w)&&w.dueDate===dailyTodayStr(); }
+/**
+ * 今日清單：
+ * - 未完成：期限為今天，或更早（跨日延續／逾期）
+ * - 已完成：只顯示期限為今天的（避免舊完成紀錄刷滿今日）
+ */
+function isDailyTodayWork(w){
+  if(!isActiveWork(w) || !w.dueDate) return false;
+  var today = dailyTodayStr();
+  if(w.status==='done') return w.dueDate===today;
+  return w.dueDate<=today;
+}
 function isOverdue(w){
   if(!isActiveWork(w)||w.status==='done') return false;
   if(!w.dueDate) return false;
@@ -3080,10 +3094,15 @@ function generateRecurringForToday(){
     if(!t||!t.active) return;
     (t.units||[]).forEach(function(unit){
       if(STORE_UNITS.indexOf(unit)<0) return;
-      var exists=s.works.some(function(w){
+      // 同一範本＋單位若仍有未完成實例：跨日延續，不另開第二筆
+      var openExisting=s.works.find(function(w){
+        return w.kind==='recurring'&&w.templateId===t.id&&w.unit===unit&&w.status==='open';
+      });
+      if(openExisting) return;
+      var existsToday=s.works.some(function(w){
         return w.kind==='recurring'&&w.templateId===t.id&&w.unit===unit&&w.dueDate===today&&w.status!=='cancelled';
       });
-      if(!exists){
+      if(!existsToday){
         s.works.push(mkWork({
           title:t.title, content:t.content||'', unit:unit, kind:'recurring',
           dueDate:today, priority:t.priority||'中', templateId:t.id,
@@ -3254,8 +3273,10 @@ function setTemplateActive(id,active,user){
   if(!t) return false;
   t.active=!!active;
   saveDailyState(s);
+  // 停用：不再產生新的每日實例，但範本仍留在列表；未完成實例可繼續處理
+  // 啟用：立刻為今日補齊各單位工作
   if(active) generateRecurringForToday();
-  addDailyOpLog(active?'啟用恆常任務':'停用恆常任務', t.title);
+  addDailyOpLog(active?'啟用恆常任務':'停用恆常任務', t.title+(active?'':'｜已停止每日產生'));
   return true;
 }
 function editTemplate(id,data,user){
@@ -3791,7 +3812,9 @@ function askDeleteTemplate(id){
   var t=loadDailyState().recurringTemplates.find(function(x){return x.id===id;});
   if(!t) return;
   showModal('<h3>刪除恆常任務？</h3>'+
-    '<p style="font-size:14px;line-height:1.6">確定刪除「<b>'+dailyEsc(t.title)+'</b>」？<br>今日尚未完成、由此任務產生的工作會一併取消；已完成記錄仍保留。</p>'+
+    '<p style="font-size:14px;line-height:1.6">確定刪除「<b>'+dailyEsc(t.title)+'</b>」？<br>'+
+    '刪除後<strong>不會再每日出現</strong>於今日工作；尚未完成的相關工作會一併取消。<br>'+
+    '若只想暫停，請用「停用」，不要刪除。</p>'+
     '<div class="actions">'+
     '<button class="btn sm gray" onclick="closeModal()">取消</button>'+
     '<button class="btn sm red" onclick="confirmDeleteTemplate(\''+id+'\')">確認刪除</button>'+
@@ -3823,6 +3846,8 @@ function vDailyRecurring(user){
         (dailyCanManage(user)?'<td><div class="actions-row">'+admin+'</div></td>':'')+'</tr>';
     }).join('')+'</tbody></table></div>';
   return '<div class="card"><h2>🔁 恆常任務</h2>'+
+    '<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">啟用中的恆常任務會<strong>每日</strong>出現在「今日工作」（未完成會跨日延續並標示逾期；完成後隔日再產生新一筆）。'+
+    '只有在此列表按<strong>刪除</strong>才會永久停止並取消未完成工作；「停用」僅暫停產生。</p>'+
     (dailyCanManage(user)?'<button class="btn sm" onclick="dailyCreateRecurring()">＋ 建立恆常任務</button>':'')+
     '<div style="margin-top:12px">'+rows+'</div></div>';
 }
