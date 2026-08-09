@@ -497,7 +497,7 @@ function roleLabel(u){
   if(units.length) return pos+'｜'+units.join('、');
   return pos;
 }
-const userName = id => users.find(u=>u.id===id)?.name || '—';
+const userName = id => { const u = users.find(u=>u.id===id); return (u && u.name) || '—'; };
 const userDept = id => { const u=users.find(x=>x.id===id); return u?(u.dept||userUnits(u).join('、')||''):''; };
 
 /* 狀態定義 */
@@ -669,7 +669,12 @@ async function apiFetch(path, opts){
     throw err;
   }
   const ct = r.headers.get('content-type')||'';
-  if(ct.includes('application/json')) return r.json();
+  if(ct.includes('application/json')){
+    const text = await r.text();
+    if(!text || !String(text).trim()) return {};
+    try{ return JSON.parse(text); }
+    catch(e){ throw new Error('Invalid JSON from '+path); }
+  }
   return r;
 }
 function slimFileRef(f){
@@ -1224,7 +1229,7 @@ function refreshMailboxUi(){
       const who = isSent
         ? '<span class="mb-from">收件 '+(Array.isArray(item.recipients)?item.recipients.length:0)+' 人</span>'
         : '<span class="mb-from">'+escHtml(item.fromName||'—')+'</span>';
-      return '<div class="'+rowClass+'" data-nid="'+nidAttr+'" onclick="openMailboxDetail(this.getAttribute(\'data-nid\'))">'
+      return '<div class="'+rowClass+'" data-nid="'+nidAttr+'">'
         +'<div class="mailbox-row-main"><div class="mailbox-row-line">'
         +statusHtml
         +notifPriorityTag(item.priority)
@@ -1235,6 +1240,29 @@ function refreshMailboxUi(){
     }).join('');
   }
   if(mailboxDetailId) refreshMailboxDetailUi();
+}
+function bindMailboxDelegates(){
+  const list = document.getElementById('mailbox-list');
+  if(list && list.dataset.bound!=='1'){
+    list.dataset.bound = '1';
+    list.addEventListener('click', function(e){
+      const row = e.target && e.target.closest ? e.target.closest('.mailbox-row') : null;
+      if(!row || !list.contains(row)) return;
+      const id = row.getAttribute('data-nid');
+      if(id) openMailboxDetail(id);
+    });
+  }
+  const actions = document.getElementById('mailbox-detail-actions');
+  if(actions && actions.dataset.bound!=='1'){
+    actions.dataset.bound = '1';
+    actions.addEventListener('click', function(e){
+      const btn = e.target && e.target.closest ? e.target.closest('[data-tid][data-decision]') : null;
+      if(!btn || !actions.contains(btn)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      decideTransferFromMailbox(btn.getAttribute('data-tid'), btn.getAttribute('data-decision'));
+    });
+  }
 }
 function transferMailboxActionsHtml(item){
   if(!item || item.actionType!=='transfer_decide' || !item.transferId) return '';
@@ -1247,8 +1275,8 @@ function transferMailboxActionsHtml(item){
   }
   const tidAttr = escHtml(String(item.transferId));
   return '<div class="mailbox-transfer-actions">'
-    +'<button type="button" class="btn sm green" data-tid="'+tidAttr+'" onclick="event.stopPropagation();decideTransferFromMailbox(this.getAttribute(\'data-tid\'),\'approve\')">通過</button>'
-    +'<button type="button" class="btn sm red" data-tid="'+tidAttr+'" onclick="event.stopPropagation();decideTransferFromMailbox(this.getAttribute(\'data-tid\'),\'reject\')">拒絕</button>'
+    +'<button type="button" class="btn sm green" data-tid="'+tidAttr+'" data-decision="approve">通過</button>'
+    +'<button type="button" class="btn sm red" data-tid="'+tidAttr+'" data-decision="reject">拒絕</button>'
     +'</div>';
 }
 async function decideTransferFromMailbox(transferId, decision){
@@ -1338,6 +1366,7 @@ async function toggleMailbox(ev){
   if(ev) ev.stopPropagation();
   if(mailboxOpen){ closeMailbox(); return; }
   mailboxOpen = true;
+  bindMailboxDelegates();
   const bg = document.getElementById('mailbox-modal-bg');
   if(bg) bg.classList.remove('hidden');
   await loadNotifications();
@@ -1863,9 +1892,9 @@ function staffListRowsHtml(){
     let actions = '—';
     if(u.login!=='admin' && canCreateEmployee()){
       if(need){
-        actions = '<button class="btn sm" onclick="promptAssignPhone('+JSON.stringify(String(u.id))+')">補登電話</button>';
+        actions = '<button class="btn sm" onclick=\'promptAssignPhone('+JSON.stringify(String(u.id))+')\'>補登電話</button>';
       } else if(phone){
-        actions = '<button class="btn sm gray" onclick="promptChangePhone('+JSON.stringify(String(phone))+')">更換電話</button>';
+        actions = '<button class="btn sm gray" onclick=\'promptChangePhone('+JSON.stringify(String(phone))+')\'>更換電話</button>';
       }
     }
     return '<tr>'+
@@ -1958,7 +1987,7 @@ function promptAssignPhone(userId){
     <input type="tel" id="assign-phone-input" placeholder="91234567" value="${escHtml(prefill)}">
     <div class="actions">
       <button class="btn gray sm" onclick="closeModal()">取消</button>
-      <button class="btn sm" onclick="submitAssignPhone(${JSON.stringify(String(userId))})">確認補登</button>
+      <button class="btn sm" onclick='submitAssignPhone(${JSON.stringify(String(userId))})'>確認補登</button>
     </div>`);
 }
 async function submitAssignPhone(userId){
@@ -1982,7 +2011,7 @@ function promptChangePhone(oldPhone){
     <input type="tel" id="change-phone-input" placeholder="91234567">
     <div class="actions">
       <button class="btn gray sm" onclick="closeModal()">取消</button>
-      <button class="btn sm" onclick="submitChangePhone(${JSON.stringify(String(oldPhone))})">確認更換</button>
+      <button class="btn sm" onclick='submitChangePhone(${JSON.stringify(String(oldPhone))})'>確認更換</button>
     </div>`);
 }
 async function submitChangePhone(oldPhone){
@@ -2090,7 +2119,7 @@ async function submitCreateStaff(){
     </p>
     <div class="actions">
       <button class="btn sm gray" onclick="closeModal()">關閉</button>
-      <button class="btn sm green" onclick="copyStaffCreds(${JSON.stringify(copyText)})">複製賬號與密碼</button>
+      <button class="btn sm green" onclick='copyStaffCreds(${JSON.stringify(copyText)})'>複製賬號與密碼</button>
     </div>`);
   const phoneEl = document.getElementById('staff-phone');
   const nameEl = document.getElementById('staff-name');
@@ -4651,7 +4680,9 @@ const APP_VERSION_POLL_MS = 60 * 1000;
 async function fetchAppVersion(){
   const r = await fetch(apiUrl('/api/version'), { cache: 'no-store', credentials: 'include' });
   if(!r.ok) throw new Error('version HTTP '+r.status);
-  return r.json();
+  const text = await r.text();
+  if(!text || !String(text).trim()) return {};
+  return JSON.parse(text);
 }
 function showAppUpdateBanner(show){
   const el = document.getElementById('app-update-banner');
