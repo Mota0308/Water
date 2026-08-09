@@ -1122,18 +1122,15 @@ function refreshMailboxUi(){
       const rec = (item.recipients||[]).find(r => r.userId === uid);
       const isRead = !!(rec && rec.read);
       const title = item.title || (item.content||'').slice(0,40) || '（無標題）';
-      const nid = JSON.stringify(String(item.id));
-      return `<div class="mailbox-row ${isRead?'':'unread'}" onclick="openMailboxDetail(${nid})">
-        <div class="mailbox-row-main">
-          <div class="mailbox-row-line">
-            <span class="mb-status">${isRead?'已讀':'未讀'}</span>
-            ${notifPriorityTag(item.priority)}
-            <span class="mb-date">${escHtml(item.createdAt||'')}</span>
-            <span class="mb-title">${escHtml(title)}</span>
-            <span class="mb-from">${escHtml(item.fromName||'—')}</span>
-          </div>
-        </div>
-      </div>`;
+      const nidAttr = escHtml(String(item.id));
+      return '<div class="mailbox-row '+(isRead?'':'unread')+'" data-nid="'+nidAttr+'" onclick="openMailboxDetail(this.getAttribute(\'data-nid\'))">'
+        +'<div class="mailbox-row-main"><div class="mailbox-row-line">'
+        +'<span class="mb-status">'+(isRead?'已讀':'未讀')+'</span>'
+        +notifPriorityTag(item.priority)
+        +'<span class="mb-date">'+escHtml(item.createdAt||'')+'</span>'
+        +'<span class="mb-title">'+escHtml(title)+'</span>'
+        +'<span class="mb-from">'+escHtml(item.fromName||'—')+'</span>'
+        +'</div></div></div>';
     }).join('');
   }
   if(mailboxDetailId) refreshMailboxDetailUi();
@@ -1143,15 +1140,15 @@ function transferMailboxActionsHtml(item){
   if(item.transferResolved){
     return `<div class="mailbox-transfer-actions"><span style="font-size:12px;color:#78909c">此調動已處理${item.transferDecision?'：'+escHtml(item.transferDecision):''}</span></div>`;
   }
-  const tid = JSON.stringify(String(item.transferId));
   const isOwn = currentUser && String(item.fromUserId||'')===String(currentUser.id);
   if(isOwn){
-    return `<div class="mailbox-transfer-actions"><span style="font-size:12px;color:#78909c">你是申請人，不可自行審批。</span></div>`;
+    return '<div class="mailbox-transfer-actions"><span style="font-size:12px;color:#78909c">你是申請人，不可自行審批。</span></div>';
   }
-  return `<div class="mailbox-transfer-actions">
-    <button type="button" class="btn sm green" onclick="event.stopPropagation();decideTransferFromMailbox(${tid},'approve')">通過</button>
-    <button type="button" class="btn sm red" onclick="event.stopPropagation();decideTransferFromMailbox(${tid},'reject')">拒絕</button>
-  </div>`;
+  const tidAttr = escHtml(String(item.transferId));
+  return '<div class="mailbox-transfer-actions">'
+    +'<button type="button" class="btn sm green" data-tid="'+tidAttr+'" onclick="event.stopPropagation();decideTransferFromMailbox(this.getAttribute(\'data-tid\'),\'approve\')">通過</button>'
+    +'<button type="button" class="btn sm red" data-tid="'+tidAttr+'" onclick="event.stopPropagation();decideTransferFromMailbox(this.getAttribute(\'data-tid\'),\'reject\')">拒絕</button>'
+    +'</div>';
 }
 async function decideTransferFromMailbox(transferId, decision){
   if(!apiEnabled || !authToken){ alert2('需要連接雲端。'); return; }
