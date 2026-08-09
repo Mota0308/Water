@@ -930,6 +930,13 @@ function bindStaticChrome(){
     if(!t || !t.closest) return;
     if(t.id==='mailbox-modal-bg'){ closeMailbox(); return; }
     if(t.id==='mailbox-detail-bg'){ closeMailboxDetail(); return; }
+    const invRow = t.closest('tr.inv-row');
+    if(invRow){
+      const pid = invRow.getAttribute('data-pid');
+      const size = invRow.getAttribute('data-size');
+      if(pid!=null && size!=null) openTransferApplyModal(pid, size);
+      return;
+    }
     const actionEl = t.closest('[data-action]');
     const action = actionEl ? actionEl.getAttribute('data-action') : '';
     if(action==='close-mailbox'){ closeMailbox(); return; }
@@ -939,6 +946,13 @@ function bindStaticChrome(){
     if(action==='toggle-read'){ toggleMailboxDetailRead(); return; }
     if(action==='dismiss-update'){ dismissAppUpdate(); return; }
     if(action==='apply-update'){ applyAppUpdate(); return; }
+    if(action==='close-modal'){ closeModal(); return; }
+    if(action==='submit-transfer-apply'){
+      const pid = actionEl.getAttribute('data-pid');
+      const size = actionEl.getAttribute('data-size');
+      if(pid!=null && size!=null) submitTransferApply(pid, size);
+      return;
+    }
   });
   bindMailboxDelegates();
 }
@@ -1309,8 +1323,8 @@ function openTransferApplyModal(productId, size){
     const q = (row.qty && row.qty[s]!=null) ? row.qty[s] : 0;
     return escHtml(s)+' '+q;
   }).join(' ｜ ');
-  const pid = JSON.stringify(String(productId));
-  const sz = JSON.stringify(String(size));
+  const pidAttr = escHtml(String(productId));
+  const szAttr = escHtml(String(size));
   showModal(
     '<h3>申請貨品調動</h3>'
     +'<p style="font-size:13px;line-height:1.55;margin:0 0 10px">'
@@ -1326,8 +1340,8 @@ function openTransferApplyModal(productId, size){
     +'<input type="number" id="tf-qty" min="1" step="1" value="1">'
     +'<p style="font-size:12px;color:#666;margin:8px 0 0;line-height:1.5">送出後會通知調動點（調出店）相關人員信箱審批；通過後立即扣出／調入庫存。不可審批自己的申請。</p>'
     +'<div class="actions">'
-    +'<button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'
-    +'<button type="button" class="btn green" onclick="submitTransferApply('+pid+','+sz+')">申請調動</button>'
+    +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
+    +'<button type="button" class="btn green" data-action="submit-transfer-apply" data-pid="'+pidAttr+'" data-size="'+szAttr+'">申請調動</button>'
     +'</div>'
   );
 }
@@ -1414,9 +1428,7 @@ function vTransferInventory(){
         const isLow = !!(r.low && r.low[s]);
         return '<td class="'+(isLow?'inv-low':'inv-ok')+'">'+q+'</td>';
       }).join('');
-      const pid = JSON.stringify(String(r.productId));
-      const sz = JSON.stringify(String(r.size));
-      return '<tr class="inv-row" title="點擊申請調動" onclick="openTransferApplyModal('+pid+','+sz+')">'
+      return '<tr class="inv-row" title="點擊申請調動" data-pid="'+escHtml(String(r.productId))+'" data-size="'+escHtml(String(r.size))+'">'
         +'<td><b>'+escHtml(r.productId)+'</b></td>'
         +'<td>'+escHtml(r.name)+'</td>'
         +'<td>'+escHtml(r.category)+'</td>'
