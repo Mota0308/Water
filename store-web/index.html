@@ -75,6 +75,14 @@
   .mailbox-row-detail .mb-body { font-size:13px; white-space:pre-wrap; color:#444; margin-top:8px; }
   .mailbox-empty { padding:28px 16px; color:#888; font-size:13px; text-align:center; }
   .inv-low { color:#c62828; font-weight:bold; }
+  .inv-ok { color:#263238; }
+  tr.inv-row { cursor:pointer; }
+  tr.inv-row:hover { background:#e3f2fd; }
+  .tf-status-pending { color:#ef6c00; font-weight:bold; }
+  .tf-status-approved { color:#2e7d32; font-weight:bold; }
+  .tf-status-rejected { color:#c62828; font-weight:bold; }
+  .tf-logs { margin:8px 0 0; padding-left:18px; font-size:12px; color:#546e7a; line-height:1.55; }
+  .mailbox-transfer-actions { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; }
   .inv-ok { color:#37474f; }
   .tag.n-cat{background:#e3f2fd;color:#1565c0}
   .tag.n-pri-normal{background:#eceff1;color:#546e7a}
@@ -1045,13 +1053,60 @@ function refreshMailboxUi(){
         </div>
         <div class="mailbox-row-actions" onclick="event.stopPropagation()">${readBtn}</div>
       </div>
-      <div class="mailbox-row-detail">
+        <div class="mailbox-row-detail">
         <div style="font-size:12px;color:#78909c;margin-top:8px">${escHtml(item.category||'一般通知')}｜來自 ${escHtml(item.fromName||'—')}</div>
         <div class="mb-body">${escHtml(item.content||'（無內容）')}</div>
         ${notifAttachHtml(item.attachments)}
+        ${transferMailboxActionsHtml(item)}
       </div>
     </div>`;
   }).join('');
+}
+function transferMailboxActionsHtml(item){
+  if(!item || item.actionType!=='transfer_decide' || !item.transferId) return '';
+  if(item.transferResolved){
+    return `<div class="mailbox-transfer-actions"><span style="font-size:12px;color:#78909c">此調動已處理${item.transferDecision?'：'+escHtml(item.transferDecision):''}</span></div>`;
+  }
+  const tid = JSON.stringify(String(item.transferId));
+  const isOwn = currentUser && String(item.fromUserId||'')===String(currentUser.id);
+  if(isOwn){
+    return `<div class="mailbox-transfer-actions"><span style="font-size:12px;color:#78909c">你是申請人，不可自行審批。</span></div>`;
+  }
+  return `<div class="mailbox-transfer-actions">
+    <button type="button" class="btn sm green" onclick="event.stopPropagation();decideTransferFromMailbox(${tid},'approve')">通過</button>
+    <button type="button" class="btn sm red" onclick="event.stopPropagation();decideTransferFromMailbox(${tid},'reject')">拒絕</button>
+  </div>`;
+}
+async function decideTransferFromMailbox(transferId, decision){
+  if(!apiEnabled || !authToken){ alert2('需要連接雲端。'); return; }
+  let reason = '';
+  if(decision==='reject'){
+    reason = prompt('拒絕理由（可留空）：') || '';
+  }else if(!confirm('確認通過此調動？通過後會立即扣減調出店庫存並加入調入店。')){
+    return;
+  }
+  try{
+    await apiFetch('/api/transfer/orders/'+encodeURIComponent(transferId)+'/decide', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ decision, reason })
+    });
+    transferOrdersCache = null;
+    transferInvCache = null;
+    await loadNotifications();
+    if(currentView==='transferInventory' || currentView==='transferHistory'){
+      try{ await loadTransferInventory(true); }catch(_e){}
+      try{ await loadTransferOrders(true); }catch(_e){}
+      render();
+    }else{
+      refreshMailboxUi();
+    }
+    alert2(decision==='approve' ? '已通過，庫存已更新。' : '已拒絕此調動申請。');
+  }catch(e){
+    alert2('處理失敗：'+(e.message||e));
+    await loadNotifications().catch(function(){});
+    refreshMailboxUi();
+  }
 }
 function notifAttachHtml(files){
   if(!Array.isArray(files) || !files.length) return '';
@@ -1286,12 +1341,15 @@ function vPushNotify(){
   </div>`;
 }
 
-/* ═══════════ 貨品調動｜庫存查詢 ═══════════ */
+/* ═══════════ 貨品調動｜庫存查詢／調動記錄 ═══════════ */
 const TRANSFER_STORES_FE = ['觀塘','荔枝角','灣仔','屯門'];
 let transferInvCache = null; // { stores, categories, rows }
 let transferInvKw = '';
 let transferInvCat = '全部';
 let transferInvLoading = false;
+let transferOrdersCache = null; // array
+let transferOrdersLoading = false;
+let transferHistoryExpandedId = null;
 
 async function loadTransferInventory(force){
   if(!apiEnabled || !authToken){
@@ -1316,6 +1374,25 @@ async function loadTransferInventory(force){
   }
   return transferInvCache;
 }
+async function loadTransferOrders(force){
+  if(!apiEnabled || !authToken){
+    transferOrdersCache = [];
+    return transferOrdersCache;
+  }
+  if(transferOrdersCache && !force) return transferOrdersCache;
+  transferOrdersLoading = true;
+  try{
+    const data = await apiFetch('/api/transfer/orders');
+    transferOrdersCache = Array.isArray(data.orders) ? data.orders : [];
+  }catch(e){
+    noteCloudError(e);
+    transferOrdersCache = transferOrdersCache || [];
+    throw e;
+  }finally{
+    transferOrdersLoading = false;
+  }
+  return transferOrdersCache;
+}
 function setTransferInvKw(v){ transferInvKw = String(v||''); render(); }
 function setTransferInvCat(v){ transferInvCat = v||'全部'; render(); }
 function refreshTransferInventory(){
@@ -1324,6 +1401,90 @@ function refreshTransferInventory(){
     alert2('載入庫存失敗：'+(e.message||e));
     render();
   });
+}
+function refreshTransferOrders(){
+  transferOrdersCache = null;
+  loadTransferOrders(true).then(function(){ render(); }).catch(function(e){
+    alert2('載入調動記錄失敗：'+(e.message||e));
+    render();
+  });
+}
+function findTransferInvRow(productId, size){
+  const rows = (transferInvCache && transferInvCache.rows) || [];
+  return rows.find(function(r){ return r.productId===productId && r.size===size; }) || null;
+}
+function transferStoreOptions(selected, exclude){
+  return TRANSFER_STORES_FE.map(function(s){
+    if(exclude && s===exclude) return '';
+    return '<option value="'+escHtml(s)+'"'+(selected===s?' selected':'')+'>'+escHtml(s)+'</option>';
+  }).join('');
+}
+function openTransferApplyModal(productId, size){
+  if(!currentUser){ alert2('請先登入。'); return; }
+  const row = findTransferInvRow(productId, size);
+  if(!row){ alert2('找不到該庫存列，請重新整理後再試。'); return; }
+  const stockLine = TRANSFER_STORES_FE.map(function(s){
+    const q = (row.qty && row.qty[s]!=null) ? row.qty[s] : 0;
+    return escHtml(s)+' '+q;
+  }).join(' ｜ ');
+  const pid = JSON.stringify(String(productId));
+  const sz = JSON.stringify(String(size));
+  showModal(
+    '<h3>申請貨品調動</h3>'
+    +'<p style="font-size:13px;line-height:1.55;margin:0 0 10px">'
+    +'<b>'+escHtml(row.productId)+'</b> '+escHtml(row.name||'')
+    +'｜尺碼 <b>'+escHtml(row.size)+'</b>'
+    +(row.color?'｜'+escHtml(row.color):'')
+    +'<br><span style="color:#78909c;font-size:12px">現庫：'+stockLine+'</span></p>'
+    +'<label>發起點（調入店）</label>'
+    +'<select id="tf-to">'+transferStoreOptions('觀塘')+'</select>'
+    +'<label>調動點（調出店）</label>'
+    +'<select id="tf-from">'+transferStoreOptions('荔枝角')+'</select>'
+    +'<label>調動數量</label>'
+    +'<input type="number" id="tf-qty" min="1" step="1" value="1">'
+    +'<p style="font-size:12px;color:#666;margin:8px 0 0;line-height:1.5">送出後會通知調動點（調出店）相關人員信箱審批；通過後立即扣出／調入庫存。不可審批自己的申請。</p>'
+    +'<div class="actions">'
+    +'<button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'
+    +'<button type="button" class="btn green" onclick="submitTransferApply('+pid+','+sz+')">申請調動</button>'
+    +'</div>'
+  );
+}
+async function submitTransferApply(productId, size){
+  const toStore = (document.getElementById('tf-to')||{}).value;
+  const fromStore = (document.getElementById('tf-from')||{}).value;
+  const quantity = Number((document.getElementById('tf-qty')||{}).value);
+  if(!toStore || !fromStore){ alert2('請選擇發起點與調動點。'); return; }
+  if(toStore===fromStore){ alert2('發起點與調動點不可相同。'); return; }
+  if(!Number.isFinite(quantity) || quantity<1 || Math.floor(quantity)!==quantity){
+    alert2('調動數量須為正整數。'); return;
+  }
+  try{
+    const data = await apiFetch('/api/transfer/orders', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ productId, size, toStore, fromStore, quantity })
+    });
+    closeModal();
+    transferOrdersCache = null;
+    transferInvCache = null;
+    await loadNotifications().catch(function(){});
+    await loadTransferInventory(true).catch(function(){});
+    render();
+    const id = data && data.order && data.order.id ? data.order.id : '';
+    alert2('已送出調動申請'+(id?'（'+id+'）':'')+'，請等待調動點人員在信箱審批。');
+  }catch(e){
+    alert2('申請失敗：'+(e.message||e));
+  }
+}
+function transferStatusLabel(st){
+  if(st==='pending') return '<span class="tf-status-pending">待審批</span>';
+  if(st==='approved') return '<span class="tf-status-approved">已通過</span>';
+  if(st==='rejected') return '<span class="tf-status-rejected">已拒絕</span>';
+  return escHtml(st||'—');
+}
+function toggleTransferHistoryExpand(id){
+  transferHistoryExpandedId = (transferHistoryExpandedId===id) ? null : id;
+  render();
 }
 function vTransferInventory(){
   if(!currentUser){
@@ -1371,7 +1532,9 @@ function vTransferInventory(){
         const isLow = !!(r.low && r.low[s]);
         return '<td class="'+(isLow?'inv-low':'inv-ok')+'">'+q+'</td>';
       }).join('');
-      return '<tr>'
+      const pid = JSON.stringify(String(r.productId));
+      const sz = JSON.stringify(String(r.size));
+      return '<tr class="inv-row" title="點擊申請調動" onclick="openTransferApplyModal('+pid+','+sz+')">'
         +'<td><b>'+escHtml(r.productId)+'</b></td>'
         +'<td>'+escHtml(r.name)+'</td>'
         +'<td>'+escHtml(r.category)+'</td>'
@@ -1385,13 +1548,63 @@ function vTransferInventory(){
   return '<div class="card">'
     +'<h2>📦 庫存查詢</h2>'
     +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">四間港店（觀塘／荔枝角／灣仔／屯門）· 一列＝款號＋尺碼。'
-    +'低於安全存量的門市數量以<span class="inv-low">紅色</span>標示。目前篩選列中有 <b>'+lowCount+'</b> 列含預警。</p>'
+    +'點擊列可申請調動（發起點＝調入、調動點＝調出）。低於安全存量以<span class="inv-low">紅色</span>標示。篩選列中有 <b>'+lowCount+'</b> 列含預警。</p>'
     +'<div class="filters">'
     +'<input type="text" placeholder="搜尋編號／名稱／顏色" value="'+escHtml(transferInvKw)+'" onchange="setTransferInvKw(this.value)" onkeydown="if(event.key===\'Enter\'){setTransferInvKw(this.value)}">'
     +'<select onchange="setTransferInvCat(this.value)">'+catOpts+'</select>'
     +'<button type="button" class="btn gray sm" onclick="refreshTransferInventory()">重新整理</button>'
     +'</div>'
     +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 列</p>'
+    +'</div>'
+    +'<div class="card"><div class="table-wrap"><table>'+head+body+'</table></div></div>';
+}
+function vTransferHistory(){
+  if(!currentUser){
+    return '<div class="card"><h2>📋 調動記錄</h2><p>請先登入。</p></div>';
+  }
+  if(!apiEnabled){
+    return '<div class="card"><h2>📋 調動記錄</h2><p style="color:#c62828">需要連接 MongoDB 雲端。</p></div>';
+  }
+  if(!transferOrdersCache && !transferOrdersLoading){
+    loadTransferOrders(true).then(function(){ render(); }).catch(function(){ render(); });
+    return '<div class="card"><h2>📋 調動記錄</h2><p style="color:#888">正在載入…</p></div>';
+  }
+  if(transferOrdersLoading && !transferOrdersCache){
+    return '<div class="card"><h2>📋 調動記錄</h2><p style="color:#888">正在載入…</p></div>';
+  }
+  const orders = transferOrdersCache || [];
+  const head = '<tr><th>單號</th><th>時間</th><th>商品</th><th>尺碼</th><th>數量</th><th>發起點（調入）</th><th>調動點（調出）</th><th>申請人</th><th>狀態</th><th></th></tr>';
+  const body = !orders.length
+    ? '<tr><td colspan="10" style="color:#888;text-align:center">尚無調動記錄。</td></tr>'
+    : orders.map(function(o){
+      const expanded = transferHistoryExpandedId===o.id;
+      const tid = JSON.stringify(String(o.id));
+      const logs = Array.isArray(o.logs)?o.logs:[];
+      const logHtml = logs.length
+        ? '<ul class="tf-logs">'+logs.map(function(l){
+            return '<li><b>'+escHtml(l.time||'')+'</b> '+escHtml(l.userName||'')+'｜'+escHtml(l.action||'')
+              +(l.detail?' — '+escHtml(l.detail):'')+'</li>';
+          }).join('')+'</ul>'
+        : '<p style="font-size:12px;color:#888;margin:8px 0 0">無操作時間軸。</p>';
+      return '<tr>'
+        +'<td><b>'+escHtml(o.id)+'</b></td>'
+        +'<td style="white-space:nowrap;font-size:12px">'+escHtml(o.createdAt||'')+'</td>'
+        +'<td>'+escHtml(o.productId)+' '+escHtml(o.productName||'')+'</td>'
+        +'<td>'+escHtml(o.size)+'</td>'
+        +'<td>'+escHtml(String(o.quantity))+'</td>'
+        +'<td>'+escHtml(o.toStore)+'</td>'
+        +'<td>'+escHtml(o.fromStore)+'</td>'
+        +'<td>'+escHtml(o.createdByName||'')+'</td>'
+        +'<td>'+transferStatusLabel(o.status)+'</td>'
+        +'<td><button type="button" class="btn sm gray" onclick="toggleTransferHistoryExpand('+tid+')">'+(expanded?'收合':'時間軸')+'</button></td>'
+        +'</tr>'
+        +(expanded?'<tr><td colspan="10" style="background:#fafafa">'+logHtml+'</td></tr>':'');
+    }).join('');
+  return '<div class="card">'
+    +'<h2>📋 調動記錄</h2>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">所有已登入人員可查看全部調動單與操作時間軸（申請／通過／拒絕）。</p>'
+    +'<div class="filters"><button type="button" class="btn gray sm" onclick="refreshTransferOrders()">重新整理</button></div>'
+    +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+orders.length+' 筆</p>'
     +'</div>'
     +'<div class="card"><div class="table-wrap"><table>'+head+body+'</table></div></div>';
 }
@@ -2108,7 +2321,7 @@ function render(){
   } else if(currentModule==='settings'){
     items = [['settings','更改密碼']];
   } else if(currentModule==='transfer'){
-    items = [['transferInventory','庫存查詢']];
+    items = [['transferInventory','庫存查詢'],['transferHistory','調動記錄']];
   } else {
     items = isPersonal()
       ? [['myTasks','我的工作'],['repList','項目列表'],['home','首頁']]
@@ -2129,7 +2342,8 @@ function render(){
     pushNotify: vPushNotify,
     createStaff: vCreateStaff,
     settings: vPersonalSettings,
-    transferInventory: vTransferInventory
+    transferInventory: vTransferInventory,
+    transferHistory: vTransferHistory
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
   afterProjectChatRender();
@@ -2143,7 +2357,7 @@ function go(v){
   if(v==='pushNotify'){ currentModule='push'; }
   if(v==='createStaff'){ currentModule='createStaff'; }
   if(v==='settings'){ currentModule='settings'; }
-  if(v==='transferInventory'){ currentModule='transfer'; }
+  if(v==='transferInventory' || v==='transferHistory'){ currentModule='transfer'; }
   fCat='全部'; fStatus='全部'; fKw='';
   render();
 }
@@ -3228,6 +3442,8 @@ function loadDailyState(){
   return dailyStateCache;
 }
 function mkWork(o){
+  var assigneeIds=Array.isArray(o.assigneeIds)?o.assigneeIds.map(String).filter(Boolean).filter(function(id,i,a){ return a.indexOf(id)===i; }):[];
+  var assigneeNames=Array.isArray(o.assigneeNames)?o.assigneeNames.slice():assigneeIds.map(function(id){ return userName(id); });
   return {
     id:o.id||dailyId(o.kind||'wrk'),
     title:o.title||'',
@@ -3240,12 +3456,36 @@ function mkWork(o){
     templateId:o.templateId||null,
     requireAttachment:!!o.requireAttachment,
     attachments:Array.isArray(o.attachments)?o.attachments.slice():[],
+    assigneeIds:assigneeIds,
+    assigneeNames:assigneeNames,
     completedAt:o.completedAt||null,
     completedBy:o.completedBy||null,
     completedByName:o.completedByName||null,
     createdBy:o.createdBy||'system',
     updatedAt:o.updatedAt||dailyNowStr()
   };
+}
+function workAssigneeIds(w){
+  return (w&&Array.isArray(w.assigneeIds))?w.assigneeIds.map(String).filter(Boolean):[];
+}
+function workAssigneesLabel(w){
+  if(!w) return '整單位';
+  var ids=workAssigneeIds(w);
+  if(!ids.length) return '整單位';
+  if(Array.isArray(w.assigneeNames)&&w.assigneeNames.length) return w.assigneeNames.join('、');
+  return ids.map(function(id){ return userName(id); }).join('、');
+}
+/** 可指派完成突發工作的員工（個人賬號）；可依單位過濾。 */
+function listDailyStaffForUnits(units){
+  units=Array.isArray(units)?units:[];
+  return (users||[]).filter(function(u){
+    if(!u || u.active===false) return false;
+    if(!(u.role==='personal' || u.position==='員工')) return false;
+    if(typeof userNeedsPhoneBind==='function' && userNeedsPhoneBind(u)) return false;
+    if(!units.length) return true;
+    var us=dailyUserUnits(u);
+    return us.some(function(unit){ return units.indexOf(unit)>=0; });
+  });
 }
 function isStoreUnit(unit){ return FIXED_UNITS.indexOf(unit)>=0; }
 function isActiveWork(w){ return w&&w.status!=='cancelled'; }
@@ -3329,6 +3569,8 @@ function ensureDailySeed(){
   s.works.forEach(function(w){
     if(typeof w.requireAttachment==='undefined') w.requireAttachment=false;
     if(!Array.isArray(w.attachments)) w.attachments=[];
+    if(!Array.isArray(w.assigneeIds)) w.assigneeIds=[];
+    if(!Array.isArray(w.assigneeNames)) w.assigneeNames=[];
   });
   saveDailyState(s);
   generateRecurringForToday();
@@ -3337,8 +3579,11 @@ function ensureDailySeed(){
 function canTickWork(w,user){
   if(!w||!user||w.status==='cancelled') return false;
   if(dailyCanManage(user)) return true;
-  if(user.role!=='personal') return false;
-  return dailyUserInUnit(user, w.unit);
+  if(!(user.role==='personal' || user.position==='員工')) return false;
+  if(!dailyUserInUnit(user, w.unit)) return false;
+  var ids=workAssigneeIds(w);
+  if(ids.length) return ids.indexOf(String(user.id))>=0;
+  return true;
 }
 function completeDailyWork(id,user,checked,opts){
   user=user||currentUser;
@@ -3423,17 +3668,37 @@ function createAdhocWork(data,user){
   var priority=PRIORITIES.indexOf(data.priority)>=0?data.priority:'中';
   var units=(data.units||[]).filter(function(u,i,a){ return STORE_UNITS.indexOf(u)>=0&&a.indexOf(u)===i; });
   if(!title||!units.length) return false;
+  var assigneeIds=(data.assigneeIds||[]).map(String).filter(Boolean).filter(function(id,i,a){ return a.indexOf(id)===i; });
+  var validStaff=listDailyStaffForUnits(units);
+  var validIds={};
+  validStaff.forEach(function(u){ validIds[String(u.id)]=u; });
+  assigneeIds=assigneeIds.filter(function(id){ return !!validIds[id]; });
+  // 有指定員工時，只為「所選員工所屬單位」建立工作
+  if(assigneeIds.length){
+    units=units.filter(function(unit){
+      return assigneeIds.some(function(id){ return dailyUserUnits(validIds[id]).indexOf(unit)>=0; });
+    });
+    if(!units.length) return false;
+  }
   var s=loadDailyState();
   var requireAttachment=!!data.requireAttachment;
   units.forEach(function(unit){
+    var unitAssigneeIds=assigneeIds.filter(function(id){
+      return dailyUserUnits(validIds[id]).indexOf(unit)>=0;
+    });
     s.works.push(mkWork({
       title:title, content:content, unit:unit, kind:'adhoc',
       dueDate:dueDate, priority:priority, createdBy:dailyUserId(user),
-      requireAttachment:requireAttachment, attachments:[]
+      requireAttachment:requireAttachment, attachments:[],
+      assigneeIds:unitAssigneeIds,
+      assigneeNames:unitAssigneeIds.map(function(id){ return validIds[id].name||userName(id); })
     }));
   });
   saveDailyState(s);
-  addDailyOpLog('建立突發工作', title+'｜單位：'+units.join('、')+'｜期限 '+dueDate+(requireAttachment?'｜需附件':''));
+  var assignLabel=assigneeIds.length
+    ?('｜指派：'+assigneeIds.map(function(id){ return (validIds[id]&&validIds[id].name)||userName(id); }).join('、'))
+    :'｜整單位';
+  addDailyOpLog('建立突發工作', title+'｜單位：'+units.join('、')+'｜期限 '+dueDate+assignLabel+(requireAttachment?'｜需附件':''));
   return true;
 }
 function createRecurringTemplate(data,user){
@@ -3508,7 +3773,13 @@ function getTodayWorksForUser(user){
     if(dailyUnitFilter!=='全部') list=list.filter(function(w){ return w.unit===dailyUnitFilter; });
   }else{
     var units=dailyUserUnits(user);
-    list=list.filter(function(w){ return units.indexOf(w.unit)>=0; });
+    var uid=String(user.id);
+    list=list.filter(function(w){
+      if(units.indexOf(w.unit)<0) return false;
+      var ids=workAssigneeIds(w);
+      if(ids.length) return ids.indexOf(uid)>=0;
+      return true;
+    });
   }
   return list.sort(function(a,b){
     var po={高:0,中:1,低:2};
@@ -3647,8 +3918,28 @@ function dailyCancelWork(id){
 function unitChecksHtml(selected){
   selected=selected||STORE_UNITS.slice();
   return STORE_UNITS.map(function(u){
-    return '<label style="display:inline-flex;align-items:center;gap:4px;margin:4px 10px 4px 0"><input type="checkbox" class="d-unit" value="'+u+'" '+(selected.indexOf(u)>=0?'checked':'')+'> '+u+'</label>';
+    return '<label style="display:inline-flex;align-items:center;gap:4px;margin:4px 10px 4px 0"><input type="checkbox" class="d-unit" value="'+u+'" '+(selected.indexOf(u)>=0?'checked':'')+' onchange="typeof dailyRefreshAdhocStaffBox===\'function\'&&dailyRefreshAdhocStaffBox()"> '+u+'</label>';
   }).join('');
+}
+function staffChecksHtml(units, selected){
+  selected=(selected||[]).map(String);
+  var list=listDailyStaffForUnits(units);
+  if(!list.length){
+    return '<p style="color:#888;font-size:12px;margin:0">所選單位暫無可指派員工。不選員工則整單位任何人可完成。</p>';
+  }
+  return list.map(function(u){
+    var labs=dailyUserUnits(u).join('、');
+    return '<label style="display:flex;align-items:center;gap:6px;margin:6px 0">'+
+      '<input type="checkbox" class="d-staff" value="'+dailyEsc(String(u.id))+'" '+(selected.indexOf(String(u.id))>=0?'checked':'')+'> '+
+      '<span>'+dailyEsc(u.name)+(labs?' <span style="color:#888;font-size:11px">（'+dailyEsc(labs)+'）</span>':'')+'</span></label>';
+  }).join('');
+}
+function dailyRefreshAdhocStaffBox(){
+  var box=document.getElementById('d-staff-box');
+  if(!box) return;
+  var units=[].slice.call(document.querySelectorAll('#modal-content .d-unit:checked')).map(function(x){return x.value;});
+  var selected=[].slice.call(document.querySelectorAll('#modal-content .d-staff:checked')).map(function(x){return x.value;});
+  box.innerHTML=staffChecksHtml(units, selected);
 }
 function prioritySelectHtml(val,id){
   id=id||'d-priority';
@@ -3657,13 +3948,16 @@ function prioritySelectHtml(val,id){
 function dailyCreateAdhoc(){
   if(!dailyCanManage(currentUser)) return alert2('只有管理層可以建立突發工作。');
   if(!requireCloud('建立突發工作')) return;
+  var defaultUnits=STORE_UNITS.slice();
   showModal(
     '<h3>🛠️ 建立突發工作</h3>'+
     '<label>標題</label><input id="d-title" type="text" placeholder="例如：臨時補貨核對">'+
     '<label>內容</label><textarea id="d-content" placeholder="工作說明"></textarea>'+
     '<label>完成期限</label><input id="d-due" type="date" value="'+dailyTodayStr()+'">'+
     '<label>優先級</label>'+prioritySelectHtml('中')+
-    '<label>適用單位（可多選）</label><div class="card" style="padding:10px">'+unitChecksHtml()+'</div>'+
+    '<label>適用單位（可多選）</label><div class="card" style="padding:10px">'+unitChecksHtml(defaultUnits)+'</div>'+
+    '<label>指定員工（可選）</label><div id="d-staff-box" class="card" style="padding:10px;max-height:180px;overflow:auto">'+staffChecksHtml(defaultUnits)+'</div>'+
+    '<p style="font-size:12px;color:#888;margin-top:4px">不選員工＝該單位任何人可完成；有選則只有指定員工可剔選（管理層仍可操作）。</p>'+
     '<label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="d-require-attach"> 完成時需要上傳附件</label>'+
     '<p style="font-size:12px;color:#888;margin-top:4px">勾選後，員工剔選完成前必須先上傳至少 1 個附件（格式不限）。</p>'+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitAdhoc()">建立</button></div>'
@@ -3676,9 +3970,12 @@ async function dailySubmitAdhoc(){
   var priority=document.getElementById('d-priority').value;
   var requireAttachment=!!(document.getElementById('d-require-attach')||{}).checked;
   var units=[].slice.call(document.querySelectorAll('#modal-content .d-unit:checked')).map(function(x){return x.value;});
+  var assigneeIds=[].slice.call(document.querySelectorAll('#modal-content .d-staff:checked')).map(function(x){return x.value;});
   if(!title||!units.length) return alert2('請輸入標題並選擇至少一個單位。');
   if(!requireCloud('建立突發工作')) return;
-  createAdhocWork({title:title,content:content,dueDate:due,priority:priority,units:units,requireAttachment:requireAttachment},currentUser);
+  if(!createAdhocWork({title:title,content:content,dueDate:due,priority:priority,units:units,assigneeIds:assigneeIds,requireAttachment:requireAttachment},currentUser)){
+    return alert2('建立失敗：請確認所選員工屬於已勾選的單位。');
+  }
   closeModal();
   try{
     await flushCloudSaves();
@@ -3830,7 +4127,9 @@ function dailyWorkRows(list,user,opts){
       }
       return '<tr>'+
         (readonly?'':'<td>'+tick+'</td>')+
-        '<td><b>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+dailyAttachHtml(w,user,readonly)+'</td>'+
+        '<td><b>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+
+          (w.kind==='adhoc'?'<div style="font-size:11px;color:#666;margin-top:4px">指派：'+dailyEsc(workAssigneesLabel(w))+'</div>':'')+
+          dailyAttachHtml(w,user,readonly)+'</td>'+
         '<td>'+dailyEsc(w.unit)+'</td><td>'+dailyKindTag(w)+'</td><td>'+priorityTag(w.priority)+'</td>'+
         '<td>'+dailyEsc(w.dueDate||'—')+'</td><td>'+dailyStatusTag(w)+'</td><td>'+doneInfo+'</td>'+
         (showAdmin?'<td><div class="actions-row">'+admin+'</div></td>':'')+
@@ -4002,10 +4301,43 @@ function vDailyUnit(user){
 }
 function vDailyNew(user){
   if(!dailyCanManage(user)) return '<div class="card"><h2>➕ 管理工作</h2><p>個人賬號不可新增工作。</p></div>';
+  ensureDailySeed();
+  var list=loadDailyState().works.filter(function(w){
+    return w && w.kind==='adhoc' && w.status!=='cancelled';
+  }).sort(function(a,b){
+    return String(b.dueDate||'').localeCompare(String(a.dueDate||'')) ||
+      String(b.updatedAt||'').localeCompare(String(a.updatedAt||'')) ||
+      String(a.title||'').localeCompare(String(b.title||''),'zh-Hant');
+  });
+  var rows=!list.length
+    ?'<p style="color:#888">尚未建立突發工作。按上方按鈕新增後，會顯示於此。</p>'
+    :('<div class="table-wrap"><table><thead><tr>'+
+      '<th>工作</th><th>單位</th><th>指派</th><th>優先</th><th>期限</th><th>狀態</th><th>完成資訊</th><th>管理</th>'+
+      '</tr></thead><tbody>'+
+      list.map(function(w){
+        var doneInfo=w.status==='done'
+          ? dailyEsc(w.completedByName||'—')+'<div style="font-size:11px;color:#888">'+dailyEsc(w.completedAt||'')+'</div>'
+          : '—';
+        var admin='<button class="btn gray sm" onclick="dailyEditWork(\''+w.id+'\')">編輯</button> ';
+        if(w.status==='done') admin+='<button class="btn warn sm" onclick="dailyReopen(\''+w.id+'\')">重開</button> ';
+        admin+='<button class="btn red sm" onclick="dailyCancelWork(\''+w.id+'\')">取消</button>';
+        return '<tr>'+
+          '<td><b>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+'</td>'+
+          '<td>'+dailyEsc(w.unit)+'</td>'+
+          '<td style="font-size:12px">'+dailyEsc(workAssigneesLabel(w))+'</td>'+
+          '<td>'+priorityTag(w.priority)+'</td>'+
+          '<td>'+dailyEsc(w.dueDate||'—')+'</td>'+
+          '<td>'+dailyStatusTag(w)+'</td>'+
+          '<td>'+doneInfo+'</td>'+
+          '<td><div class="actions-row">'+admin+'</div></td>'+
+          '</tr>';
+      }).join('')+
+      '</tbody></table></div>');
   return '<div class="card"><h2>➕ 新增突發工作</h2>'+
-    '<p style="color:#666;font-size:13px;margin-bottom:10px">可指定多個單位、期限與優先級；建立後即出現在對應單位今日／期限日清單。</p>'+
+    '<p style="color:#666;font-size:13px;margin-bottom:10px">可指定多個單位、員工、期限與優先級；建立後即出現在下方清單，並進入對應單位今日／期限日清單。</p>'+
     '<button class="btn" onclick="dailyCreateAdhoc()">🛠️ 建立突發工作</button> '+
-    '<button class="btn gray" onclick="goDailyView(\'recurring\')">前往恆常任務</button></div>';
+    '<button class="btn gray" onclick="goDailyView(\'recurring\')">前往恆常任務</button></div>'+
+    '<div class="card"><h3>已建立的突發工作（'+list.length+'）</h3>'+rows+'</div>';
 }
 function askDeleteTemplate(id){
   if(!dailyCanManage(currentUser)) return alert2('只有管理層可以刪除恆常任務。');

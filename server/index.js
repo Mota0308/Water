@@ -30,6 +30,10 @@ import {
   isAdminAccount,
   appendModuleLog,
   listTransferInventory,
+  applyTransferRequest,
+  decideTransferRequest,
+  listTransferOrders,
+  getTransferOrder,
   TRANSFER_STORES,
 } from './mongo.js';
 
@@ -327,6 +331,50 @@ app.get('/api/transfer/inventory', requireAuth, async (_req, res) => {
 
 app.get('/api/transfer/stores', requireAuth, async (_req, res) => {
   res.json({ stores: TRANSFER_STORES });
+});
+
+app.get('/api/transfer/orders', requireAuth, async (_req, res) => {
+  try {
+    res.json({ orders: await listTransferOrders() });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/transfer/orders/:id', requireAuth, async (req, res) => {
+  try {
+    const order = await getTransferOrder(req.params.id);
+    if (!order) return res.status(404).json({ error: '找不到調動單' });
+    res.json({ order });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/transfer/orders', requireAuth, async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({ error: 'JSON body required' });
+    }
+    const order = await applyTransferRequest(req.user, req.body);
+    res.json({ order });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/transfer/orders/:id/decide', requireAuth, async (req, res) => {
+  try {
+    const decision = req.body?.decision || req.body?.action;
+    const order = await decideTransferRequest(req.user, req.params.id, decision, req.body?.reason);
+    res.json({ order });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
 });
 
 app.get('/api/daily', requireAuth, async (_req, res) => {

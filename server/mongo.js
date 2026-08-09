@@ -31,6 +31,8 @@ export async function connectMongo() {
   await moduleLogsCol().createIndex({ module: 1, createdAt: -1 });
   await transferProductsCol().createIndex({ id: 1 }, { unique: true });
   await transferInventoryCol().createIndex({ productId: 1, size: 1, store: 1 }, { unique: true });
+  await transferOrdersCol().createIndex({ id: 1 }, { unique: true });
+  await transferOrdersCol().createIndex({ createdAtMs: -1 });
   console.log('MongoDB connected:', DB_NAME);
   try {
     await migrateUsersV1();
@@ -100,6 +102,25 @@ function transferProductsCol() {
 }
 function transferInventoryCol() {
   return db.collection('transfer_inventory');
+}
+function transferOrdersCol() {
+  return db.collection('transfer_orders');
+}
+
+function formatHkDateTime(d = new Date()) {
+  const now = d instanceof Date ? d : new Date(d);
+  return `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+}
+
+async function nextTransferOrderId() {
+  const result = await metaCol().findOneAndUpdate(
+    { _id: 'transfer_seq' },
+    { $inc: { seq: 1 }, $set: { updatedAt: new Date() } },
+    { upsert: true, returnDocument: 'after' }
+  );
+  const doc = result?.value ?? result;
+  const seq = typeof doc?.seq === 'number' ? doc.seq : 1;
+  return 'TF' + String(seq).padStart(4, '0');
 }
 
 /** 貨品調動：四間港店（與員工地區同名，無「店」字） */
@@ -974,6 +995,9 @@ export async function createNotification(input) {
     createdAtMs: Number(input?.createdAtMs) || now.getTime(),
     recipients: recipientIds.map((userId) => ({ userId, read: false, readAt: null })),
   };
+  if (input?.actionType) item.actionType = String(input.actionType);
+  if (input?.transferId) item.transferId = String(input.transferId);
+  if (input?.transferResolved != null) item.transferResolved = !!input.transferResolved;
   state.notifications.unshift(item);
   state.notifSeq = (state.notifSeq || 1) + 1;
   await saveNotificationsState(state);
@@ -1114,15 +1138,8 @@ export function canCreateEmployee(user) {
 
 const TRANSFER_SEED_PRODUCTS = [
   { id: 'WS-S001', name: '成人 2mm 防寒膠衣', category: '成人膠衣', color: '黑', sizes: ['S', 'M', 'L', 'XL'], safetyStock: 4 },
-  { id: 'WS-S002', name: '兒童 2mm 防寒膠衣', category: '兒童膠衣', color: '藍', sizes: ['XS', 'S', 'M', 'L'], safetyStock: 3 },
   { id: 'WS-F001', name: '成人抓毛套裝', category: '成人抓毛', color: '灰', sizes: ['S', 'M', 'L', 'XL'], safetyStock: 5 },
-  { id: 'WS-F002', name: '兒童抓毛上衣', category: '兒童抓毛', color: '紅', sizes: ['XS', 'S', 'M', 'L'], safetyStock: 4 },
   { id: 'WS-U001', name: '成人長袖防曬衣', category: '防曬用品', color: '白', sizes: ['S', 'M', 'L', 'XL', 'XXL'], safetyStock: 6 },
-  { id: 'WS-U002', name: '兒童防曬套裝', category: '防曬用品', color: '粉', sizes: ['XS', 'S', 'M', 'L'], safetyStock: 5 },
-  { id: 'WS-W001', name: '成人保暖內衣上衣', category: '成人保暖衣', color: '黑', sizes: ['M', 'L', 'XL'], safetyStock: 4 },
-  { id: 'WS-A001', name: '防水袋 20L', category: '游水用品', color: '螢光橙', sizes: ['均碼'], safetyStock: 8 },
-  { id: 'WS-A002', name: '泳鏡（成人）', category: '游水用品', color: '透明', sizes: ['均碼'], safetyStock: 10 },
-  { id: 'WS-X001', name: '防水手機套', category: '其他', color: '透明', sizes: ['均碼'], safetyStock: 12 },
 ];
 
 /** 種子庫存：每店每尺碼給定基準，部分故意低於安全存量以便預警示範 */
@@ -1131,26 +1148,14 @@ function seedQtyFor(productId, size, store, safetyStock, sizeIndex) {
   const base = Math.max(0, Math.round(safetyStock * (storeBias[store] || 1) + (sizeIndex % 3) - 1));
   // 灣仔部分尺碼刻意偏低，方便標紅演示
   if (store === '灣仔' && sizeIndex === 0) return Math.max(0, safetyStock - 2);
-  if (productId === 'WS-A001' && store === '屯門') return Math.max(0, safetyStock - 3);
+  if (productId === 'WS-U001' && store === '屯門' && sizeIndex === 0) return Math.max(0, safetyStock - 3);
   return base;
 }
 
-export async function ensureTransferSeed() {
-  await connectMongo();
-  const n = await transferProductsCol().countDocuments();
-  if (n > 0) return { seeded: false };
-  const now = new Date();
-  const products = TRANSFER_SEED_PRODUCTS.map((p) => ({
-    ...p,
-    _id: p.id,
-    active: true,
-    createdAt: now,
-    updatedAt: now,
-  }));
-  await transferProductsCol().insertMany(products);
+function buildSeedInventoryDocs(products, now) {
   const inv = [];
-  for (const p of TRANSFER_SEED_PRODUCTS) {
-    p.sizes.forEach((size, sizeIndex) => {
+  for (const p of products) {
+    (p.sizes || ['均碼']).forEach((size, sizeIndex) => {
       for (const store of TRANSFER_STORES) {
         const qty = seedQtyFor(p.id, size, store, p.safetyStock, sizeIndex);
         inv.push({
@@ -1164,7 +1169,55 @@ export async function ensureTransferSeed() {
       }
     });
   }
-  if (inv.length) await transferInventoryCol().insertMany(inv);
+  return inv;
+}
+
+/** 只保留目前種子清單中的示範款（WS-*），多餘樣本刪除 */
+async function trimTransferSeedProducts() {
+  const keepIds = TRANSFER_SEED_PRODUCTS.map((p) => p.id);
+  const keepSet = new Set(keepIds);
+  const seedish = await transferProductsCol()
+    .find({ $or: [{ _id: /^WS-/ }, { id: /^WS-/ }] })
+    .project({ _id: 1, id: 1 })
+    .toArray();
+  const toRemove = seedish
+    .map((p) => String(p.id || p._id))
+    .filter((id) => id && !keepSet.has(id));
+  if (toRemove.length) {
+    await transferProductsCol().deleteMany({
+      $or: [{ _id: { $in: toRemove } }, { id: { $in: toRemove } }],
+    });
+    await transferInventoryCol().deleteMany({ productId: { $in: toRemove } });
+    console.log('Trimmed transfer seed products:', toRemove.join(', '));
+  }
+  return toRemove.length;
+}
+
+export async function ensureTransferSeed() {
+  await connectMongo();
+  await trimTransferSeedProducts();
+  const existing = await transferProductsCol()
+    .find({ $or: [{ _id: { $in: TRANSFER_SEED_PRODUCTS.map((p) => p.id) } }, { id: { $in: TRANSFER_SEED_PRODUCTS.map((p) => p.id) } }] })
+    .project({ _id: 1, id: 1 })
+    .toArray();
+  const have = new Set(existing.map((p) => String(p.id || p._id)));
+  const missing = TRANSFER_SEED_PRODUCTS.filter((p) => !have.has(p.id));
+  if (!missing.length) return { seeded: false, trimmed: true };
+  const now = new Date();
+  const products = missing.map((p) => ({
+    ...p,
+    _id: p.id,
+    active: true,
+    createdAt: now,
+    updatedAt: now,
+  }));
+  await transferProductsCol().insertMany(products);
+  const inv = buildSeedInventoryDocs(missing, now);
+  if (inv.length) {
+    for (const row of inv) {
+      await transferInventoryCol().updateOne({ _id: row._id }, { $setOnInsert: row }, { upsert: true });
+    }
+  }
   console.log('Seeded transfer products/inventory:', products.length, 'products,', inv.length, 'inventory rows');
   return { seeded: true, products: products.length, inventory: inv.length };
 }
@@ -1215,6 +1268,277 @@ export async function listTransferInventory() {
     categories: TRANSFER_CATEGORIES.slice(),
     rows,
   };
+}
+
+async function getInventoryQty(productId, size, store) {
+  const doc = await transferInventoryCol().findOne({ productId, size, store });
+  return doc ? Number(doc.quantity) || 0 : 0;
+}
+
+async function adjustInventoryQty(productId, size, store, delta) {
+  const _id = `${productId}__${size}__${store}`;
+  const existing = await transferInventoryCol().findOne({ _id });
+  const cur = existing ? Number(existing.quantity) || 0 : 0;
+  const next = cur + Number(delta);
+  if (next < 0) throw new Error('庫存不足，無法完成調動');
+  const now = new Date();
+  await transferInventoryCol().updateOne(
+    { _id },
+    {
+      $set: { productId, size, store, quantity: next, updatedAt: now },
+      $setOnInsert: { _id, createdAt: now },
+    },
+    { upsert: true }
+  );
+  return next;
+}
+
+function userBelongsToStore(u, store) {
+  const units = Array.isArray(u?.units) ? u.units.filter(Boolean) : [];
+  if (!units.length && u?.unit) units.push(u.unit);
+  return units.includes(store);
+}
+
+function canDecideTransfer(actor, order) {
+  if (!actor || !order) return false;
+  if (String(actor.id) === String(order.createdBy)) return false;
+  if (actor.role === 'system_admin' || actor.role === 'manager') return true;
+  return userBelongsToStore(actor, order.fromStore);
+}
+
+async function resolveTransferRecipientIds(fromStore) {
+  const docs = await usersCol().find({ active: { $ne: false } }).toArray();
+  const ids = [];
+  for (const raw of docs) {
+    const u = publicUser(raw);
+    if (!u?.id) continue;
+    if (u.role === 'system_admin' || u.role === 'manager' || userBelongsToStore(u, fromStore)) {
+      ids.push(String(u.id));
+    }
+  }
+  return [...new Set(ids)];
+}
+
+async function markTransferNotificationsResolved(transferId, decisionLabel) {
+  const state = await getNotificationsState();
+  let changed = false;
+  for (const n of state.notifications || []) {
+    if (n.actionType === 'transfer_decide' && n.transferId === transferId && !n.transferResolved) {
+      n.transferResolved = true;
+      n.transferDecision = decisionLabel;
+      n.content = `${n.content || ''}\n\n【已處理】${decisionLabel}`;
+      changed = true;
+    }
+  }
+  if (changed) await saveNotificationsState(state);
+}
+
+function stripTransferOrder(doc) {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return rest;
+}
+
+/**
+ * 申請調動：發起點＝調入店，調動點＝調出店；通知調出店相關人員信箱。
+ */
+export async function applyTransferRequest(actor, input) {
+  await connectMongo();
+  await ensureTransferSeed();
+  const me = publicUser(actor);
+  if (!me?.id) throw new Error('未登入');
+  const productId = String(input?.productId || '').trim();
+  const size = String(input?.size || '').trim();
+  const toStore = String(input?.toStore || '').trim(); // 發起點／調入
+  const fromStore = String(input?.fromStore || '').trim(); // 調動點／調出
+  const quantity = Math.floor(Number(input?.quantity));
+  if (!productId || !size) throw new Error('請指定商品與尺碼');
+  if (!TRANSFER_STORES.includes(toStore) || !TRANSFER_STORES.includes(fromStore)) {
+    throw new Error('門市僅限觀塘／荔枝角／灣仔／屯門');
+  }
+  if (toStore === fromStore) throw new Error('發起點與調動點不可相同');
+  if (!Number.isFinite(quantity) || quantity < 1) throw new Error('調動數量須為正整數');
+
+  const product = await transferProductsCol().findOne({ id: productId, active: { $ne: false } });
+  if (!product) throw new Error('找不到商品');
+  const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : ['均碼'];
+  if (!sizes.includes(size)) throw new Error('此商品沒有該尺碼');
+
+  const available = await getInventoryQty(productId, size, fromStore);
+  if (quantity > available) {
+    throw new Error(`調動點（${fromStore}）庫存不足（現有 ${available}）`);
+  }
+
+  const now = new Date();
+  const id = await nextTransferOrderId();
+  const createdAt = formatHkDateTime(now);
+  const actorName = String(me.name || me.login || me.id);
+  const order = {
+    _id: id,
+    id,
+    productId,
+    productName: product.name || '',
+    category: product.category || '其他',
+    color: product.color || '',
+    size,
+    quantity,
+    toStore,
+    fromStore,
+    status: 'pending',
+    createdBy: String(me.id),
+    createdByName: actorName,
+    createdAt,
+    createdAtMs: now.getTime(),
+    decidedBy: null,
+    decidedByName: null,
+    decidedAt: null,
+    decidedAtMs: null,
+    rejectReason: '',
+    notificationIds: [],
+    logs: [
+      {
+        time: createdAt,
+        timeMs: now.getTime(),
+        userId: String(me.id),
+        userName: actorName,
+        action: '申請調動',
+        detail: `${productId} ${size} × ${quantity}｜發起點（調入）${toStore} ← 調動點（調出）${fromStore}`,
+      },
+    ],
+  };
+
+  const recipientIds = await resolveTransferRecipientIds(fromStore);
+  if (!recipientIds.length) throw new Error('找不到可通知的調動點人員');
+
+  const notif = await createNotification({
+    category: '貨品調動',
+    priority: '重要',
+    title: `調動申請 ${id}｜${productId} ${size} × ${quantity}`,
+    content: [
+      `${order.createdByName} 申請貨品調動，請審批。`,
+      `單號：${id}`,
+      `商品：${productId} ${product.name || ''}｜尺碼 ${size}｜數量 ${quantity}`,
+      `發起點（調入）：${toStore}`,
+      `調動點（調出）：${fromStore}`,
+      '通過後會立即從調出店扣減並加入調入店。',
+    ].join('\n'),
+    fromUserId: String(me.id),
+    fromName: actorName,
+    recipientIds,
+    actionType: 'transfer_decide',
+    transferId: id,
+    transferResolved: false,
+  });
+  order.notificationIds = [notif.id];
+  await transferOrdersCol().insertOne(order);
+  await appendModuleLog({
+    module: 'transfer',
+    time: createdAt,
+    action: '申請調動',
+    detail: `${id} ${productId} ${size}×${quantity} ${fromStore}→${toStore}`,
+    userId: me.id,
+    userName: order.createdByName,
+    user: order.createdByName,
+  });
+  return stripTransferOrder(order);
+}
+
+export async function decideTransferRequest(actor, transferId, decision, reason) {
+  await connectMongo();
+  const me = publicUser(actor);
+  if (!me?.id) throw new Error('未登入');
+  const id = String(transferId || '').trim();
+  const dec = String(decision || '').trim().toLowerCase();
+  if (dec !== 'approve' && dec !== 'reject') throw new Error('decision 須為 approve 或 reject');
+
+  const order = await transferOrdersCol().findOne({ id });
+  if (!order) throw new Error('找不到調動單');
+  if (order.status !== 'pending') throw new Error('此調動單已處理');
+
+  if (String(me.id) === String(order.createdBy)) {
+    throw new Error('不可審批自己的申請');
+  }
+  if (!canDecideTransfer(me, order)) {
+    throw new Error('你沒有權限審批此調動（須為調動點門市人員或管理層）');
+  }
+
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const actorName = String(me.name || me.login || me.id);
+
+  if (dec === 'approve') {
+    const available = await getInventoryQty(order.productId, order.size, order.fromStore);
+    if (order.quantity > available) {
+      throw new Error(`庫存不足，無法通過（${order.fromStore} 現有 ${available}，申請 ${order.quantity}）。單據仍維持待審批。`);
+    }
+    await adjustInventoryQty(order.productId, order.size, order.fromStore, -order.quantity);
+    await adjustInventoryQty(order.productId, order.size, order.toStore, order.quantity);
+    order.status = 'approved';
+    order.decidedBy = String(me.id);
+    order.decidedByName = actorName;
+    order.decidedAt = time;
+    order.decidedAtMs = now.getTime();
+    order.logs.push({
+      time,
+      timeMs: now.getTime(),
+      userId: String(me.id),
+      userName: actorName,
+      action: '通過',
+      detail: `已從 ${order.fromStore} 扣 ${order.quantity}，加入 ${order.toStore}`,
+    });
+    await transferOrdersCol().replaceOne({ _id: order._id }, order);
+    await markTransferNotificationsResolved(id, `已通過（${actorName}）`);
+    await appendModuleLog({
+      module: 'transfer',
+      time,
+      action: '通過調動',
+      detail: `${id} ${order.productId} ${order.size}×${order.quantity} ${order.fromStore}→${order.toStore}`,
+      userId: me.id,
+      userName: actorName,
+      user: actorName,
+    });
+    return stripTransferOrder(order);
+  }
+
+  const rejectReason = String(reason || '').trim();
+  order.status = 'rejected';
+  order.decidedBy = String(me.id);
+  order.decidedByName = actorName;
+  order.decidedAt = time;
+  order.decidedAtMs = now.getTime();
+  order.rejectReason = rejectReason;
+  order.logs.push({
+    time,
+    timeMs: now.getTime(),
+    userId: String(me.id),
+    userName: actorName,
+    action: '拒絕',
+    detail: rejectReason || '（無理由）',
+  });
+  await transferOrdersCol().replaceOne({ _id: order._id }, order);
+  await markTransferNotificationsResolved(id, `已拒絕（${actorName}）${rejectReason ? '：' + rejectReason : ''}`);
+  await appendModuleLog({
+    module: 'transfer',
+    time,
+    action: '拒絕調動',
+    detail: `${id}${rejectReason ? '｜' + rejectReason : ''}`,
+    userId: me.id,
+    userName: actorName,
+    user: actorName,
+  });
+  return stripTransferOrder(order);
+}
+
+export async function listTransferOrders() {
+  await connectMongo();
+  const docs = await transferOrdersCol().find({}).sort({ createdAtMs: -1 }).toArray();
+  return docs.map(stripTransferOrder);
+}
+
+export async function getTransferOrder(id) {
+  await connectMongo();
+  const doc = await transferOrdersCol().findOne({ id: String(id || '') });
+  return stripTransferOrder(doc);
 }
 
 export async function closeMongo() {
