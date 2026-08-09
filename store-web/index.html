@@ -703,11 +703,16 @@ async function persistProjectsNow(){
 }
 async function persistDailyNow(){
   if(!apiEnabled || !dailyStateCache) return;
+  var seqAtStart = typeof dailyPersistSeq === 'number' ? dailyPersistSeq : 0;
   await apiFetch('/api/daily', {
     method:'PUT',
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify(slimDailyPayload(dailyStateCache))
   });
+  // 僅在沒有更新的本地變更時清 dirty，避免舊 PUT 回覆把新變更標成已同步
+  if(seqAtStart === dailyPersistSeq){
+    try{ localStorage.setItem(DAILY_DIRTY_KEY, '0'); }catch(e){}
+  }
   noteCloudOk();
 }
 function scheduleDailyCloudSave(){
@@ -723,12 +728,24 @@ async function flushCloudSaves(){
   clearTimeout(dailySaveTimer);
   projectsSaveTimer = null;
   dailySaveTimer = null;
+  // 專案與每日工作分開寫入：任一方失敗不得阻擋另一方，否則會出現
+  //「畫面上有任務／刷新後消失」（每日 PUT 被專案錯誤短路）。
+  let lastErr = null;
   try{
     await persistProjectsNow();
+  }catch(e){
+    lastErr = e;
+  }
+  try{
     await persistDailyNow();
   }catch(e){
-    noteCloudError(e);
+    lastErr = e;
   }
+  if(lastErr){
+    noteCloudError(lastErr);
+    throw lastErr;
+  }
+  noteCloudOk();
 }
 /**
  * 雲端 users collection 為唯一正式來源（GET 不含密碼）。
@@ -783,12 +800,31 @@ async function rescueOrphanUsers(orphans){
   }catch(e){}
 }
 async function loadCloudAppData(){
+  // 先讀本機快取：若上次雲端寫入失敗（dirty），刷新時不可被舊雲端整包蓋掉。
+  let localDaily = null;
+  let localDirty = false;
+  try{
+    const raw = localStorage.getItem(DAILY_KEY);
+    if(raw) localDaily = dailyNormalizeState(JSON.parse(raw));
+    localDirty = localStorage.getItem(DAILY_DIRTY_KEY) === '1';
+  }catch(e){}
+
   const daily = await apiFetch('/api/daily');
-  dailyStateCache = dailyNormalizeState(daily);
+  const cloud = dailyNormalizeState(daily);
+  const shouldMerge = !!(localDirty && localDaily);
+
+  if(shouldMerge){
+    dailyStateCache = mergeDailyStates(cloud, localDaily);
+  } else {
+    dailyStateCache = cloud;
+  }
+
   const dailyChanged = purgeSampleDailyState(dailyStateCache);
   try{ localStorage.setItem(DAILY_KEY, JSON.stringify(dailyStateCache)); }catch(e){}
-  if(dailyChanged){
-    try{ await persistDailyNow(); }catch(e){ console.warn('purge sample daily', e); }
+  if(dailyChanged || shouldMerge){
+    try{ await persistDailyNow(); }catch(e){ console.warn('sync daily after load', e); }
+  } else {
+    try{ localStorage.setItem(DAILY_DIRTY_KEY, '0'); }catch(e){}
   }
 
   const ps = await apiFetch('/api/projects');
@@ -2978,12 +3014,43 @@ function vSysLogs(){
 
 /* ═══════════ Part 1 每日工作流程（localStorage v2） ═══════════ */
 var DAILY_KEY='store-web-daily-v6';
+var DAILY_DIRTY_KEY='store-web-daily-v6-dirty';
 var FIXED_UNITS=['觀塘','荔枝角','灣仔','屯門'];
 var STORE_UNITS=['觀塘','荔枝角','灣仔','屯門','國內倉'];
 var PRIORITIES=['高','中','低'];
 var dailyUnitFilter='全部';
 var dailyProgressUnit=null;
 var dailyStateCache=null;
+var dailyPersistSeq=0;
+
+function dailyMergeById(cloudArr, localArr){
+  var m={};
+  (cloudArr||[]).forEach(function(x){ if(x&&x.id!=null) m[String(x.id)]=x; });
+  (localArr||[]).forEach(function(x){ if(x&&x.id!=null) m[String(x.id)]=x; });
+  return Object.keys(m).map(function(k){ return m[k]; });
+}
+function dailyOpLogKey(l){
+  return String((l&&l.time)||'')+'|'+String((l&&(l.userId||l.user))||'')+'|'+String((l&&l.action)||'')+'|'+String((l&&l.detail)||'');
+}
+function dailyMergeOpLogs(cloudArr, localArr){
+  var m={};
+  (cloudArr||[]).forEach(function(l){ m[dailyOpLogKey(l)]=l; });
+  (localArr||[]).forEach(function(l){ m[dailyOpLogKey(l)]=l; });
+  return Object.keys(m).map(function(k){ return m[k]; })
+    .sort(function(a,b){ return String((b&&b.time)||'').localeCompare(String((a&&a.time)||'')); })
+    .slice(0,500);
+}
+/** 合併雲端與本機：保留尚未成功同步的新建恆常／突發任務。 */
+function mergeDailyStates(cloudRaw, localRaw){
+  var cloud=dailyNormalizeState(cloudRaw);
+  var local=dailyNormalizeState(localRaw);
+  return {
+    version:2,
+    works:dailyMergeById(cloud.works, local.works),
+    recurringTemplates:dailyMergeById(cloud.recurringTemplates, local.recurringTemplates),
+    opLogs:dailyMergeOpLogs(cloud.opLogs, local.opLogs)
+  };
+}
 
 function dailyTodayStr(){
   var d=new Date();
@@ -3025,7 +3092,12 @@ function addDailyOpLog(action, detail){
 }
 function saveDailyState(next){
   dailyStateCache=dailyNormalizeState(next||dailyStateCache||dailyBaseState());
-  try{ localStorage.setItem(DAILY_KEY,JSON.stringify(dailyStateCache)); }catch(e){}
+  dailyPersistSeq += 1;
+  try{
+    localStorage.setItem(DAILY_KEY,JSON.stringify(dailyStateCache));
+    // dirty=1：雲端尚未確認寫入。刷新時若仍為 dirty，會與雲端合併以免新建任務消失。
+    localStorage.setItem(DAILY_DIRTY_KEY, '1');
+  }catch(e){}
   // 有雲端時寫入 MongoDB（localStorage 僅作快取）
   scheduleDailyCloudSave();
   return dailyStateCache;
@@ -3480,7 +3552,7 @@ function dailyCreateAdhoc(){
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitAdhoc()">建立</button></div>'
   );
 }
-function dailySubmitAdhoc(){
+async function dailySubmitAdhoc(){
   var title=(document.getElementById('d-title').value||'').trim();
   var content=document.getElementById('d-content').value||'';
   var due=document.getElementById('d-due').value||dailyTodayStr();
@@ -3491,7 +3563,13 @@ function dailySubmitAdhoc(){
   if(!requireCloud('建立突發工作')) return;
   createAdhocWork({title:title,content:content,dueDate:due,priority:priority,units:units,requireAttachment:requireAttachment},currentUser);
   closeModal();
-  flushCloudSaves().then(function(){ render(); }).catch(function(){ render(); });
+  try{
+    await flushCloudSaves();
+    render();
+  }catch(e){
+    render();
+    alert2('工作已保存在本機，但雲端同步失敗：'+(e&&e.message?e.message:e)+'。請查看頂欄狀態；暫勿關閉分頁，稍後會自動重試。');
+  }
 }
 function dailyCreateRecurring(){
   if(!dailyCanManage(currentUser)) return alert2('只有管理層可以建立恆常任務。');
@@ -3507,7 +3585,7 @@ function dailyCreateRecurring(){
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitRecurring()">建立</button></div>'
   );
 }
-function dailySubmitRecurring(){
+async function dailySubmitRecurring(){
   var title=(document.getElementById('d-title').value||'').trim();
   var content=document.getElementById('d-content').value||'';
   var priority=document.getElementById('d-priority').value;
@@ -3517,7 +3595,13 @@ function dailySubmitRecurring(){
   if(!requireCloud('建立恆常任務')) return;
   createRecurringTemplate({title:title,content:content,priority:priority,units:units,requireAttachment:requireAttachment},currentUser);
   closeModal();
-  flushCloudSaves().then(function(){ render(); }).catch(function(){ render(); });
+  try{
+    await flushCloudSaves();
+    render();
+  }catch(e){
+    render();
+    alert2('恆常任務已保存在本機，但雲端同步失敗：'+(e&&e.message?e.message:e)+'。請查看頂欄狀態；暫勿關閉分頁，稍後會自動重試。');
+  }
 }
 function dailyEditWork(id){
   if(!dailyCanManage(currentUser)) return;
