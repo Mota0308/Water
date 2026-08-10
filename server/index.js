@@ -323,7 +323,20 @@ app.post('/api/drive/export-users', requireAuth, async (req, res) => {
     }
     res.json(result);
   } catch (e) {
-    console.error(e);
+    console.error('[drive/export-users]', e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+/** Drive 連線診斷（管理員） */
+app.get('/api/drive/status', requireAuth, async (req, res) => {
+  try {
+    if (!canCreateEmployee(req.user) && !isAdminAccount(req.user)) {
+      return res.status(403).json({ error: '沒有權限。' });
+    }
+    res.json(await getDriveExportStatus());
+  } catch (e) {
+    console.error('[drive/status]', e);
     res.status(400).json({ error: String(e.message || e) });
   }
 });
