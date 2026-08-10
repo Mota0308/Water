@@ -16,6 +16,8 @@ function loadCredentials() {
   let info;
   try {
     info = JSON.parse(raw);
+    // Railway 有時會變成「字串再包一層」
+    if (typeof info === 'string') info = JSON.parse(info);
   } catch {
     throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON');
   }
@@ -77,6 +79,31 @@ async function readJsonFile(name, fallback) {
   }
 }
 
+function formatDriveError(err) {
+  const apiMsg =
+    err?.response?.data?.error?.message ||
+    err?.errors?.[0]?.message ||
+    err?.message ||
+    String(err);
+  const reason = err?.response?.data?.error?.errors?.[0]?.reason || err?.errors?.[0]?.reason || '';
+  if (
+    reason === 'storageQuotaExceeded' ||
+    /Service Accounts do not have storage quota/i.test(apiMsg)
+  ) {
+    return (
+      'Google 服務帳戶無法在「我的雲端硬碟」新建檔案（無儲存配額）。' +
+      '請用你的 Google 帳號在該資料夾手動建立空的 users.json，再重試匯出（之後會改為更新既有檔）。'
+    );
+  }
+  if (/File not found/i.test(apiMsg) || reason === 'notFound') {
+    return (
+      '找不到 Drive 資料夾或檔案。請確認 GOOGLE_DRIVE_FOLDER_ID 正確，' +
+      '且已把資料夾分享給服務帳戶（編輯者）。'
+    );
+  }
+  return apiMsg;
+}
+
 async function writeJsonFile(name, data) {
   const drive = getDrive();
   const body = JSON.stringify(data, null, 2);
@@ -86,26 +113,34 @@ async function writeJsonFile(name, data) {
   };
   let id = await findFileIdByName(name);
   if (!id) {
-    const created = await drive.files.create({
-      requestBody: {
-        name,
-        parents: [FOLDER_ID],
-        mimeType: 'application/json',
-      },
+    try {
+      const created = await drive.files.create({
+        requestBody: {
+          name,
+          parents: [FOLDER_ID],
+          mimeType: 'application/json',
+        },
+        media,
+        fields: 'id,name',
+        supportsAllDrives: true,
+      });
+      id = created.data.id;
+      fileIdCache.set(name, id);
+      return id;
+    } catch (e) {
+      throw new Error(formatDriveError(e));
+    }
+  }
+  try {
+    await drive.files.update({
+      fileId: id,
       media,
       fields: 'id,name',
       supportsAllDrives: true,
     });
-    id = created.data.id;
-    fileIdCache.set(name, id);
-    return id;
+  } catch (e) {
+    throw new Error(formatDriveError(e));
   }
-  await drive.files.update({
-    fileId: id,
-    media,
-    fields: 'id,name',
-    supportsAllDrives: true,
-  });
   return id;
 }
 
