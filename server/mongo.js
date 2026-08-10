@@ -960,7 +960,7 @@ function mapCategoryToCat(category) {
   if (s.includes('調動') || s === 'transfer') return 'transfer';
   if (s.includes('補貨') || s === 'restock') return 'restock';
   if (s.includes('價錢') || s === 'price') return 'price';
-  if (s.includes('緊急') || s === 'urgent') return 'urgent';
+  if (s.includes('緊急') || s.includes('突發') || s === 'urgent') return 'urgent';
   return 'general';
 }
 

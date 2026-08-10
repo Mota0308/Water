@@ -1690,18 +1690,45 @@ function vPushLogs(){
     +'</table></div></div>';
 }
 function vPushNotify(){ return vPushCreate(); }
-function maybePromptUrgentNotices(){
+/** 突發任務／突發（緊急）通知：登入時要強制彈出信箱內容 */
+function isUrgentMailboxItem(n){
+  if(!n || isTransferNotice(n)) return false;
+  const cat = String(n.category||'');
+  const title = String(n.title||'');
+  if(n.cat==='urgent' || noticeCatKey(n)==='urgent') return true;
+  if(n.priority==='緊急') return true;
+  if(cat.indexOf('緊急')>=0 || cat.indexOf('突發')>=0) return true;
+  if(title.indexOf('突發任務')>=0 || title.indexOf('突發工作')>=0) return true;
+  return false;
+}
+function listUnreadUrgentMailboxItems(){
+  if(!currentUser) return [];
+  return sortMailboxItems(
+    (notifications||[]).filter(function(n){
+      return isUrgentMailboxItem(n) && isNotifUnreadForMe(n);
+    }),
+    true
+  );
+}
+async function maybePromptUrgentNotices(){
   if(!currentUser || pushUrgentPrompted) return;
-  const list = myUnreadAnnouncements().filter(function(n){ return noticeCatKey(n)==='urgent'; });
+  const list = listUnreadUrgentMailboxItems();
   if(!list.length) return;
   pushUrgentPrompted = true;
-  const n = list[0];
-  showModal('<h3>🚨 你有未讀的緊急通知</h3>'
-    +'<p style="font-size:14px;line-height:1.6"><b>'+escHtml(n.title||'')+'</b><br>'
-    +'<span style="font-size:12px;color:#888">發布人：'+escHtml(n.fromName||'')+'｜'+escHtml(n.createdAt||'')+(n.endDate?'｜有效期至 '+escHtml(n.endDate):'')+'</span></p>'
-    +'<p style="font-size:13px;color:#c62828;margin-top:8px">你必須進入通知閱讀完整內容並剔選確認，才會計算為已讀。</p>'
-    +'<div class="actions"><button type="button" class="btn gray sm" data-action="close-modal">暫時關閉</button>'
-    +'<button type="button" class="btn red sm" data-action="close-modal" data-call="openPushNotice" data-arg0="'+escHtml(String(n.id))+'">立即閱讀</button></div>');
+  const first = list[0];
+  // 開啟信箱並直接彈出該則完整內容
+  mailboxOpen = true;
+  mailboxTab = 'inbox';
+  const bg = document.getElementById('mailbox-modal-bg');
+  if(bg) bg.classList.remove('hidden');
+  refreshMailboxUi();
+  await openMailboxDetail(first.id);
+  if(list.length>1){
+    const titleEl = document.getElementById('mailbox-detail-title');
+    if(titleEl){
+      titleEl.textContent = (first.title || '突發通知') + '（尚有 '+(list.length-1)+' 則未讀突發）';
+    }
+  }
 }
 
 /* ═══════════ 貨品調動｜庫存查詢／調動記錄／庫存校正 ═══════════ */
@@ -3018,7 +3045,18 @@ function enterAppAs(user, opts){
   if(typeof flushCloudSaves==='function'){
     flushCloudSaves().catch(function(e){ if(typeof noteCloudError==='function') noteCloudError(e); });
   }
-  setTimeout(function(){ try{ maybePromptUrgentNotices(); }catch(_e){} }, 400);
+  setTimeout(function(){
+    try{
+      // 等通知載入後再彈出未讀突發任務／緊急通知信箱內容
+      const run = async function(){
+        if(apiEnabled && typeof loadNotifications==='function'){
+          try{ await loadNotifications(); }catch(_e){}
+        }
+        await maybePromptUrgentNotices();
+      };
+      run();
+    }catch(_e){}
+  }, 500);
 }
 async function doLogin(){
   const u = document.getElementById('login-user').value.trim();
@@ -3074,6 +3112,7 @@ async function logout(){
   }catch(e){}
   clearAuthToken();
   currentUser=null;
+  pushUrgentPrompted = false;
   closeMailbox();
   refreshMailboxUi();
   document.getElementById('app').classList.add('hidden');
@@ -4803,6 +4842,57 @@ function dailyCreateAdhoc(){
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" onclick="dailySubmitAdhoc()">建立</button></div>'
   );
 }
+function resolveAdhocNotifyRecipients(units, assigneeIds){
+  var me = currentUser ? String(currentUser.id) : '';
+  var ids = [];
+  if(assigneeIds && assigneeIds.length){
+    ids = assigneeIds.map(String);
+  } else {
+    ids = listDailyStaffForUnits(units).map(function(u){ return String(u.id); });
+  }
+  return [...new Set(ids)].filter(function(id){ return id && id!==me; });
+}
+async function notifyAdhocWorkCreated(workMeta){
+  if(!apiEnabled || !authToken || !currentUser) return;
+  var recipientIds = resolveAdhocNotifyRecipients(workMeta.units||[], workMeta.assigneeIds||[]);
+  if(!recipientIds.length) return;
+  var priMap = { '高':'緊急', '中':'重要', '低':'一般' };
+  var priority = priMap[workMeta.priority] || '重要';
+  var title = '突發任務：'+(workMeta.title||'');
+  var body = '你有新的突發任務需要處理。\n\n'
+    +'標題：'+(workMeta.title||'')+'\n'
+    +'單位：'+(workMeta.units||[]).join('、')+'\n'
+    +'期限：'+(workMeta.dueDate||'')+'\n'
+    +'優先級：'+(workMeta.priority||'')+'\n'
+    +(workMeta.requireAttachment?'完成時需要上傳附件。\n':'')
+    +'\n'+(workMeta.content||'');
+  var summary = '突發任務｜'+(workMeta.units||[]).join('、')+'｜期限 '+(workMeta.dueDate||'');
+  try{
+    await apiFetch('/api/notifications', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        cat: priority==='緊急' ? 'urgent' : 'general',
+        category: '突發任務',
+        priority: priority,
+        title: title,
+        summary: summary,
+        content: body,
+        recipientIds: recipientIds,
+        recipientDesc: workMeta.assigneeIds && workMeta.assigneeIds.length
+          ? ('指定員工 '+recipientIds.length+' 人')
+          : ('單位：'+(workMeta.units||[]).join('、')),
+        startDate: dailyTodayStr(),
+        endDate: workMeta.dueDate || dailyTodayStr(),
+        pinned: priority==='緊急'
+      })
+    });
+    await loadNotifications();
+    refreshMailboxUi();
+  }catch(e){
+    console.warn('notify adhoc', e);
+  }
+}
 async function dailySubmitAdhoc(){
   var title=(document.getElementById('d-title').value||'').trim();
   var content=document.getElementById('d-content').value||'';
@@ -4819,6 +4909,7 @@ async function dailySubmitAdhoc(){
   closeModal();
   try{
     await flushCloudSaves();
+    await notifyAdhocWorkCreated({ title:title, content:content, dueDate:due, priority:priority, units:units, assigneeIds:assigneeIds, requireAttachment:requireAttachment });
     render();
   }catch(e){
     render();
