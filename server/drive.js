@@ -131,6 +131,34 @@ export async function saveProjectsState(data) {
   return { ok: true };
 }
 
+const USERS_NAME = 'users.json';
+
+/**
+ * 將公開用戶清單寫入 Drive 資料夾的 users.json（不含密碼）。
+ * @param {object[]} users
+ */
+export async function exportUsersToDrive(users) {
+  if (!driveConfigured()) {
+    throw new Error('Google Drive 未設定（需要 GOOGLE_SERVICE_ACCOUNT_JSON 與 GOOGLE_DRIVE_FOLDER_ID）');
+  }
+  const list = Array.isArray(users) ? users : [];
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    exportedAtHk: new Date().toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', hour12: false }),
+    count: list.length,
+    users: list,
+  };
+  const fileId = await writeJsonFile(USERS_NAME, payload);
+  return {
+    ok: true,
+    fileName: USERS_NAME,
+    fileId,
+    folderId: FOLDER_ID,
+    count: list.length,
+    exportedAt: payload.exportedAt,
+  };
+}
+
 export async function uploadFile({ buffer, filename, mimeType }) {
   const drive = getDrive();
   const created = await drive.files.create({

@@ -2732,6 +2732,8 @@ function vPersonalSettings(){
   const u = currentUser;
   const account = u.phone || u.login || u.id || '—';
   const units = (typeof userUnits==='function' ? userUnits(u) : (u.units||[])).join('、') || '—';
+  // 與後端 canCreateEmployee 對齊：系統管理員／經理／主管
+  const showDriveExport = !!(isAdmin() || isManager() || u.role==='system_admin' || u.role==='manager' || u.position==='經理' || u.position==='主管');
   return `<div class="card">
     <h2>⚙️ 個人設置</h2>
     <div class="table-wrap" style="margin-bottom:16px">
@@ -2755,7 +2757,27 @@ function vPersonalSettings(){
     <div class="actions" style="margin-top:12px">
       <button type="button" class="btn" onclick="submitChangePassword()">儲存新密碼</button>
     </div>
-  </div>`;
+  </div>`
+  + (showDriveExport
+    ? `<div class="card">
+    <h2>☁ Google Drive 匯出</h2>
+    <p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">將目前系統的用戶公開資料（不含密碼）寫入 Drive 資料夾的 <b>users.json</b>。需已在 Railway 設定 Google 變數。</p>
+    <div class="actions">
+      <button type="button" class="btn green sm" data-call="exportUsersToGoogleDrive">匯出用戶到 Drive</button>
+    </div>
+  </div>`
+    : '');
+}
+async function exportUsersToGoogleDrive(){
+  if(!currentUser){ alert2('請先登入。'); return; }
+  if(!requireCloud('匯出用戶到 Drive')) return;
+  if(!confirm('確定將用戶資料匯出到 Google Drive（users.json）？')) return;
+  try{
+    const data = await apiFetch('/api/drive/export-users', { method:'POST' });
+    alert2('已匯出 '+(data.count!=null?data.count:'')+' 名用戶到 Drive（'+(data.fileName||'users.json')+'）。');
+  }catch(e){
+    alert2('匯出失敗：'+(e.message||e));
+  }
 }
 async function submitChangePassword(){
   if(!currentUser){ alert2('請先登入。'); return; }

@@ -48,6 +48,7 @@ import {
   TRANSFER_STORES,
   TRANSFER_CATEGORIES,
 } from './mongo.js';
+import { driveConfigured, exportUsersToDrive } from './drive.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -171,8 +172,9 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     configured: mongoConfigured(),
     mongoConfigured: mongoConfigured(),
-    driveConfigured: mongoConfigured(),
+    driveConfigured: driveConfigured(),
     storage: mongoConfigured() ? 'mongodb' : null,
+    drive: driveConfigured() ? 'google-drive' : null,
     db: process.env.MONGODB_DB || 'store_employee',
     auth: true,
     version: ver.version,
@@ -288,6 +290,41 @@ app.get('/api/users', requireAuth, async (_req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+/** 將 Mongo 用戶公開資料匯出到 Google Drive（users.json，不含密碼） */
+app.post('/api/drive/export-users', requireAuth, async (req, res) => {
+  try {
+    if (!canCreateEmployee(req.user) && !isAdminAccount(req.user)) {
+      return res.status(403).json({ error: '沒有權限匯出用戶到 Google Drive。' });
+    }
+    if (!driveConfigured()) {
+      return res.status(503).json({
+        error: 'Google Drive 未設定。請在 Railway 設定 GOOGLE_SERVICE_ACCOUNT_JSON 與 GOOGLE_DRIVE_FOLDER_ID。',
+      });
+    }
+    if (!mongoConfigured()) {
+      return res.status(503).json({ error: 'MongoDB 未設定，無法讀取用戶。' });
+    }
+    const users = await listUsersPublic();
+    const result = await exportUsersToDrive(users);
+    try {
+      await appendModuleLog({
+        module: 'settings',
+        action: '匯出用戶到 Drive',
+        detail: `users.json｜${result.count} 人｜fileId=${result.fileId}`,
+        userId: req.user.id || req.user._id,
+        userName: req.user.name || req.user.login || req.user.id,
+        user: req.user.name || req.user.login || req.user.id,
+      });
+    } catch (logErr) {
+      console.warn('appendModuleLog failed', logErr);
+    }
+    res.json(result);
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
   }
 });
 
