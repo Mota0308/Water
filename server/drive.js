@@ -17,22 +17,68 @@ function getUsersFileIdOverride() {
 }
 
 function loadCredentials() {
-  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  let raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64;
+  if ((!raw || !String(raw).trim()) && b64) {
+    try {
+      raw = Buffer.from(String(b64).trim(), 'base64').toString('utf8');
+    } catch {
+      throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON_BASE64 無法解碼');
+    }
+  }
   if (!raw) {
     throw new Error('Missing GOOGLE_SERVICE_ACCOUNT_JSON env var');
   }
+  raw = String(raw).trim();
+  // Railway UI 有時會多包一層引號
+  if (
+    (raw.startsWith('"') && raw.endsWith('"')) ||
+    (raw.startsWith("'") && raw.endsWith("'"))
+  ) {
+    raw = raw.slice(1, -1).trim();
+  }
+  // 常見：整段被 escape 成 \"type\":...
+  if (raw.includes('\\"') && !raw.includes('"type"')) {
+    raw = raw.replace(/\\"/g, '"').replace(/\\\\n/g, '\\n');
+  }
+
+  function parseSaJson(text) {
+    let info = JSON.parse(text);
+    if (typeof info === 'string') info = JSON.parse(info);
+    return info;
+  }
+
   let info;
   try {
-    info = JSON.parse(raw);
-    // Railway 有時會變成「字串再包一層」
-    if (typeof info === 'string') info = JSON.parse(info);
+    info = parseSaJson(raw);
   } catch {
-    throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON');
+    // private_key 若含真實換行會弄破 JSON → 改成 \n
+    const repaired = raw.replace(
+      /("private_key"\s*:\s*")([\s\S]*?)("\s*,)/,
+      (_m, a, key, c) => a + key.replace(/\r?\n/g, '\\n') + c
+    );
+    try {
+      info = parseSaJson(repaired);
+    } catch (e2) {
+      throw new Error(
+        'GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON（請改貼整段一行，或改設 GOOGLE_SERVICE_ACCOUNT_JSON_BASE64）'
+      );
+    }
   }
-  if (info.private_key && typeof info.private_key === 'string') {
+  if (!info || typeof info !== 'object' || !info.private_key) {
+    throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON 缺少 private_key 欄位');
+  }
+  if (typeof info.private_key === 'string') {
     info.private_key = info.private_key.replace(/\\n/g, '\n');
   }
   return info;
+}
+
+export function driveConfigured() {
+  return !!(
+    (process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64) &&
+    (process.env.GOOGLE_DRIVE_FOLDER_ID || process.env.GOOGLE_DRIVE_USERS_FILE_ID)
+  );
 }
 
 export function getDrive() {
@@ -46,13 +92,6 @@ export function getDrive() {
   });
   driveClient = google.drive({ version: 'v3', auth });
   return driveClient;
-}
-
-export function driveConfigured() {
-  return !!(
-    process.env.GOOGLE_SERVICE_ACCOUNT_JSON &&
-    (process.env.GOOGLE_DRIVE_FOLDER_ID || process.env.GOOGLE_DRIVE_USERS_FILE_ID)
-  );
 }
 
 async function findFileIdByName(name) {
