@@ -2192,49 +2192,126 @@ function stripTransferOrder(doc) {
   return rest;
 }
 
+/** 正規化調動單明細（相容舊單：頂層 productId／size／quantity）。 */
+function normalizeTransferOrderItems(order) {
+  if (!order) return [];
+  if (Array.isArray(order.items) && order.items.length) {
+    return order.items.map((it) => ({
+      productId: String(it.productId || '').trim(),
+      productName: String(it.productName || ''),
+      category: String(it.category || ''),
+      color: String(it.color || ''),
+      size: String(it.size || '').trim(),
+      quantity: Math.floor(Number(it.quantity)),
+    }));
+  }
+  if (order.productId && order.size) {
+    return [
+      {
+        productId: String(order.productId).trim(),
+        productName: String(order.productName || ''),
+        category: String(order.category || ''),
+        color: String(order.color || ''),
+        size: String(order.size).trim(),
+        quantity: Math.floor(Number(order.quantity)),
+      },
+    ];
+  }
+  return [];
+}
+
+function formatTransferItemsSummary(items) {
+  if (!items.length) return '';
+  if (items.length === 1) {
+    const it = items[0];
+    return `${it.productId} ${it.size} × ${it.quantity}`;
+  }
+  const totalQty = items.reduce((s, it) => s + (it.quantity || 0), 0);
+  return `${items.length} 項｜共 ${totalQty} 件`;
+}
+
 /**
  * 申請調動：發起點＝調入店，調動點＝調出店；通知調出店相關人員信箱。
+ * 支援 items[] 多明細；亦相容舊版單筆 productId／size／quantity。
  */
 export async function applyTransferRequest(actor, input) {
   await connectMongo();
   await ensureTransferSeed();
   const me = publicUser(actor);
   if (!me?.id) throw new Error('未登入');
-  const productId = String(input?.productId || '').trim();
-  const size = String(input?.size || '').trim();
   const toStore = String(input?.toStore || '').trim(); // 發起點／調入
   const fromStore = String(input?.fromStore || '').trim(); // 調動點／調出
-  const quantity = Math.floor(Number(input?.quantity));
-  if (!productId || !size) throw new Error('請指定商品與尺碼');
+  const remark = String(input?.remark || '').trim();
   if (!TRANSFER_STORES.includes(toStore) || !TRANSFER_STORES.includes(fromStore)) {
     throw new Error('門市僅限觀塘／荔枝角／灣仔／屯門');
   }
   if (toStore === fromStore) throw new Error('發起點與調動點不可相同');
-  if (!Number.isFinite(quantity) || quantity < 1) throw new Error('調動數量須為正整數');
 
-  const product = await transferProductsCol().findOne({ id: productId, active: { $ne: false } });
-  if (!product) throw new Error('找不到商品');
-  const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : ['均碼'];
-  if (!sizes.includes(size)) throw new Error('此商品沒有該尺碼');
+  let rawItems = Array.isArray(input?.items) ? input.items : null;
+  if (!rawItems || !rawItems.length) {
+    if (input?.productId && input?.size) {
+      rawItems = [{ productId: input.productId, size: input.size, quantity: input.quantity }];
+    } else {
+      throw new Error('請至少加入一項貨品');
+    }
+  }
 
-  const available = await getInventoryQty(productId, size, fromStore);
-  if (quantity > available) {
-    throw new Error(`調動點（${fromStore}）庫存不足（現有 ${available}）`);
+  // 合併同款×尺碼
+  const merged = new Map();
+  for (const raw of rawItems) {
+    const productId = String(raw?.productId || '').trim();
+    const size = String(raw?.size || '').trim();
+    const quantity = Math.floor(Number(raw?.quantity));
+    if (!productId || !size) throw new Error('請指定商品與尺碼');
+    if (!Number.isFinite(quantity) || quantity < 1) throw new Error('調動數量須為正整數');
+    const key = productId + '\0' + size;
+    const prev = merged.get(key);
+    if (prev) prev.quantity += quantity;
+    else merged.set(key, { productId, size, quantity });
+  }
+
+  const items = [];
+  for (const draft of merged.values()) {
+    const product = await transferProductsCol().findOne({ id: draft.productId, active: { $ne: false } });
+    if (!product) throw new Error(`找不到商品 ${draft.productId}`);
+    const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : ['均碼'];
+    if (!sizes.includes(draft.size)) throw new Error(`此商品沒有該尺碼（${draft.productId} ${draft.size}）`);
+    const available = await getInventoryQty(draft.productId, draft.size, fromStore);
+    if (draft.quantity > available) {
+      throw new Error(
+        `調動點（${fromStore}）庫存不足：${draft.productId} ${draft.size} 現有 ${available}，申請 ${draft.quantity}`
+      );
+    }
+    items.push({
+      productId: draft.productId,
+      productName: product.name || '',
+      category: product.category || '其他',
+      color: product.color || '',
+      size: draft.size,
+      quantity: draft.quantity,
+    });
   }
 
   const now = new Date();
   const id = await nextTransferOrderId();
   const createdAt = formatHkDateTime(now);
   const actorName = String(me.name || me.login || me.id);
+  const summary = formatTransferItemsSummary(items);
+  const first = items[0];
+  const totalQty = items.reduce((s, it) => s + it.quantity, 0);
+  const linesDetail = items.map((it) => `${it.productId} ${it.productName || ''}｜尺碼 ${it.size}｜數量 ${it.quantity}`).join('\n');
   const order = {
     _id: id,
     id,
-    productId,
-    productName: product.name || '',
-    category: product.category || '其他',
-    color: product.color || '',
-    size,
-    quantity,
+    // 相容舊欄位（首項／彙總）
+    productId: first.productId,
+    productName: items.length === 1 ? first.productName : `${items.length} 項貨品`,
+    category: first.category || '其他',
+    color: first.color || '',
+    size: items.length === 1 ? first.size : '多項',
+    quantity: totalQty,
+    items,
+    remark,
     toStore,
     fromStore,
     status: 'pending',
@@ -2255,7 +2332,7 @@ export async function applyTransferRequest(actor, input) {
         userId: String(me.id),
         userName: actorName,
         action: '申請調動',
-        detail: `${productId} ${size} × ${quantity}｜發起點（調入）${toStore} ← 調動點（調出）${fromStore}`,
+        detail: `${summary}｜發起點（調入）${toStore} ← 調動點（調出）${fromStore}${remark ? '｜備註：' + remark : ''}`,
       },
     ],
   };
@@ -2266,15 +2343,19 @@ export async function applyTransferRequest(actor, input) {
   const notif = await createNotification({
     category: '貨品調動',
     priority: '重要',
-    title: `調動申請 ${id}｜${productId} ${size} × ${quantity}`,
+    title: `調動申請 ${id}｜${summary}`,
     content: [
       `${order.createdByName} 申請貨品調動，請審批。`,
       `單號：${id}`,
-      `商品：${productId} ${product.name || ''}｜尺碼 ${size}｜數量 ${quantity}`,
       `發起點（調入）：${toStore}`,
       `調動點（調出）：${fromStore}`,
-      '通過後會立即從調出店扣減並加入調入店。',
-    ].join('\n'),
+      `明細（${items.length} 行）：`,
+      linesDetail,
+      remark ? `備註：${remark}` : null,
+      '通過後會立即從調出店扣減並加入調入店（整單一次處理）。',
+    ]
+      .filter(Boolean)
+      .join('\n'),
     fromUserId: String(me.id),
     fromName: actorName,
     recipientIds,
@@ -2288,7 +2369,7 @@ export async function applyTransferRequest(actor, input) {
     module: 'transfer',
     time: createdAt,
     action: '申請調動',
-    detail: `${id} ${productId} ${size}×${quantity} ${fromStore}→${toStore}`,
+    detail: `${id} ${summary} ${fromStore}→${toStore}`,
     userId: me.id,
     userName: order.createdByName,
     user: order.createdByName,
@@ -2318,14 +2399,23 @@ export async function decideTransferRequest(actor, transferId, decision, reason)
   const now = new Date();
   const time = formatHkDateTime(now);
   const actorName = String(me.name || me.login || me.id);
+  const items = normalizeTransferOrderItems(order);
+  if (!items.length) throw new Error('調動單沒有明細');
 
   if (dec === 'approve') {
-    const available = await getInventoryQty(order.productId, order.size, order.fromStore);
-    if (order.quantity > available) {
-      throw new Error(`庫存不足，無法通過（${order.fromStore} 現有 ${available}，申請 ${order.quantity}）。單據仍維持待審批。`);
+    for (const it of items) {
+      const available = await getInventoryQty(it.productId, it.size, order.fromStore);
+      if (it.quantity > available) {
+        throw new Error(
+          `庫存不足，無法通過（${order.fromStore}：${it.productId} ${it.size} 現有 ${available}，申請 ${it.quantity}）。單據仍維持待審批。`
+        );
+      }
     }
-    await adjustInventoryQty(order.productId, order.size, order.fromStore, -order.quantity);
-    await adjustInventoryQty(order.productId, order.size, order.toStore, order.quantity);
+    for (const it of items) {
+      await adjustInventoryQty(it.productId, it.size, order.fromStore, -it.quantity);
+      await adjustInventoryQty(it.productId, it.size, order.toStore, it.quantity);
+    }
+    const summary = formatTransferItemsSummary(items);
     order.status = 'approved';
     order.decidedBy = String(me.id);
     order.decidedByName = actorName;
@@ -2337,7 +2427,7 @@ export async function decideTransferRequest(actor, transferId, decision, reason)
       userId: String(me.id),
       userName: actorName,
       action: '通過',
-      detail: `已從 ${order.fromStore} 扣 ${order.quantity}，加入 ${order.toStore}`,
+      detail: `已從 ${order.fromStore} 扣出並加入 ${order.toStore}｜${summary}`,
     });
     await transferOrdersCol().replaceOne({ _id: order._id }, order);
     await markTransferNotificationsResolved(id, `已通過（${actorName}）`);
@@ -2345,7 +2435,7 @@ export async function decideTransferRequest(actor, transferId, decision, reason)
       module: 'transfer',
       time,
       action: '通過調動',
-      detail: `${id} ${order.productId} ${order.size}×${order.quantity} ${order.fromStore}→${order.toStore}`,
+      detail: `${id} ${summary} ${order.fromStore}→${order.toStore}`,
       userId: me.id,
       userName: actorName,
       user: actorName,

@@ -973,10 +973,22 @@ function bindStaticChrome(){
     if(action==='dismiss-update'){ dismissAppUpdate(); return; }
     if(action==='apply-update'){ applyAppUpdate(); return; }
     if(action==='close-modal'){ closeModal(); return; }
-    if(action==='submit-transfer-apply'){
+    if(action==='submit-transfer-apply-cart'){
+      submitTransferApplyCart();
+      return;
+    }
+    if(action==='tf-apply-add-cart'){
+      addTransferApplyCartLine();
+      return;
+    }
+    if(action==='tf-apply-remove-cart'){
+      const idx = Number(actionEl.getAttribute('data-idx'));
+      if(Number.isFinite(idx)) removeTransferApplyCartLine(idx);
+      return;
+    }
+    if(action==='tf-apply-select-product'){
       const pid = actionEl.getAttribute('data-pid');
-      const size = actionEl.getAttribute('data-size');
-      if(pid!=null && size!=null) submitTransferApply(pid, size);
+      if(pid!=null) selectTransferApplyProduct(pid);
       return;
     }
     if(action==='toggle-transfer-timeline'){
@@ -1021,14 +1033,6 @@ function bindStaticChrome(){
       try{ fn.apply(null, args); }catch(err){ console.error(fnName, err); }
       return;
     }
-    const invRow = t.closest('tr.inv-row');
-    if(invRow){
-      if(t.closest('button, a, input, select, textarea, label')) return;
-      const pid = invRow.getAttribute('data-pid');
-      const size = invRow.getAttribute('data-size');
-      if(pid!=null && size!=null) openTransferApplyModal(pid, size);
-      return;
-    }
   });
   bindMailboxDelegates();
 }
@@ -1064,7 +1068,7 @@ async function decideTransferFromMailbox(transferId, decision){
     transferOrdersCache = null;
     transferInvCache = null;
     await loadNotifications();
-    if(currentView==='transferInventory' || currentView==='transferHistory' || currentView==='transferStockLog' || currentView==='transferProducts' || currentView==='transferProductLog'){
+    if(currentView==='transferInventory' || currentView==='transferHistory' || currentView==='transferStockLog' || currentView==='transferProducts' || currentView==='transferProductLog' || currentView==='transferApply'){
       try{ await loadTransferInventory(true); }catch(_e){}
       try{ await loadTransferOrders(true); }catch(_e){}
       render();
@@ -1749,6 +1753,31 @@ let transferProductsLoading = false;
 let transferProductChangesCache = null; // array
 let transferProductChangesLoading = false;
 let transferEditOriginalId = null;
+/** 申請調動全頁狀態 */
+let transferApplyState = {
+  toStore: '觀塘',
+  fromStore: '荔枝角',
+  kw: '',
+  selectedProductId: null,
+  pickSize: '',
+  pickQty: 1,
+  cart: [], // { productId, productName, category, color, size, quantity, available }
+  remark: ''
+};
+function resetTransferApplyState(keepStores){
+  const toStore = keepStores ? transferApplyState.toStore : '觀塘';
+  const fromStore = keepStores ? transferApplyState.fromStore : '荔枝角';
+  transferApplyState = {
+    toStore,
+    fromStore,
+    kw: '',
+    selectedProductId: null,
+    pickSize: '',
+    pickQty: 1,
+    cart: [],
+    remark: ''
+  };
+}
 
 async function loadTransferInventory(force){
   if(!apiEnabled || !authToken){
@@ -2122,62 +2151,304 @@ async function submitTransferStockEdit(productId, size){
     alert2('更新失敗：'+(e.message||e));
   }
 }
-function openTransferApplyModal(productId, size){
+function openTransferApplyPage(){
   if(!currentUser){ alert2('請先登入。'); return; }
-  const row = findTransferInvRow(productId, size);
-  if(!row){ alert2('找不到該庫存列，請重新整理後再試。'); return; }
-  const stockLine = TRANSFER_STORES_FE.map(function(s){
-    const q = (row.qty && row.qty[s]!=null) ? row.qty[s] : 0;
-    return escHtml(s)+' '+q;
-  }).join(' ｜ ');
-  const pidAttr = escHtml(String(productId));
-  const szAttr = escHtml(String(size));
-  showModal(
-    '<h3>申請貨品調動</h3>'
-    +'<p style="font-size:13px;line-height:1.55;margin:0 0 10px">'
-    +'<b>'+escHtml(row.productId)+'</b> '+escHtml(row.name||'')
-    +'｜尺碼 <b>'+escHtml(row.size)+'</b>'
-    +(row.color?'｜'+escHtml(row.color):'')
-    +'<br><span style="color:#78909c;font-size:12px">現庫：'+stockLine+'</span></p>'
-    +'<label>發起點（調入店）</label>'
-    +'<select id="tf-to">'+transferStoreOptions('觀塘')+'</select>'
-    +'<label>調動點（調出店）</label>'
-    +'<select id="tf-from">'+transferStoreOptions('荔枝角')+'</select>'
-    +'<label>調動數量</label>'
-    +'<input type="number" id="tf-qty" min="1" step="1" value="1">'
-    +'<p style="font-size:12px;color:#666;margin:8px 0 0;line-height:1.5">送出後會通知調動點（調出店）相關人員信箱審批；通過後立即扣出／調入庫存。不可審批自己的申請。</p>'
-    +'<div class="actions">'
-    +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
-    +'<button type="button" class="btn green" data-action="submit-transfer-apply" data-pid="'+pidAttr+'" data-size="'+szAttr+'">申請調動</button>'
-    +'</div>'
-  );
+  if(!apiEnabled){ alert2('需要連接 MongoDB 雲端。'); return; }
+  resetTransferApplyState(false);
+  go('transferApply');
+  loadTransferInventory(true).then(function(){ render(); }).catch(function(){ render(); });
 }
-async function submitTransferApply(productId, size){
-  const toStore = (document.getElementById('tf-to')||{}).value;
-  const fromStore = (document.getElementById('tf-from')||{}).value;
-  const quantity = Number((document.getElementById('tf-qty')||{}).value);
-  if(!toStore || !fromStore){ alert2('請選擇發起點與調動點。'); return; }
-  if(toStore===fromStore){ alert2('發起點與調動點不可相同。'); return; }
-  if(!Number.isFinite(quantity) || quantity<1 || Math.floor(quantity)!==quantity){
-    alert2('調動數量須為正整數。'); return;
+function transferApplyFromStoreQty(productId, size, store){
+  const row = findTransferInvRow(productId, size);
+  if(!row || !row.qty) return 0;
+  const q = row.qty[store];
+  return q!=null ? Number(q) : 0;
+}
+function transferApplyProductGroups(fromStore){
+  const rows = ((transferInvCache && transferInvCache.rows) || []).filter(function(r){
+    return transferApplyFromStoreQty(r.productId, r.size, fromStore) > 0;
+  });
+  const map = new Map();
+  rows.forEach(function(r){
+    const id = String(r.productId);
+    let g = map.get(id);
+    if(!g){
+      g = {
+        productId: id,
+        name: r.name || '',
+        category: r.category || '',
+        color: r.color || '',
+        sizes: []
+      };
+      map.set(id, g);
+    }
+    g.sizes.push({
+      size: String(r.size),
+      available: transferApplyFromStoreQty(r.productId, r.size, fromStore)
+    });
+  });
+  return Array.from(map.values());
+}
+function setTransferApplyToStore(v){
+  transferApplyState.toStore = v || '';
+  render();
+}
+function setTransferApplyFromStore(v){
+  const next = v || '';
+  if(next === transferApplyState.fromStore) return;
+  if(transferApplyState.cart.length){
+    if(!confirm('更改調動點（調出）會清空已選清單，確定？')){
+      render();
+      return;
+    }
   }
+  transferApplyState.fromStore = next;
+  transferApplyState.cart = [];
+  transferApplyState.selectedProductId = null;
+  transferApplyState.pickSize = '';
+  transferApplyState.pickQty = 1;
+  render();
+}
+function setTransferApplyKw(v){
+  transferApplyState.kw = String(v||'');
+  render();
+}
+function setTransferApplyRemark(v){
+  transferApplyState.remark = String(v||'');
+}
+function setTransferApplyPickSize(v){
+  transferApplyState.pickSize = String(v||'');
+  const g = transferApplyProductGroups(transferApplyState.fromStore).find(function(x){
+    return x.productId === transferApplyState.selectedProductId;
+  });
+  const sz = g && g.sizes.find(function(s){ return s.size === transferApplyState.pickSize; });
+  const avail = sz ? sz.available : 0;
+  if(transferApplyState.pickQty > avail) transferApplyState.pickQty = Math.max(1, avail);
+  render();
+}
+function setTransferApplyPickQty(v){
+  const n = Math.floor(Number(v));
+  transferApplyState.pickQty = Number.isFinite(n) && n >= 1 ? n : 1;
+}
+function selectTransferApplyProduct(productId){
+  transferApplyState.selectedProductId = String(productId||'');
+  const g = transferApplyProductGroups(transferApplyState.fromStore).find(function(x){
+    return x.productId === transferApplyState.selectedProductId;
+  });
+  transferApplyState.pickSize = g && g.sizes.length ? g.sizes[0].size : '';
+  transferApplyState.pickQty = 1;
+  render();
+}
+function addTransferApplyCartLine(){
+  const st = transferApplyState;
+  if(!st.toStore || !st.fromStore){ alert2('請選擇發起點與調動點。'); return; }
+  if(st.toStore === st.fromStore){ alert2('發起點與調動點不可相同。'); return; }
+  if(!st.selectedProductId){ alert2('請先選擇款號。'); return; }
+  if(!st.pickSize){ alert2('請選擇尺碼。'); return; }
+  const qty = Math.floor(Number(st.pickQty));
+  if(!Number.isFinite(qty) || qty < 1){ alert2('調動數量須為正整數。'); return; }
+  const available = transferApplyFromStoreQty(st.selectedProductId, st.pickSize, st.fromStore);
+  if(available < 1){ alert2('調出點此尺碼無庫存。'); return; }
+  const g = transferApplyProductGroups(st.fromStore).find(function(x){ return x.productId === st.selectedProductId; });
+  if(!g){ alert2('找不到該商品或調出點無貨。'); return; }
+  const existing = st.cart.find(function(c){
+    return c.productId === st.selectedProductId && c.size === st.pickSize;
+  });
+  const nextQty = existing ? existing.quantity + qty : qty;
+  if(nextQty > available){
+    alert2('調動點（'+st.fromStore+'）庫存不足（現有 '+available+'，已選＋本次共 '+nextQty+'）。');
+    return;
+  }
+  if(existing){
+    existing.quantity = nextQty;
+    existing.available = available;
+    alert2('已在清單，數量改為 '+nextQty+'。');
+  }else{
+    st.cart.push({
+      productId: g.productId,
+      productName: g.name || '',
+      category: g.category || '',
+      color: g.color || '',
+      size: st.pickSize,
+      quantity: qty,
+      available: available
+    });
+  }
+  st.pickQty = 1;
+  render();
+}
+function removeTransferApplyCartLine(idx){
+  if(idx < 0 || idx >= transferApplyState.cart.length) return;
+  transferApplyState.cart.splice(idx, 1);
+  render();
+}
+function setTransferApplyCartQty(idx, v){
+  const line = transferApplyState.cart[idx];
+  if(!line) return;
+  const qty = Math.floor(Number(v));
+  if(!Number.isFinite(qty) || qty < 1){ alert2('數量須為正整數。'); render(); return; }
+  const available = transferApplyFromStoreQty(line.productId, line.size, transferApplyState.fromStore);
+  if(qty > available){
+    alert2('調動點庫存不足（現有 '+available+'）。');
+    render();
+    return;
+  }
+  line.quantity = qty;
+  line.available = available;
+  render();
+}
+async function submitTransferApplyCart(){
+  const st = transferApplyState;
+  if(!st.toStore || !st.fromStore){ alert2('請選擇發起點與調動點。'); return; }
+  if(st.toStore === st.fromStore){ alert2('發起點與調動點不可相同。'); return; }
+  if(!st.cart.length){ alert2('請先加入至少一項貨品。'); return; }
+  // 提交前再驗一次庫存
+  for(let i = 0; i < st.cart.length; i++){
+    const line = st.cart[i];
+    const available = transferApplyFromStoreQty(line.productId, line.size, st.fromStore);
+    if(line.quantity > available){
+      alert2('庫存不足：'+line.productId+' '+line.size+' 現有 '+available+'，申請 '+line.quantity);
+      return;
+    }
+  }
+  const remarkEl = document.getElementById('tf-apply-remark');
+  if(remarkEl) st.remark = String(remarkEl.value || '').trim();
   try{
     const data = await apiFetch('/api/transfer/orders', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ productId, size, toStore, fromStore, quantity })
+      body: JSON.stringify({
+        toStore: st.toStore,
+        fromStore: st.fromStore,
+        remark: st.remark || '',
+        items: st.cart.map(function(c){
+          return { productId: c.productId, size: c.size, quantity: c.quantity };
+        })
+      })
     });
-    closeModal();
+    resetTransferApplyState(false);
     transferOrdersCache = null;
     transferInvCache = null;
     await loadNotifications().catch(function(){});
     await loadTransferInventory(true).catch(function(){});
-    render();
+    go('transferInventory');
     const id = data && data.order && data.order.id ? data.order.id : '';
     alert2('已送出調動申請'+(id?'（'+id+'）':'')+'，請等待調動點人員在信箱審批。');
   }catch(e){
     alert2('申請失敗：'+(e.message||e));
   }
+}
+function transferOrderItems(order){
+  if(!order) return [];
+  if(Array.isArray(order.items) && order.items.length) return order.items;
+  if(order.productId && order.size){
+    return [{
+      productId: order.productId,
+      productName: order.productName || '',
+      size: order.size,
+      quantity: order.quantity
+    }];
+  }
+  return [];
+}
+function vTransferApply(){
+  if(!currentUser){
+    return '<div class="card"><h2>申請貨品調動</h2><p>請先登入。</p></div>';
+  }
+  if(!apiEnabled){
+    return '<div class="card"><h2>申請貨品調動</h2><p style="color:#c62828">需要連接 MongoDB 雲端。</p></div>';
+  }
+  if(!transferInvCache && !transferInvLoading){
+    loadTransferInventory(true).then(function(){ render(); }).catch(function(){ render(); });
+    return '<div class="card"><h2>申請貨品調動</h2><p style="color:#888">正在載入庫存…</p></div>';
+  }
+  if(transferInvLoading && !transferInvCache){
+    return '<div class="card"><h2>申請貨品調動</h2><p style="color:#888">正在載入庫存…</p></div>';
+  }
+  const st = transferApplyState;
+  const groups = transferApplyProductGroups(st.fromStore);
+  const kw = st.kw.trim().toLowerCase();
+  const filtered = !kw ? groups : groups.filter(function(g){
+    return String(g.productId).toLowerCase().indexOf(kw)>=0
+      || String(g.name||'').toLowerCase().indexOf(kw)>=0
+      || String(g.color||'').toLowerCase().indexOf(kw)>=0
+      || String(g.category||'').toLowerCase().indexOf(kw)>=0;
+  });
+  const selected = filtered.find(function(g){ return g.productId === st.selectedProductId; })
+    || groups.find(function(g){ return g.productId === st.selectedProductId; })
+    || null;
+  const sizeOpts = selected
+    ? selected.sizes.map(function(s){
+        return '<option value="'+escHtml(s.size)+'"'+(st.pickSize===s.size?' selected':'')+'>'
+          +escHtml(s.size)+'（庫存 '+s.available+'）</option>';
+      }).join('')
+    : '';
+  const pickAvail = selected
+    ? (selected.sizes.find(function(s){ return s.size === st.pickSize; }) || {}).available || 0
+    : 0;
+  const productList = !filtered.length
+    ? '<p style="font-size:13px;color:#888;margin:8px 0">調出點「'+escHtml(st.fromStore||'—')+'」目前沒有可調庫存'+(kw?'（或不符合搜尋）':'')+'。</p>'
+    : '<div class="tf-apply-products">'+filtered.map(function(g){
+        const active = st.selectedProductId === g.productId;
+        const stockHint = g.sizes.map(function(s){ return s.size+':'+s.available; }).join(' · ');
+        return '<button type="button" class="tf-apply-product'+(active?' active':'')+'" data-action="tf-apply-select-product" data-pid="'+escHtml(g.productId)+'">'
+          +'<b>'+escHtml(g.productId)+'</b> '+escHtml(g.name||'')
+          +(g.color?' <span style="color:#78909c">'+escHtml(g.color)+'</span>':'')
+          +'<br><span style="font-size:12px;color:#78909c">'+escHtml(g.category||'')+'｜'+escHtml(stockHint)+'</span>'
+          +'</button>';
+      }).join('')+'</div>';
+  const cartHtml = !st.cart.length
+    ? '<p style="font-size:13px;color:#888;margin:8px 0">尚未加入貨品。</p>'
+    : '<div class="table-wrap"><table><tr><th>商品</th><th>尺碼</th><th>數量</th><th>調出庫存</th><th></th></tr>'
+      + st.cart.map(function(c, idx){
+          return '<tr>'
+            +'<td><b>'+escHtml(c.productId)+'</b> '+escHtml(c.productName||'')+'</td>'
+            +'<td>'+escHtml(c.size)+'</td>'
+            +'<td><input type="number" min="1" step="1" value="'+escHtml(String(c.quantity))+'" style="width:72px" onchange="setTransferApplyCartQty('+idx+', this.value)"></td>'
+            +'<td>'+escHtml(String(c.available!=null?c.available:transferApplyFromStoreQty(c.productId,c.size,st.fromStore)))+'</td>'
+            +'<td><button type="button" class="btn sm gray" data-action="tf-apply-remove-cart" data-idx="'+idx+'">移除</button></td>'
+            +'</tr>';
+        }).join('')
+      +'</table></div>';
+  return '<div class="card">'
+    +'<h2>申請貨品調動</h2>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">先選發起點（調入）與調動點（調出），再點款號加入尺碼數量。一張單可多明細，整單審批。</p>'
+    +'<div class="filters" style="align-items:flex-end">'
+    +'<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:#546e7a">發起點（調入）'
+    +'<select onchange="setTransferApplyToStore(this.value)">'+transferStoreOptions(st.toStore)+'</select></label>'
+    +'<label style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:#546e7a">調動點（調出）'
+    +'<select onchange="setTransferApplyFromStore(this.value)">'+transferStoreOptions(st.fromStore)+'</select></label>'
+    +'<button type="button" class="btn gray sm" data-call="go" data-arg0="transferInventory">返回庫存</button>'
+    +'</div>'
+    +'</div>'
+    +'<div class="card">'
+    +'<h3 style="margin:0 0 8px;font-size:16px">選貨</h3>'
+    +'<div class="filters">'
+    +'<input type="text" placeholder="搜尋編號／名稱／顏色" value="'+escHtml(st.kw)+'" onchange="setTransferApplyKw(this.value)" onkeydown="if(event.key===\'Enter\'){setTransferApplyKw(this.value)}">'
+    +'</div>'
+    +productList
+    +(selected
+      ? '<div class="tf-apply-pick">'
+        +'<div style="font-size:13px;margin-bottom:8px">已選：<b>'+escHtml(selected.productId)+'</b> '+escHtml(selected.name||'')+'</div>'
+        +'<label>尺碼</label><select onchange="setTransferApplyPickSize(this.value)">'+sizeOpts+'</select>'
+        +'<label>數量（調出點現有 '+pickAvail+'）</label>'
+        +'<input type="number" min="1" step="1" max="'+pickAvail+'" value="'+escHtml(String(st.pickQty))+'" onchange="setTransferApplyPickQty(this.value)" oninput="setTransferApplyPickQty(this.value)">'
+        +'<div class="actions" style="margin-top:10px">'
+        +'<button type="button" class="btn green sm" data-action="tf-apply-add-cart">加入已選清單</button>'
+        +'</div></div>'
+      : '')
+    +'</div>'
+    +'<div class="card">'
+    +'<h3 style="margin:0 0 8px;font-size:16px">已選清單（'+st.cart.length+'）</h3>'
+    +cartHtml
+    +'<label style="margin-top:12px;display:block">備註（選填）</label>'
+    +'<textarea id="tf-apply-remark" rows="2" placeholder="例：急補、客人訂、活動" onchange="setTransferApplyRemark(this.value)">'+escHtml(st.remark)+'</textarea>'
+    +'<div class="actions" style="margin-top:12px">'
+    +'<button type="button" class="btn gray sm" data-call="go" data-arg0="transferInventory">取消</button>'
+    +'<button type="button" class="btn green" data-action="submit-transfer-apply-cart"'+(st.cart.length?'':' disabled')+'>申請調動</button>'
+    +'</div>'
+    +'<p style="font-size:12px;color:#666;margin:10px 0 0;line-height:1.5">送出後會通知調動點相關人員信箱審批；通過後立即扣出／調入。不可審批自己的申請。</p>'
+    +'</div>';
 }
 function transferStatusLabel(st){
   if(st==='pending') return '<span class="tf-status-pending">待審批</span>';
@@ -2236,7 +2507,7 @@ function vTransferInventory(){
         const isLow = !!(r.low && r.low[s]);
         return '<td class="'+(isLow?'inv-low':'inv-ok')+'">'+q+'</td>';
       }).join('');
-      return '<tr class="inv-row" title="點擊申請調動" data-pid="'+escHtml(String(r.productId))+'" data-size="'+escHtml(String(r.size))+'">'
+      return '<tr>'
         +'<td><b>'+escHtml(r.productId)+'</b></td>'
         +'<td>'+escHtml(r.name)+'</td>'
         +'<td>'+escHtml(r.category)+'</td>'
@@ -2251,11 +2522,12 @@ function vTransferInventory(){
   return '<div class="card">'
     +'<h2>📦 庫存查詢</h2>'
     +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">四間港店（觀塘／荔枝角／灣仔／屯門）· 一列＝款號＋尺碼。'
-    +'點擊列可申請調動；列上「改庫存」可手改四店數量。低於安全存量以<span class="inv-low">紅色</span>標示。篩選列中有 <b>'+lowCount+'</b> 列含預警。</p>'
+    +'按「申請調動」可一次選多項；列上「改庫存」可手改四店數量。低於安全存量以<span class="inv-low">紅色</span>標示。篩選列中有 <b>'+lowCount+'</b> 列含預警。</p>'
     +'<div class="filters">'
     +'<input type="text" placeholder="搜尋編號／名稱／顏色" value="'+escHtml(transferInvKw)+'" onchange="setTransferInvKw(this.value)" onkeydown="if(event.key===\'Enter\'){setTransferInvKw(this.value)}">'
     +'<select onchange="setTransferInvCat(this.value)">'+catOpts+'</select>'
     +'<button type="button" class="btn gray sm" data-call="refreshTransferInventory">重新整理</button>'
+    +'<button type="button" class="btn green sm" data-call="openTransferApplyPage">申請調動</button>'
     +'</div>'
     +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 列 · 新增／編輯產品請到「貨品」</p>'
     +'</div>'
@@ -2360,12 +2632,23 @@ function vTransferHistory(){
     return '<div class="card"><h2>📋 調動記錄</h2><p style="color:#888">正在載入…</p></div>';
   }
   const orders = transferOrdersCache || [];
-  const colCount = 12;
-  const head = '<tr><th>單號</th><th>時間</th><th>商品</th><th>尺碼</th><th>數量</th><th>發起點（調入）</th><th>調動點（調出）</th><th>申請人</th><th>狀態</th><th>通過人／拒絕人</th><th>審批時間</th><th></th></tr>';
+  const colCount = 11;
+  const head = '<tr><th>單號</th><th>時間</th><th>明細</th><th>合計</th><th>發起點（調入）</th><th>調動點（調出）</th><th>申請人</th><th>狀態</th><th>通過人／拒絕人</th><th>審批時間</th><th></th></tr>';
   const body = !orders.length
     ? '<tr><td colspan="'+colCount+'" style="color:#888;text-align:center">尚無調動記錄。</td></tr>'
     : orders.map(function(o){
       const expanded = transferHistoryExpandedId===o.id;
+      const items = transferOrderItems(o);
+      const itemsHtml = items.length
+        ? items.map(function(it){
+            return '<div><b>'+escHtml(it.productId)+'</b> '+escHtml(it.productName||'')
+              +'｜'+escHtml(it.size)+' × '+escHtml(String(it.quantity))+'</div>';
+          }).join('')
+        : '<div>'+escHtml(o.productId||'')+' '+escHtml(o.productName||'')+'</div>';
+      const totalQty = items.length
+        ? items.reduce(function(s, it){ return s + (Number(it.quantity)||0); }, 0)
+        : (o.quantity!=null ? o.quantity : 0);
+      const remarkHtml = o.remark ? '<div style="margin-top:4px;color:#78909c;font-size:12px">備註：'+escHtml(o.remark)+'</div>' : '';
       const logs = Array.isArray(o.logs)?o.logs:[];
       const logHtml = logs.length
         ? '<ul class="tf-logs">'+logs.map(function(l){
@@ -2379,9 +2662,8 @@ function vTransferHistory(){
       return '<tr>'
         +'<td><b>'+escHtml(o.id)+'</b></td>'
         +'<td style="white-space:nowrap;font-size:12px">'+escHtml(o.createdAt||'')+'</td>'
-        +'<td>'+escHtml(o.productId)+' '+escHtml(o.productName||'')+'</td>'
-        +'<td>'+escHtml(o.size)+'</td>'
-        +'<td>'+escHtml(String(o.quantity))+'</td>'
+        +'<td style="font-size:12px;line-height:1.5">'+itemsHtml+remarkHtml+'</td>'
+        +'<td>'+escHtml(String(totalQty))+(items.length>1?' <span style="color:#90a4ae;font-size:11px">('+items.length+'行)</span>':'')+'</td>'
         +'<td>'+escHtml(o.toStore)+'</td>'
         +'<td>'+escHtml(o.fromStore)+'</td>'
         +'<td>'+escHtml(o.createdByName||'')+'</td>'
@@ -3219,6 +3501,7 @@ function render(){
     createStaff: vCreateStaff,
     settings: vPersonalSettings,
     transferInventory: vTransferInventory,
+    transferApply: vTransferApply,
     transferHistory: vTransferHistory,
     transferStockLog: vTransferStockLog,
     transferProducts: vTransferProducts,
@@ -3236,7 +3519,7 @@ function go(v){
   if(v==='pushNotify' || v==='pushAll' || v==='pushUnread' || v==='pushRead' || v==='pushEnded' || v==='pushMine' || v==='pushCreate' || v==='pushDetail' || v==='pushStats' || v==='pushLogs'){ currentModule='push'; }
   if(v==='createStaff'){ currentModule='createStaff'; }
   if(v==='settings'){ currentModule='settings'; }
-  if(v==='transferInventory' || v==='transferHistory' || v==='transferStockLog' || v==='transferProducts' || v==='transferProductLog'){ currentModule='transfer'; }
+  if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProducts' || v==='transferProductLog'){ currentModule='transfer'; }
   fCat='全部'; fStatus='全部'; fKw='';
   render();
 }

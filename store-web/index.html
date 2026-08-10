@@ -116,8 +116,16 @@
   .mailbox-detail .md-read-toggle:hover { filter:brightness(.96); }
   .inv-low { color:#c62828; font-weight:bold; }
   .inv-ok { color:#263238; }
-  tr.inv-row { cursor:pointer; }
-  tr.inv-row:hover { background:#e3f2fd; }
+  .tf-apply-products { display:flex; flex-direction:column; gap:6px; margin-top:10px; max-height:280px; overflow:auto; }
+  .tf-apply-product {
+    text-align:left; border:1px solid #cfd8dc; background:#fff; border-radius:8px;
+    padding:10px 12px; cursor:pointer; font-size:13px; color:#37474f; line-height:1.4;
+  }
+  .tf-apply-product:hover { background:#f5f7fa; }
+  .tf-apply-product.active { border-color:#1976d2; background:#e3f2fd; }
+  .tf-apply-pick {
+    margin-top:12px; padding:12px; border:1px solid #e0e6ed; border-radius:8px; background:#fafbfc;
+  }
   .tf-status-pending { color:#ef6c00; font-weight:bold; }
   .tf-status-approved { color:#2e7d32; font-weight:bold; }
   .tf-status-rejected { color:#c62828; font-weight:bold; }
