@@ -5031,10 +5031,21 @@ function dailyWorkRows(list,user,opts){
   opts=opts||{};
   var readonly=!!opts.readonly;
   var mirrors=opts.mirrors||[];
+  var pinAdhoc=opts.pinAdhoc!==false; // 今日工作等：突發置頂
   if(!list.length&&!mirrors.length) return '<p style="color:#888">沒有工作。</p>';
   var showAdmin=dailyCanManage(user)&&!readonly;
-  var body=list.map(function(w){
+  var sorted=(list||[]).slice();
+  if(pinAdhoc){
+    sorted.sort(function(a,b){
+      var aa=a&&a.kind==='adhoc'?0:1;
+      var bb=b&&b.kind==='adhoc'?0:1;
+      if(aa!==bb) return aa-bb;
+      return 0;
+    });
+  }
+  var body=sorted.map(function(w){
       var can=canTickWork(w,user);
+      var isAdhoc=w.kind==='adhoc';
       var tick='';
       if(!readonly){
         if(w.status==='done'){
@@ -5056,10 +5067,12 @@ function dailyWorkRows(list,user,opts){
         if(w.status==='done') admin+='<button class="btn warn sm" data-call="dailyReopen" data-arg0="'+escHtml(String(w.id))+'">重開</button> ';
         if(w.kind!=='settlement'&&w.status!=='cancelled') admin+='<button class="btn red sm" data-call="dailyCancelWork" data-arg0="'+escHtml(String(w.id))+'">取消</button>';
       }
-      return '<tr>'+
+      var subColor=isAdhoc?'#e53935':'#777';
+      var assignColor=isAdhoc?'#c62828':'#666';
+      return '<tr class="'+(isAdhoc?'daily-adhoc-row':'')+'"'+(isAdhoc?' style="color:#c62828"':'')+'>'+
         (readonly?'':'<td>'+tick+'</td>')+
-        '<td><b>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+
-          (w.kind==='adhoc'?'<div style="font-size:11px;color:#666;margin-top:4px">指派：'+dailyEsc(workAssigneesLabel(w))+'</div>':'')+
+        '<td><b'+(isAdhoc?' style="color:#c62828"':'')+'>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:'+subColor+';margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+
+          (isAdhoc?'<div style="font-size:11px;color:'+assignColor+';margin-top:4px">指派：'+dailyEsc(workAssigneesLabel(w))+'</div>':'')+
           dailyAttachHtml(w,user,readonly)+'</td>'+
         '<td>'+dailyEsc(w.unit)+'</td><td>'+dailyKindTag(w)+'</td><td>'+priorityTag(w.priority)+'</td>'+
         '<td>'+dailyEsc(w.dueDate||'—')+'</td><td>'+dailyStatusTag(w)+'</td><td>'+doneInfo+'</td>'+
@@ -5195,7 +5208,9 @@ function vDailyToday(user){
     '</div><div class="filters" style="margin-top:12px">'+filter+'</div>'+
     (mirrors.length?'<p style="font-size:12px;color:#888;margin-top:8px">項目待辦（開發／補貨）顯示於下方清單，不計入上方門市完成統計。</p>':'')+
     '</div>'+
-    '<div class="card"><h3>工作清單（剔選完成）</h3>'+dailyWorkRows(list,user,{mirrors:mirrors})+'</div>';
+    '<div class="card"><h3>工作清單（剔選完成）</h3>'
+    +'<p style="font-size:12px;color:#c62828;margin:0 0 8px">突發任務以紅色置頂顯示。</p>'
+    +dailyWorkRows(list,user,{mirrors:mirrors,pinAdhoc:true})+'</div>';
 }
 function vDailyProgress(user){
   ensureDailySeed();
