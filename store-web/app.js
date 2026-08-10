@@ -2761,8 +2761,8 @@ function vPersonalSettings(){
   + (showDriveExport
     ? `<div class="card">
     <h2>☁ Google Drive 匯出</h2>
-    <p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">將目前系統的用戶公開資料（不含密碼）寫入 Drive 資料夾的 <b>users.json</b>。<br>
-    注意：請先用你的 Google 帳號在該資料夾<strong>手動新建</strong>空的 <code>users.json</code>（服務帳戶無法在「我的雲端硬碟」新建檔），之後匯出會更新此檔。</p>
+    <p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">將目前系統的用戶公開資料（不含密碼）寫入 Drive 的 <b>users.json</b>。<br>
+    若出現 400／配額錯誤：請在 Railway 新增變數 <code>GOOGLE_DRIVE_USERS_FILE_ID</code>＝檔案 ID（網址 <code>/d/</code> 與 <code>/view</code> 中間那串），再重試。</p>
     <div class="actions">
       <button type="button" class="btn green sm" data-call="exportUsersToGoogleDrive">匯出用戶到 Drive</button>
     </div>

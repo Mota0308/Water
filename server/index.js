@@ -48,7 +48,7 @@ import {
   TRANSFER_STORES,
   TRANSFER_CATEGORIES,
 } from './mongo.js';
-import { driveConfigured, exportUsersToDrive } from './drive.js';
+import { driveConfigured, exportUsersToDrive, getDriveExportStatus } from './drive.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
