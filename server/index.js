@@ -12,10 +12,14 @@ import {
   getProjectsState,
   saveProjectsState,
   getNotificationsStateForUser,
-  filterNotificationForViewer,
   createNotification,
   markNotificationRead,
   markNotificationUnread,
+  openNotification,
+  confirmNotificationRead,
+  endNotification,
+  toggleNotificationPin,
+  filterNotificationForViewerWithRole,
   uploadFile,
   downloadFile,
   loginWithPassword,
@@ -544,7 +548,7 @@ app.post('/api/notifications', requireAuth, async (req, res) => {
       fromName: String(me?.name || me?.login || req.body.fromName || ''),
     };
     const item = await createNotification(body);
-    const filtered = filterNotificationForViewer(item, me?.id) || item;
+    const filtered = filterNotificationForViewerWithRole(item, req.user) || item;
     res.json(filtered);
   } catch (e) {
     console.error(e);
@@ -558,7 +562,7 @@ app.post('/api/notifications/:id/read', requireAuth, async (req, res) => {
     const userId = String(me?.id || '');
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const item = await markNotificationRead(req.params.id, userId);
-    res.json(filterNotificationForViewer(item, userId) || item);
+    res.json(filterNotificationForViewerWithRole(item, req.user) || item);
   } catch (e) {
     console.error(e);
     const msg = String(e.message || e);
@@ -572,7 +576,58 @@ app.post('/api/notifications/:id/unread', requireAuth, async (req, res) => {
     const userId = String(me?.id || '');
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const item = await markNotificationUnread(req.params.id, userId);
-    res.json(filterNotificationForViewer(item, userId) || item);
+    res.json(filterNotificationForViewerWithRole(item, req.user) || item);
+  } catch (e) {
+    console.error(e);
+    const msg = String(e.message || e);
+    res.status(msg === 'Notification not found' ? 404 : 400).json({ error: msg });
+  }
+});
+
+app.post('/api/notifications/:id/open', requireAuth, async (req, res) => {
+  try {
+    const me = publicUser(req.user);
+    const userId = String(me?.id || '');
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const item = await openNotification(req.params.id, userId);
+    res.json(filterNotificationForViewerWithRole(item, req.user) || item);
+  } catch (e) {
+    console.error(e);
+    const msg = String(e.message || e);
+    res.status(msg === 'Notification not found' ? 404 : 400).json({ error: msg });
+  }
+});
+
+app.post('/api/notifications/:id/confirm', requireAuth, async (req, res) => {
+  try {
+    const me = publicUser(req.user);
+    const item = await confirmNotificationRead(req.params.id, req.user, me?.login);
+    res.json(filterNotificationForViewerWithRole(item, req.user) || item);
+  } catch (e) {
+    console.error(e);
+    const msg = String(e.message || e);
+    res.status(msg === 'Notification not found' ? 404 : 400).json({ error: msg });
+  }
+});
+
+app.post('/api/notifications/:id/end', requireAuth, async (req, res) => {
+  try {
+    const item = await endNotification(req.params.id, req.user, {
+      mode: req.body?.mode,
+      reason: req.body?.reason,
+    });
+    res.json(filterNotificationForViewerWithRole(item, req.user) || item);
+  } catch (e) {
+    console.error(e);
+    const msg = String(e.message || e);
+    res.status(msg === 'Notification not found' ? 404 : 400).json({ error: msg });
+  }
+});
+
+app.post('/api/notifications/:id/pin', requireAuth, async (req, res) => {
+  try {
+    const item = await toggleNotificationPin(req.params.id, req.user);
+    res.json(filterNotificationForViewerWithRole(item, req.user) || item);
   } catch (e) {
     console.error(e);
     const msg = String(e.message || e);

@@ -942,46 +942,196 @@ export async function saveProjectsState(data) {
   return { ok: true };
 }
 
+export const NOTICE_CATS = {
+  restock: { name: '補貨', key: 'restock' },
+  price: { name: '價錢更新', key: 'price' },
+  urgent: { name: '緊急資訊', key: 'urgent' },
+  general: { name: '一般資訊', key: 'general' },
+  transfer: { name: '貨品調動', key: 'transfer' },
+};
+
+function todayYmd() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function mapCategoryToCat(category) {
+  const s = String(category || '');
+  if (s.includes('調動') || s === 'transfer') return 'transfer';
+  if (s.includes('補貨') || s === 'restock') return 'restock';
+  if (s.includes('價錢') || s === 'price') return 'price';
+  if (s.includes('緊急') || s === 'urgent') return 'urgent';
+  return 'general';
+}
+
+function categoryLabelFromCat(cat) {
+  return NOTICE_CATS[cat]?.name || '一般資訊';
+}
+
+function recipientIdsOf(item) {
+  if (!item) return [];
+  if (Array.isArray(item.recipientIds) && item.recipientIds.length) {
+    return [...new Set(item.recipientIds.map(String))];
+  }
+  return [...new Set((item.recipients || []).map((r) => String(r.userId || r)).filter(Boolean))];
+}
+
+function syncRecipientReadFlags(item) {
+  const ids = recipientIdsOf(item);
+  const readers = item.readers && typeof item.readers === 'object' ? item.readers : {};
+  item.readers = readers;
+  item.recipients = ids.map((userId) => {
+    const prev = (item.recipients || []).find((r) => String(r.userId) === userId) || {};
+    const st = readers[userId]?.status || (prev.read ? 'read' : 'unopen');
+    const read = st === 'read';
+    const readAt = read
+      ? readers[userId]?.confirmTime || prev.readAt || null
+      : null;
+    return { userId, read, readAt, status: st, openTime: readers[userId]?.openTime || null, confirmTime: readers[userId]?.confirmTime || null };
+  });
+  return item;
+}
+
+/** 舊通知映射新模型；必要時自動到期完結 */
+export function normalizeNotification(raw) {
+  if (!raw || typeof raw !== 'object') return raw;
+  const n = { ...raw };
+  const cat = n.cat || mapCategoryToCat(n.category);
+  n.cat = cat;
+  n.category = n.category || categoryLabelFromCat(cat);
+  n.summary = n.summary != null ? String(n.summary) : '';
+  n.startDate = n.startDate || null;
+  n.endDate = n.endDate || null;
+  n.recipientDesc = n.recipientDesc || '';
+  n.pinned = !!n.pinned || cat === 'urgent' || n.priority === '緊急';
+  n.logs = Array.isArray(n.logs) ? n.logs : [];
+  if (!n.status) n.status = '進行中';
+  const ids = recipientIdsOf(n);
+  if (!n.readers || typeof n.readers !== 'object') n.readers = {};
+  for (const uid of ids) {
+    if (!n.readers[uid]) {
+      const prev = (n.recipients || []).find((r) => String(r.userId) === uid);
+      if (prev && prev.read) {
+        n.readers[uid] = {
+          status: 'read',
+          openTime: prev.readAt || null,
+          confirmTime: prev.readAt || null,
+        };
+      } else {
+        n.readers[uid] = { status: 'unopen', openTime: null, confirmTime: null };
+      }
+    }
+  }
+  // 到期自動完結（非調動）
+  if (n.cat !== 'transfer' && n.status === '進行中' && n.endDate && String(n.endDate) < todayYmd()) {
+    n.status = '已完結';
+    n.logs = [
+      {
+        time: formatHkDateTime(new Date()),
+        user: '系統',
+        userId: 'system',
+        action: '自動完結',
+        detail: '已到完結日期',
+      },
+      ...n.logs,
+    ];
+  }
+  syncRecipientReadFlags(n);
+  return n;
+}
+
 export async function getNotificationsState() {
   await connectMongo();
   const doc = await notificationsCol().findOne({ _id: 'main' });
   if (!doc) return { ...EMPTY_NOTIFICATIONS };
   const { _id, updatedAt, ...rest } = doc;
-  return {
-    notifications: Array.isArray(rest.notifications) ? rest.notifications : [],
-    notifSeq: typeof rest.notifSeq === 'number' ? rest.notifSeq : 1,
-  };
+  let notifications = Array.isArray(rest.notifications) ? rest.notifications.map(normalizeNotification) : [];
+  const notifSeq = typeof rest.notifSeq === 'number' ? rest.notifSeq : 1;
+  // persist auto-ended / normalized shape when status changed
+  let dirty = false;
+  const orig = Array.isArray(rest.notifications) ? rest.notifications : [];
+  if (orig.length === notifications.length) {
+    for (let i = 0; i < notifications.length; i++) {
+      if (orig[i]?.status !== notifications[i]?.status || !orig[i]?.readers) {
+        dirty = true;
+        break;
+      }
+    }
+  }
+  if (dirty) {
+    await saveNotificationsState({ notifications, notifSeq });
+  }
+  return { notifications, notifSeq };
+}
+
+function viewerReaderSlice(item, viewerId, full) {
+  const ids = recipientIdsOf(item);
+  const readers = item.readers || {};
+  if (full) {
+    return ids.map((userId) => {
+      const r = readers[userId] || { status: 'unopen' };
+      return {
+        userId,
+        read: r.status === 'read',
+        readAt: r.confirmTime || null,
+        status: r.status || 'unopen',
+        openTime: r.openTime || null,
+        confirmTime: r.confirmTime || null,
+      };
+    });
+  }
+  const r = readers[viewerId] || { status: 'unopen' };
+  return [
+    {
+      userId: viewerId,
+      read: r.status === 'read',
+      readAt: r.confirmTime || null,
+      status: r.status || 'unopen',
+      openTime: r.openTime || null,
+      confirmTime: r.confirmTime || null,
+    },
+  ];
 }
 
 /** 依檢視者過濾：非發送人只能看到自己的 recipient；發送人可見完整已讀名單 */
 export function filterNotificationForViewer(item, viewerId) {
   if (!item || !viewerId) return null;
+  const n = normalizeNotification(item);
   const vid = String(viewerId);
-  const isSender = String(item.fromUserId || '') === vid;
-  const myRec = (item.recipients || []).find((r) => String(r.userId) === vid);
-  if (!isSender && !myRec) return null;
-  const { recipients: _r, ...rest } = item;
-  if (isSender) {
-    return {
-      ...rest,
-      recipients: Array.isArray(item.recipients)
-        ? item.recipients.map((r) => ({
-            userId: String(r.userId),
-            read: !!r.read,
-            readAt: r.readAt || null,
-          }))
-        : [],
-    };
-  }
+  const isSender = String(n.fromUserId || '') === vid;
+  const ids = recipientIdsOf(n);
+  const isRecip = ids.includes(vid);
+  const isAdmin = false; // admin still needs membership; elevated views handled by caller with full list if needed
+  if (!isSender && !isRecip && !isAdmin) return null;
+  const { recipients: _r, readers: _readers, ...rest } = n;
   return {
     ...rest,
-    recipients: [
-      {
-        userId: String(myRec.userId),
-        read: !!myRec.read,
-        readAt: myRec.readAt || null,
-      },
-    ],
+    readers: isSender ? n.readers : { [vid]: n.readers?.[vid] || { status: 'unopen' } },
+    recipients: viewerReaderSlice(n, vid, isSender),
+  };
+}
+
+/** 管理層可見全部公告（含非收件）；調動仍僅收件／發送人 */
+export function filterNotificationForViewerWithRole(item, user) {
+  const me = publicUser(user);
+  const vid = me?.id ? String(me.id) : '';
+  if (!vid) return null;
+  const n = normalizeNotification(item);
+  const isSender = String(n.fromUserId || '') === vid;
+  const ids = recipientIdsOf(n);
+  const isRecip = ids.includes(vid);
+  const isMgr = me.role === 'system_admin' || me.role === 'manager' || isAdminAccount(me);
+  if (n.cat === 'transfer' || n.actionType === 'transfer_decide') {
+    if (!isSender && !isRecip) return null;
+    return filterNotificationForViewer(n, vid);
+  }
+  if (!isSender && !isRecip && !isMgr) return null;
+  const full = isSender || isMgr;
+  const { recipients: _r, ...rest } = n;
+  return {
+    ...rest,
+    readers: full ? n.readers : { [vid]: n.readers?.[vid] || { status: 'unopen' } },
+    recipients: viewerReaderSlice(n, vid, full),
   };
 }
 
@@ -993,7 +1143,7 @@ export async function getNotificationsStateForUser(user) {
     return { notifications: [], notifSeq: state.notifSeq };
   }
   const notifications = (state.notifications || [])
-    .map((n) => filterNotificationForViewer(n, viewerId))
+    .map((n) => filterNotificationForViewerWithRole(n, user))
     .filter(Boolean);
   return { notifications, notifSeq: state.notifSeq };
 }
@@ -1025,6 +1175,8 @@ export async function createNotification(input) {
           driveFileId: f.driveFileId ? String(f.driveFileId) : undefined,
           dataUrl: f.dataUrl && !f.driveFileId ? String(f.dataUrl) : undefined,
           mimeType: f.mimeType ? String(f.mimeType) : undefined,
+          by: f.by ? String(f.by) : undefined,
+          time: f.time ? String(f.time) : undefined,
         }))
     : [];
   let content = String(input?.content || '').trim();
@@ -1032,22 +1184,46 @@ export async function createNotification(input) {
   if (!content && attachments.length) content = '（見附件）';
   const id = 'N' + String(state.notifSeq).padStart(3, '0');
   const now = new Date();
-  const createdAt =
-    input?.createdAt ||
-    `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-  const item = {
+  const createdAt = input?.createdAt || formatHkDateTime(now);
+  const cat = input?.cat || mapCategoryToCat(input?.category);
+  const category = String(input?.category || categoryLabelFromCat(cat));
+  const priority = String(input?.priority || '一般');
+  const title = String(input?.title || '').trim();
+  const summary = String(input?.summary || '').trim() || title || content.slice(0, 80);
+  const readers = {};
+  for (const userId of recipientIds) {
+    readers[userId] = { status: 'unopen', openTime: null, confirmTime: null };
+  }
+  const item = normalizeNotification({
     id,
-    category: String(input?.category || '一般通知'),
-    priority: String(input?.priority || '一般'),
-    title: String(input?.title || '').trim(),
+    cat,
+    category,
+    priority,
+    title,
+    summary,
     content,
     attachments,
     fromUserId: String(input?.fromUserId || ''),
     fromName: String(input?.fromName || ''),
     createdAt,
     createdAtMs: Number(input?.createdAtMs) || now.getTime(),
+    startDate: input?.startDate || todayYmd(),
+    endDate: input?.endDate || null,
+    recipientDesc: String(input?.recipientDesc || ''),
+    pinned: input?.pinned != null ? !!input.pinned : cat === 'urgent' || priority === '緊急',
+    status: '進行中',
+    readers,
     recipients: recipientIds.map((userId) => ({ userId, read: false, readAt: null })),
-  };
+    logs: [
+      {
+        time: createdAt,
+        user: String(input?.fromName || ''),
+        userId: String(input?.fromUserId || ''),
+        action: '發布通知',
+        detail: `${category}｜接收 ${recipientIds.length} 人${input?.recipientDesc ? '｜' + input.recipientDesc : ''}`,
+      },
+    ],
+  });
   if (input?.actionType) item.actionType = String(input.actionType);
   if (input?.transferId) item.transferId = String(input.transferId);
   if (input?.transferResolved != null) item.transferResolved = !!input.transferResolved;
@@ -1057,23 +1233,38 @@ export async function createNotification(input) {
   return item;
 }
 
+function findNoticeInState(state, id) {
+  const idx = state.notifications.findIndex((n) => n.id === id);
+  if (idx < 0) return { idx: -1, item: null };
+  const item = normalizeNotification(state.notifications[idx]);
+  state.notifications[idx] = item;
+  return { idx, item };
+}
+
 export async function setNotificationReadState(id, userId, read) {
   await connectMongo();
   const state = await getNotificationsState();
-  const item = state.notifications.find((n) => n.id === id);
+  const { item } = findNoticeInState(state, id);
   if (!item) throw new Error('Notification not found');
-  const rec = (item.recipients || []).find((r) => r.userId === userId);
-  if (!rec) throw new Error('Not a recipient');
-  const wantRead = !!read;
-  if (!!rec.read === wantRead) return item;
-  if (wantRead) {
-    const now = new Date();
-    rec.read = true;
-    rec.readAt = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const uid = String(userId);
+  if (!recipientIdsOf(item).includes(uid)) throw new Error('Not a recipient');
+  if (!item.readers) item.readers = {};
+  const time = formatHkDateTime(new Date());
+  if (read) {
+    const prev = item.readers[uid] || {};
+    item.readers[uid] = {
+      status: 'read',
+      openTime: prev.openTime || time,
+      confirmTime: time,
+    };
   } else {
-    rec.read = false;
-    rec.readAt = null;
+    // 公告確認後不可自行改回未讀；調動仍允許切換
+    if (item.cat !== 'transfer' && item.actionType !== 'transfer_decide') {
+      throw new Error('已確認閱讀的公告不可改回未讀');
+    }
+    item.readers[uid] = { status: 'unopen', openTime: null, confirmTime: null };
   }
+  syncRecipientReadFlags(item);
   await saveNotificationsState(state);
   return item;
 }
@@ -1084,6 +1275,150 @@ export async function markNotificationRead(id, userId) {
 
 export async function markNotificationUnread(id, userId) {
   return setNotificationReadState(id, userId, false);
+}
+
+export async function openNotification(id, userId) {
+  await connectMongo();
+  const state = await getNotificationsState();
+  const { item } = findNoticeInState(state, id);
+  if (!item) throw new Error('Notification not found');
+  const uid = String(userId);
+  if (!recipientIdsOf(item).includes(uid)) return item;
+  if (!item.readers) item.readers = {};
+  const cur = item.readers[uid];
+  if (!cur || cur.status === 'unopen') {
+    const time = formatHkDateTime(new Date());
+    item.readers[uid] = { status: 'opened', openTime: time, confirmTime: null };
+    item.logs = [
+      {
+        time,
+        user: uid,
+        userId: uid,
+        action: '開啟通知',
+        detail: item.title || item.id,
+      },
+      ...(item.logs || []),
+    ];
+    syncRecipientReadFlags(item);
+    await saveNotificationsState(state);
+  }
+  return item;
+}
+
+export async function confirmNotificationRead(id, user, userLogin) {
+  const me = publicUser(user);
+  const uid = String(me?.id || '');
+  if (!uid) throw new Error('未登入');
+  await connectMongo();
+  const state = await getNotificationsState();
+  const { item } = findNoticeInState(state, id);
+  if (!item) throw new Error('Notification not found');
+  if (item.cat === 'transfer' || item.actionType === 'transfer_decide') {
+    return markNotificationRead(id, uid);
+  }
+  if (!recipientIdsOf(item).includes(uid)) throw new Error('Not a recipient');
+  if (item.status !== '進行中') throw new Error('此通知已完結，無法再確認');
+  const time = formatHkDateTime(new Date());
+  const prev = item.readers?.[uid] || {};
+  item.readers[uid] = {
+    status: 'read',
+    openTime: prev.openTime || time,
+    confirmTime: time,
+  };
+  item.logs = [
+    {
+      time,
+      user: me.name || me.login || uid,
+      userId: uid,
+      action: '確認已讀',
+      detail: `${me.name || ''}（${userLogin || me.login || uid}）已確認`,
+    },
+    ...(item.logs || []),
+  ];
+  syncRecipientReadFlags(item);
+  await saveNotificationsState(state);
+  await appendModuleLog({
+    module: 'push',
+    time,
+    action: '確認已讀',
+    detail: `${item.id}｜${item.title || ''}`,
+    userId: uid,
+    userName: me.name || me.login || uid,
+    user: me.name || me.login || uid,
+  });
+  return item;
+}
+
+export async function endNotification(id, actor, { mode, reason } = {}) {
+  const me = publicUser(actor);
+  const uid = String(me?.id || '');
+  if (!uid) throw new Error('未登入');
+  await connectMongo();
+  const state = await getNotificationsState();
+  const { item } = findNoticeInState(state, id);
+  if (!item) throw new Error('Notification not found');
+  if (item.cat === 'transfer' || item.actionType === 'transfer_decide') {
+    throw new Error('調動通知不可由此完結');
+  }
+  const isMgr = me.role === 'system_admin' || me.role === 'manager' || isAdminAccount(me);
+  if (String(item.fromUserId) !== uid && !isMgr) throw new Error('只有發布人或管理層可完結通知');
+  if (item.status !== '進行中') throw new Error('通知已非進行中');
+  const r = String(reason || '').trim();
+  if (!r) throw new Error('請填寫原因');
+  const ids = recipientIdsOf(item);
+  let read = 0;
+  for (const id2 of ids) {
+    if (item.readers?.[id2]?.status === 'read') read++;
+  }
+  const time = formatHkDateTime(new Date());
+  item.status = mode === '取消通知' ? '已取消' : '已提早完結';
+  item.logs = [
+    {
+      time,
+      user: me.name || me.login || uid,
+      userId: uid,
+      action: item.status === '已取消' ? '取消通知' : '提早完結',
+      detail: `原因：${r}｜當時已讀 ${read}／${ids.length}`,
+    },
+    ...(item.logs || []),
+  ];
+  await saveNotificationsState(state);
+  await appendModuleLog({
+    module: 'push',
+    time,
+    action: item.status,
+    detail: `${item.id}｜${r}`,
+    userId: uid,
+    userName: me.name || me.login || uid,
+    user: me.name || me.login || uid,
+  });
+  return item;
+}
+
+export async function toggleNotificationPin(id, actor) {
+  const me = publicUser(actor);
+  const uid = String(me?.id || '');
+  if (!uid) throw new Error('未登入');
+  const isMgr = me.role === 'system_admin' || me.role === 'manager' || isAdminAccount(me);
+  if (!isMgr) throw new Error('只有管理層可置頂');
+  await connectMongo();
+  const state = await getNotificationsState();
+  const { item } = findNoticeInState(state, id);
+  if (!item) throw new Error('Notification not found');
+  item.pinned = !item.pinned;
+  const time = formatHkDateTime(new Date());
+  item.logs = [
+    {
+      time,
+      user: me.name || me.login || uid,
+      userId: uid,
+      action: item.pinned ? '置頂通知' : '取消置頂',
+      detail: '',
+    },
+    ...(item.logs || []),
+  ];
+  await saveNotificationsState(state);
+  return item;
 }
 
 export async function uploadFile({ buffer, filename, mimeType }) {

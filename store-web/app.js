@@ -695,13 +695,15 @@ function notifPriorityRank(p){
 }
 function isNotifUnreadForMe(n){
   if(!currentUser || !n) return false;
-  const rec = (n.recipients||[]).find(r => r.userId === currentUser.id);
-  return !!(rec && !rec.read);
+  const rec = (n.recipients||[]).find(r => String(r.userId) === String(currentUser.id));
+  if(!rec) return false;
+  if(rec.status) return rec.status !== 'read';
+  return !rec.read;
 }
 function notifReadStats(n){
   const recs = Array.isArray(n && n.recipients) ? n.recipients : [];
   const total = recs.length;
-  const read = recs.filter(function(r){ return !!r.read; }).length;
+  const read = recs.filter(function(r){ return r.status==='read' || !!r.read; }).length;
   return { read: read, total: total };
 }
 function sortMailboxItems(list, preferUnread){
@@ -757,11 +759,18 @@ function notifPriorityTag(p){
 function findMailboxItem(id){
   return (notifications||[]).find(function(n){ return n.id === id; }) || null;
 }
-function openMailboxDetail(id){
+async function openMailboxDetail(id){
   mailboxDetailId = id;
   mailboxDetailTab = mailboxTab;
   const bg = document.getElementById('mailbox-detail-bg');
   if(bg) bg.classList.remove('hidden');
+  const item = findMailboxItem(id);
+  if(item && !isTransferNotice(item) && mailboxTab==='inbox' && apiEnabled && currentUser){
+    try{
+      await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/open', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+      await loadNotifications();
+    }catch(_e){}
+  }
   refreshMailboxDetailUi();
 }
 function closeMailboxDetail(){
@@ -820,12 +829,24 @@ function refreshMailboxDetailUi(){
   if(isSentView){
     actionsEl.innerHTML = '';
     readBtn.classList.add('hidden');
-  } else {
+  } else if(isTransferNotice(item)){
     actionsEl.innerHTML = transferMailboxActionsHtml(item);
     readBtn.classList.remove('hidden');
     readBtn.className = 'md-read-toggle '+(isRead?'is-read':'is-unread');
     readBtn.textContent = isRead ? '已讀' : '未讀';
     readBtn.title = isRead ? '點擊改為未讀' : '點擊改為已讀';
+  } else {
+    actionsEl.innerHTML = '<button type="button" class="btn sm" data-call="openPushNotice" data-arg0="'+escHtml(String(item.id))+'">在推送通知開啟</button>';
+    readBtn.classList.remove('hidden');
+    if(isRead){
+      readBtn.className = 'md-read-toggle is-read';
+      readBtn.textContent = '已確認';
+      readBtn.title = '已確認閱讀（不可改回）';
+    } else {
+      readBtn.className = 'md-read-toggle is-unread';
+      readBtn.textContent = '確認已讀';
+      readBtn.title = '確認已閱讀及知悉';
+    }
   }
 }
 async function toggleMailboxDetailRead(){
@@ -833,6 +854,18 @@ async function toggleMailboxDetailRead(){
   if(mailboxDetailTab === 'sent') return;
   const item = findMailboxItem(mailboxDetailId);
   if(!item) return;
+  if(!isTransferNotice(item)){
+    if(isNotifUnreadForMe(item)){
+      try{
+        await apiFetch('/api/notifications/'+encodeURIComponent(mailboxDetailId)+'/confirm', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+        await loadNotifications();
+        refreshMailboxUi();
+        refreshMailboxDetailUi();
+        alert2('已成功確認閱讀。');
+      }catch(e){ alert2('確認失敗：'+(e.message||e)); }
+    }
+    return;
+  }
   const rec = (item.recipients||[]).find(function(r){ return r.userId === currentUser.id; });
   const isRead = !!(rec && rec.read);
   await setNotifReadState(mailboxDetailId, !isRead);
@@ -953,6 +986,17 @@ function bindStaticChrome(){
     }
     if(action==='submit-transfer-product'){ submitTransferProduct(); return; }
     if(action==='submit-transfer-product-edit'){ submitTransferProductEdit(); return; }
+    if(action==='confirm-push-read'){
+      const nid = actionEl.getAttribute('data-nid');
+      if(nid) confirmPushRead(nid);
+      return;
+    }
+    if(action==='submit-push-end'){
+      const nid = actionEl.getAttribute('data-nid');
+      if(nid) submitPushEnd(nid);
+      return;
+    }
+    if(action==='submit-push-publish'){ closeModal(); sendPushNotification(); return; }
     if(action==='submit-transfer-stock'){
       const pid = actionEl.getAttribute('data-pid');
       const size = actionEl.getAttribute('data-size');
@@ -1142,131 +1186,522 @@ function togglePushRecipients(on){
 function selectedPushRecipientIds(){
   return Array.from(document.querySelectorAll('#push-recipients input[type=checkbox]:checked')).map(cb => cb.value);
 }
+const NOTICE_CAT_META = {
+  restock: { name: '補貨', icon: '📦' },
+  price: { name: '價錢更新', icon: '💰' },
+  urgent: { name: '緊急資訊', icon: '🚨' },
+  general: { name: '一般資訊', icon: '📄' }
+};
+let pushNoticeId = null;
+let pushStatsId = null;
+let pushFilterCat = '全部';
+let pushFilterRead = '全部';
+let pushFilterKw = '';
+let pushUrgentPrompted = false;
+
+function isTransferNotice(n){
+  return !!(n && (n.actionType==='transfer_decide' || n.cat==='transfer' || n.category==='貨品調動'));
+}
+function isAnnouncement(n){ return n && !isTransferNotice(n); }
+function noticeCatKey(n){
+  if(!n) return 'general';
+  if(n.cat && NOTICE_CAT_META[n.cat]) return n.cat;
+  const c = String(n.category||'');
+  if(c.indexOf('補貨')>=0) return 'restock';
+  if(c.indexOf('價錢')>=0) return 'price';
+  if(c.indexOf('緊急')>=0) return 'urgent';
+  return 'general';
+}
+function noticeCatTag(n){
+  const k = noticeCatKey(n);
+  const m = NOTICE_CAT_META[k] || NOTICE_CAT_META.general;
+  return '<span class="tag n-cat">'+m.icon+' '+escHtml(m.name)+'</span>';
+}
+function myNoticeReader(n){
+  if(!currentUser || !n) return null;
+  const uid = String(currentUser.id);
+  if(n.readers && n.readers[uid]) return n.readers[uid];
+  const rec = (n.recipients||[]).find(function(r){ return String(r.userId)===uid; });
+  if(!rec) return null;
+  if(rec.status) return { status: rec.status, openTime: rec.openTime||null, confirmTime: rec.confirmTime||rec.readAt||null };
+  return rec.read
+    ? { status:'read', openTime: rec.readAt||null, confirmTime: rec.readAt||null }
+    : { status:'unopen', openTime:null, confirmTime:null };
+}
+function isNoticeRecipient(n){
+  if(!currentUser || !n) return false;
+  const uid = String(currentUser.id);
+  return (n.recipients||[]).some(function(r){ return String(r.userId)===uid; });
+}
+function announcementList(){
+  return (notifications||[]).filter(isAnnouncement);
+}
+function myActiveAnnouncements(){
+  return announcementList().filter(function(n){
+    return n.status==='進行中' && isNoticeRecipient(n);
+  });
+}
+function myUnreadAnnouncements(){
+  return myActiveAnnouncements().filter(function(n){
+    const s = myNoticeReader(n);
+    return !s || s.status!=='read';
+  });
+}
+function sortAnnouncements(list){
+  return (list||[]).slice().sort(function(a,b){
+    if(!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+    const au = noticeCatKey(a)==='urgent';
+    const bu = noticeCatKey(b)==='urgent';
+    if(au!==bu) return au ? -1 : 1;
+    return (b.createdAtMs||0) - (a.createdAtMs||0);
+  });
+}
+function noticeReadStateTag(n){
+  const s = myNoticeReader(n);
+  if(n.status!=='進行中' && (!s || s.status!=='read') && isNoticeRecipient(n)){
+    return '<span class="tag" style="background:#eceff1;color:#78909c">到期未讀</span>';
+  }
+  if(!s || s.status==='unopen') return '<span class="tag" style="background:#ffebee;color:#c62828">未開啟</span>';
+  if(s.status==='opened') return '<span class="tag" style="background:#fff8e1;color:#8d6e00">已開啟未確認</span>';
+  return '<span class="tag" style="background:#e8f5e9;color:#2e7d32">✓ 已讀取</span>';
+}
+function noticeCardHtml(n){
+  const s = myNoticeReader(n);
+  const unread = isNoticeRecipient(n) && (!s||s.status!=='read') && n.status==='進行中';
+  const border = n.status!=='進行中' ? '#eee' : (noticeCatKey(n)==='urgent' ? '#e57373' : (unread ? '#e8d9a0' : '#e5e9f0'));
+  const bg = n.status!=='進行中' ? '#f5f6f7' : (noticeCatKey(n)==='urgent' ? '#fff5f5' : (unread ? '#fdf9ee' : '#fff'));
+  return '<div class="notice-card" style="border:1px solid '+border+';border-radius:10px;padding:14px;margin-bottom:10px;cursor:pointer;background:'+bg+'" data-call="openPushNotice" data-arg0="'+escHtml(String(n.id))+'">'
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">'
+    +(n.pinned&&n.status==='進行中'?'<span class="tag" style="background:#c62828;color:#fff">置頂</span>':'')
+    +noticeCatTag(n)
+    +(n.priority==='緊急'?'<span class="tag n-pri-urgent">緊急</span>':n.priority==='重要'?'<span class="tag n-pri-important">重要</span>':'')
+    +'<span style="font-size:15px;flex:1;min-width:140px;'+(unread?'font-weight:bold':'')+'">'+(unread?'<span style="display:inline-block;width:8px;height:8px;background:#e53935;border-radius:50%;margin-right:6px"></span>':'')+escHtml(n.title||'（無標題）')+'</span>'
+    +((n.attachments&&n.attachments.length)?'<span>📎</span>':'')
+    +(isNoticeRecipient(n)?noticeReadStateTag(n):'<span class="tag">'+(escHtml(n.status||'進行中'))+'</span>')
+    +'</div>'
+    +'<div style="font-size:13px;color:#666;margin-bottom:6px">'+escHtml(n.summary||(n.content||'').slice(0,80))+'</div>'
+    +'<div style="font-size:12px;color:#888;display:flex;gap:12px;flex-wrap:wrap">'
+    +'<span>發布人：'+escHtml(n.fromName||'—')+'</span>'
+    +'<span>發布：'+escHtml(n.createdAt||'')+'</span>'
+    +(n.endDate?'<span>有效期至：'+escHtml(n.endDate)+'</span>':'')
+    +(s&&s.status==='read'?'<span style="color:#2e7d32">✓ 本人已於 '+escHtml(s.confirmTime||'')+' 確認</span>':'')
+    +'</div></div>';
+}
+function pushFilterBarHtml(){
+  const cats = ['全部'].concat(Object.keys(NOTICE_CAT_META).map(function(k){ return NOTICE_CAT_META[k].name; }));
+  return '<div class="filters">'
+    +'<select onchange="pushFilterCat=this.value;render()">'
+    +cats.map(function(c){ return '<option'+(pushFilterCat===c?' selected':'')+'>'+escHtml(c)+'</option>'; }).join('')
+    +'</select>'
+    +'<select onchange="pushFilterRead=this.value;render()">'
+    +['全部','未開啟','已開啟未確認','已讀取'].map(function(s){ return '<option'+(pushFilterRead===s?' selected':'')+'>'+s+'</option>'; }).join('')
+    +'</select>'
+    +'<input type="text" placeholder="搜尋標題／內容" value="'+escHtml(pushFilterKw)+'" onchange="pushFilterKw=this.value;render()" onkeydown="if(event.key===\'Enter\'){pushFilterKw=this.value;render()}">'
+    +'</div>';
+}
+function applyPushFilters(list){
+  let out = list || [];
+  if(pushFilterCat && pushFilterCat!=='全部'){
+    out = out.filter(function(n){ return (NOTICE_CAT_META[noticeCatKey(n)]||{}).name===pushFilterCat; });
+  }
+  if(pushFilterRead && pushFilterRead!=='全部'){
+    out = out.filter(function(n){
+      const s = myNoticeReader(n);
+      if(pushFilterRead==='未開啟') return !s||s.status==='unopen';
+      if(pushFilterRead==='已開啟未確認') return s&&s.status==='opened';
+      if(pushFilterRead==='已讀取') return s&&s.status==='read';
+      return true;
+    });
+  }
+  if(pushFilterKw){
+    const kw = pushFilterKw.toLowerCase();
+    out = out.filter(function(n){
+      return (String(n.title||'')+String(n.summary||'')+String(n.content||'')).toLowerCase().indexOf(kw)>=0;
+    });
+  }
+  return out;
+}
+async function openPushNotice(id){
+  pushNoticeId = id;
+  currentModule = 'push';
+  currentView = 'pushDetail';
+  const n = findMailboxItem(id);
+  if(n && isAnnouncement(n) && isNoticeRecipient(n) && apiEnabled){
+    try{
+      await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/open', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+      await loadNotifications();
+    }catch(_e){}
+  }
+  render();
+}
+function pushNoticeStats(n){
+  const recs = Array.isArray(n.recipients) ? n.recipients : [];
+  let read=0, opened=0, unopen=0;
+  recs.forEach(function(r){
+    const st = r.status || (r.read ? 'read' : 'unopen');
+    if(st==='read') read++;
+    else if(st==='opened') opened++;
+    else unopen++;
+  });
+  const total = recs.length;
+  return { total, read, opened, unopen, pct: total?Math.round(read/total*100):0 };
+}
+function vPushAll(){
+  if(!currentUser) return '<div class="card"><h2>📢 所有通知</h2><p>請先登入。</p></div>';
+  let list = isAdmin()||isManager()
+    ? announcementList().filter(function(n){ return n.status==='進行中'; })
+    : myActiveAnnouncements();
+  list = applyPushFilters(sortAnnouncements(list));
+  const urgentUnread = myUnreadAnnouncements().filter(function(n){ return noticeCatKey(n)==='urgent'; });
+  const statsU = myUnreadAnnouncements().length;
+  const statsR = myActiveAnnouncements().filter(function(n){ const s=myNoticeReader(n); return s&&s.status==='read'; }).length;
+  return (urgentUnread.length
+    ? '<div style="background:#ffebee;border:1px solid #ef9a9a;color:#b71c1c;padding:12px 14px;border-radius:8px;margin-bottom:12px;font-weight:bold;cursor:pointer" data-call="openPushNotice" data-arg0="'+escHtml(String(urgentUnread[0].id))+'">🚨 你有 '+urgentUnread.length+' 則緊急通知未確認已讀，請立即閱讀 →</div>'
+    : '')
+    +'<div class="card"><h2>📢 所有通知（進行中）</h2>'
+    +(!isAdmin()&&!isManager()?'<div class="stats" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px">'
+      +'<div class="stat" style="background:#f8f6fb;border-radius:8px;padding:12px;text-align:center"><div style="font-size:22px;font-weight:bold;color:#c62828">'+statsU+'</div><div style="font-size:12px;color:#777">未讀取／待確認</div></div>'
+      +'<div class="stat" style="background:#f8f6fb;border-radius:8px;padding:12px;text-align:center"><div style="font-size:22px;font-weight:bold;color:#2e7d32">'+statsR+'</div><div style="font-size:12px;color:#777">已讀取</div></div>'
+      +'<div class="stat" style="background:#f8f6fb;border-radius:8px;padding:12px;text-align:center"><div style="font-size:22px;font-weight:bold;color:#1565c0">'+myActiveAnnouncements().length+'</div><div style="font-size:12px;color:#777">有效通知</div></div>'
+      +'</div>':'')
+    +pushFilterBarHtml()
+    +(list.length?list.map(noticeCardHtml).join(''):'<p style="color:#888">沒有符合條件的通知。</p>')
+    +'</div>';
+}
+function vPushUnread(){
+  const list = sortAnnouncements(myUnreadAnnouncements());
+  return '<div class="card"><h2>🔴 未回覆／未閱讀（'+list.length+'）</h2>'
+    +'<div class="info-banner" style="background:#ede7f6;border:1px solid #b39ddb;color:#4a2c6b;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:13px">必須進入詳情閱讀完整內容後剔選確認，才會計算為已讀。只看到標題不會算已讀。</div>'
+    +(list.length?list.map(noticeCardHtml).join(''):'<p style="color:#888">🎉 你已確認所有通知。</p>')
+    +'</div>';
+}
+function vPushRead(){
+  const list = sortAnnouncements(myActiveAnnouncements().filter(function(n){ const s=myNoticeReader(n); return s&&s.status==='read'; }));
+  return '<div class="card"><h2>✅ 已讀取（'+list.length+'）</h2>'
+    +(list.length?list.map(noticeCardHtml).join(''):'<p style="color:#888">暫無已讀取通知。</p>')
+    +'</div>';
+}
+function vPushEnded(){
+  const list = announcementList().filter(function(n){
+    if(n.status==='進行中') return false;
+    return isNoticeRecipient(n) || String(n.fromUserId)===String(currentUser.id) || isAdmin() || isManager();
+  });
+  return '<div class="card"><h2>📁 已完結（'+list.length+'）</h2>'
+    +'<div class="info-banner" style="background:#ede7f6;border:1px solid #b39ddb;color:#4a2c6b;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:13px">通知到期或提早完結後移至此处；閱讀記錄仍保留。</div>'
+    +(list.length?sortAnnouncements(list).map(noticeCardHtml).join(''):'<p style="color:#888">暫無已完結通知。</p>')
+    +'</div>';
+}
+function vPushMine(){
+  const list = announcementList().filter(function(n){
+    return String(n.fromUserId)===String(currentUser.id) || isAdmin() || isManager();
+  });
+  const head = '<tr><th>編號</th><th>類別</th><th>標題</th><th>狀態</th><th>接收</th><th>已讀</th><th>已讀%</th><th>操作</th></tr>';
+  const body = !list.length
+    ? '<tr><td colspan="8" style="color:#888;text-align:center">你未發布過通知。</td></tr>'
+    : list.map(function(n){
+      const st = pushNoticeStats(n);
+      return '<tr>'
+        +'<td>'+escHtml(n.id)+'</td><td>'+noticeCatTag(n)+'</td><td>'+escHtml(n.title||'')+'</td>'
+        +'<td>'+escHtml(n.status||'')+'</td>'
+        +'<td>'+st.total+'</td><td>'+st.read+'</td>'
+        +'<td><b style="color:'+(st.pct>=80?'#2e7d32':st.pct>=50?'#ef6c00':'#c62828')+'">'+st.pct+'%</b></td>'
+        +'<td style="white-space:nowrap">'
+        +'<button type="button" class="btn sm" data-call="viewPushStats" data-arg0="'+escHtml(String(n.id))+'">閱讀統計</button> '
+        +(n.status==='進行中'?'<button type="button" class="btn red sm" data-call="askEndPushNotice" data-arg0="'+escHtml(String(n.id))+'">提早完結</button>':'')
+        +'</td></tr>';
+    }).join('');
+  return '<div class="card"><h2>📤 我發布的通知'+(isAdmin()||isManager()?'（管理層：顯示全部）':'')+'</h2>'
+    +'<div class="table-wrap"><table>'+head+body+'</table></div></div>';
+}
+function viewPushStats(id){ pushStatsId=id; currentView='pushStats'; render(); }
+function vPushStats(){
+  const n = findMailboxItem(pushStatsId);
+  if(!n) return vPushMine();
+  const st = pushNoticeStats(n);
+  const unitMap = {};
+  (n.recipients||[]).forEach(function(r){
+    const u = users.find(function(x){ return String(x.id)===String(r.userId); });
+    const unit = (u && (userUnits(u)[0]||u.unit)) || '—';
+    unitMap[unit] = unitMap[unit] || { total:0, read:0 };
+    unitMap[unit].total++;
+    if((r.status==='read')||r.read) unitMap[unit].read++;
+  });
+  return '<div class="card">'
+    +'<button type="button" class="btn gray sm" data-call="go" data-arg0="pushMine">← 返回</button>'
+    +'<h2 style="margin-top:12px">📊 閱讀統計｜'+escHtml(n.id)+' '+escHtml(n.title||'')+'</h2>'
+    +'<div class="stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:10px;margin:12px 0">'
+    +[['接收',st.total,'#1565c0'],['已讀取',st.read,'#2e7d32'],['已開啟未確認',st.opened,'#ef6c00'],['未開啟',st.unopen,'#c62828'],['已讀%',st.pct+'%','#7b1fa2']].map(function(x){
+      return '<div style="background:#f8f6fb;border-radius:8px;padding:12px;text-align:center"><div style="font-size:22px;font-weight:bold;color:'+x[2]+'">'+x[1]+'</div><div style="font-size:12px;color:#777">'+x[0]+'</div></div>';
+    }).join('')
+    +'</div>'
+    +'<h3>👥 閱讀名單</h3><div class="table-wrap"><table><tr><th>姓名</th><th>閱讀狀態</th><th>首次開啟</th><th>確認時間</th></tr>'
+    +(n.recipients||[]).map(function(r){
+      const stt = r.status || (r.read?'read':'unopen');
+      let tag = stt==='read'?'<span class="tag" style="background:#e8f5e9;color:#2e7d32">已讀取</span>':stt==='opened'?'<span class="tag" style="background:#fff8e1;color:#8d6e00">已開啟未確認</span>':'<span class="tag" style="background:#ffebee;color:#c62828">未開啟</span>';
+      if(n.status!=='進行中' && stt!=='read') tag = '<span class="tag" style="background:#eceff1;color:#78909c">到期未讀</span>';
+      return '<tr><td>'+escHtml(userName(r.userId)||r.userId)+'</td><td>'+tag+'</td><td>'+escHtml(r.openTime||'—')+'</td><td>'+escHtml(r.confirmTime||r.readAt||'—')+'</td></tr>';
+    }).join('')
+    +'</table></div>'
+    +'<h3>🏪 按單位統計</h3><div class="table-wrap"><table><tr><th>單位</th><th>接收</th><th>已讀</th><th>未讀</th><th>%</th></tr>'
+    +Object.keys(unitMap).map(function(u){
+      const d = unitMap[u];
+      const pct = d.total?Math.round(d.read/d.total*100):0;
+      return '<tr><td>'+escHtml(u)+'</td><td>'+d.total+'</td><td>'+d.read+'</td><td>'+(d.total-d.read)+'</td><td><b>'+pct+'%</b></td></tr>';
+    }).join('')
+    +'</table></div></div>';
+}
+function vPushDetail(){
+  const n = findMailboxItem(pushNoticeId);
+  if(!n || isTransferNotice(n)) return vPushAll();
+  const s = myNoticeReader(n);
+  const isRecip = isNoticeRecipient(n);
+  const confirmed = s && s.status==='read';
+  let confirmHtml = '';
+  if(isRecip){
+    if(confirmed){
+      confirmHtml = '<div style="border:2px solid #2e7d32;border-radius:10px;padding:16px;background:#f1f8f1;margin-top:14px">'
+        +'<div style="font-size:15px;color:#2e7d32;font-weight:bold">✅ 已成功確認閱讀</div>'
+        +'<div style="font-size:13px;margin-top:6px;color:#555">已由 <b>'+escHtml(currentUser.name)+'</b> 於 <b>'+escHtml(s.confirmTime||'')+'</b> 確認。首次開啟：'+escHtml(s.openTime||'—')+'</div></div>';
+    } else if(n.status==='進行中'){
+      confirmHtml = '<div style="border:2px solid #4a2c6b;border-radius:10px;padding:16px;background:#f8f6fb;margin-top:14px">'
+        +'<div style="font-size:13px;color:#888;margin-bottom:10px">⚠️ 請先閱讀完整內容。只打開不會算已讀，必須剔選確認並提交。</div>'
+        +'<label style="display:flex;gap:10px;align-items:flex-start;font-size:14px;cursor:pointer;margin:0">'
+        +'<input type="checkbox" id="push-read-chk" onchange="var b=document.getElementById(\'push-confirm-btn\'); if(b) b.disabled=!this.checked" style="width:20px;height:20px">'
+        +'<span>本人已閱讀及知悉以上通知內容。</span></label>'
+        +'<button type="button" class="btn green" id="push-confirm-btn" disabled data-action="confirm-push-read" data-nid="'+escHtml(String(n.id))+'">確認已讀</button></div>';
+    } else {
+      confirmHtml = '<div style="border:2px solid #78909c;border-radius:10px;padding:16px;background:#f5f6f7;margin-top:14px;color:#78909c">⏰ 此通知已完結，本人於完結時仍未確認。</div>';
+    }
+  } else {
+    confirmHtml = '<div class="info-banner" style="background:#ede7f6;border:1px solid #b39ddb;color:#4a2c6b;padding:10px 14px;border-radius:8px;margin-top:14px;font-size:13px">你不是此通知的接收者（檢視模式），不需要確認已讀。</div>';
+  }
+  const canManage = String(n.fromUserId)===String(currentUser.id) || isAdmin() || isManager();
+  return '<div class="card">'
+    +'<button type="button" class="btn gray sm" data-call="go" data-arg0="pushAll">← 返回通知列表</button>'
+    +'<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+noticeCatTag(n)
+    +(n.priority==='緊急'?'<span class="tag n-pri-urgent">緊急</span>':n.priority==='重要'?'<span class="tag n-pri-important">重要</span>':'')
+    +'<span class="tag">'+escHtml(n.status||'')+'</span></div>'
+    +'<h2 style="font-size:19px;margin-top:8px">'+escHtml(n.title||'（無標題）')+'</h2>'
+    +'<div style="margin-top:8px;font-size:13px;color:#777;display:flex;gap:14px;flex-wrap:wrap">'
+    +'<span>編號：'+escHtml(n.id)+'</span><span>發布人：'+escHtml(n.fromName||'')+'</span>'
+    +'<span>發布：'+escHtml(n.createdAt||'')+'</span>'
+    +(n.startDate?'<span>生效：'+escHtml(n.startDate)+'</span>':'')
+    +(n.endDate?'<span>有效期至：'+escHtml(n.endDate)+'</span>':'')
+    +(n.recipientDesc?'<span>接收：'+escHtml(n.recipientDesc)+'</span>':'')
+    +'</div>'
+    +'<div style="border:1px solid #e5e9f0;border-radius:10px;padding:16px;margin:12px 0;white-space:pre-wrap;line-height:1.7">'+escHtml(n.content||'')+'</div>'
+    +notifAttachHtml(n.attachments)
+    +confirmHtml
+    +(canManage?'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">'
+      +'<button type="button" class="btn sm" data-call="viewPushStats" data-arg0="'+escHtml(String(n.id))+'">📊 閱讀統計</button>'
+      +(n.status==='進行中'?'<button type="button" class="btn red sm" data-call="askEndPushNotice" data-arg0="'+escHtml(String(n.id))+'">提早完結／取消</button>':'')
+      +((isAdmin()||isManager())?'<button type="button" class="btn orange sm" data-call="togglePushPin" data-arg0="'+escHtml(String(n.id))+'">'+(n.pinned?'取消置頂':'置頂通知')+'</button>':'')
+      +'</div>':'')
+    +'</div>';
+}
+async function confirmPushRead(id){
+  try{
+    await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/confirm', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+    await loadNotifications();
+    render();
+    alert2('已成功確認閱讀。');
+  }catch(e){ alert2('確認失敗：'+(e.message||e)); }
+}
+function askEndPushNotice(id){
+  showModal('<h3>提早完結／取消通知</h3>'
+    +'<label>處理方式</label><select id="push-end-mode"><option>提早完結</option><option>取消通知</option></select>'
+    +'<label>原因（必填）</label><input type="text" id="push-end-reason" placeholder="請輸入原因">'
+    +'<div class="actions"><button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
+    +'<button type="button" class="btn red sm" data-action="submit-push-end" data-nid="'+escHtml(String(id))+'">確認</button></div>');
+}
+async function submitPushEnd(id){
+  const mode = (document.getElementById('push-end-mode')||{}).value || '提早完結';
+  const reason = ((document.getElementById('push-end-reason')||{}).value||'').trim();
+  if(!reason){ alert2('請填寫原因。'); return; }
+  try{
+    await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/end', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ mode, reason })
+    });
+    closeModal();
+    await loadNotifications();
+    currentView = 'pushMine';
+    render();
+  }catch(e){ alert2('操作失敗：'+(e.message||e)); }
+}
+async function togglePushPin(id){
+  try{
+    await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/pin', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+    await loadNotifications();
+    render();
+  }catch(e){ alert2('置頂失敗：'+(e.message||e)); }
+}
+function resolvePushRecipients(){
+  const target = (document.getElementById('push-target')||{}).value || 'all';
+  const stores = ['觀塘','荔枝角','灣仔','屯門'];
+  let ids = [];
+  let desc = '';
+  const me = String(currentUser.id);
+  function activeUsers(){ return users.filter(function(u){ return u && u.active!==false && String(u.id)!==me; }); }
+  if(target==='all'){
+    ids = activeUsers().map(function(u){ return String(u.id); });
+    desc = '全部同事';
+  } else if(target==='stores'){
+    ids = activeUsers().filter(function(u){ return userUnits(u).some(function(x){ return stores.indexOf(x)>=0; }); }).map(function(u){ return String(u.id); });
+    desc = '指定單位：全部門市';
+  } else if(target==='regions'){
+    const picked = Array.from(document.querySelectorAll('.push-region:checked')).map(function(cb){ return cb.value; });
+    ids = activeUsers().filter(function(u){ return userUnits(u).some(function(x){ return picked.indexOf(x)>=0; }); }).map(function(u){ return String(u.id); });
+    desc = '指定地區：'+picked.join('、');
+  } else {
+    ids = Array.from(document.querySelectorAll('#push-recipients input[type=checkbox]:checked')).map(function(cb){ return cb.value; });
+    desc = '指定個人：'+ids.map(function(id){ return userName(id)||id; }).join('、');
+  }
+  ids = [...new Set(ids)];
+  return { ids, desc };
+}
+function onPushTargetChange(){
+  const v = (document.getElementById('push-target')||{}).value;
+  const reg = document.getElementById('push-regions-wrap');
+  const per = document.getElementById('push-persons-wrap');
+  if(reg) reg.style.display = v==='regions' ? '' : 'none';
+  if(per) per.style.display = v==='person' ? '' : 'none';
+}
 function confirmSendPush(){
   if(!requireCloud('推送通知')) return;
-  const category = (document.getElementById('push-cat')||{}).value || '一般通知';
+  const cat = (document.getElementById('push-cat')||{}).value || 'general';
   const priority = (document.getElementById('push-pri')||{}).value || '一般';
   const title = ((document.getElementById('push-title')||{}).value || '').trim();
+  const summary = ((document.getElementById('push-summary')||{}).value || '').trim();
   const content = ((document.getElementById('push-content')||{}).value || '').trim();
-  const recipientIds = selectedPushRecipientIds();
-  if(!content && !pushDraftFiles.length){ alert2('請填寫訊息內容，或至少添加 1 個附件。'); return; }
-  if(!recipientIds.length){ alert2('請至少選擇一位收件人。'); return; }
-  showModal(`<h3>確認推送通知</h3>
-    <p style="font-size:14px;line-height:1.6">
-      類別：<b>${escHtml(category)}</b><br>
-      優先程度：<b>${escHtml(priority)}</b><br>
-      收件人數：<b>${recipientIds.length}</b><br>
-      附件：<b>${pushDraftFiles.length}</b> 個
-    </p>
-    <div class="actions">
-      <button class="btn sm gray" onclick="closeModal()">取消</button>
-      <button class="btn sm green" onclick="closeModal(); sendPushNotification()">確認送出</button>
-    </div>`);
+  const startDate = (document.getElementById('push-start')||{}).value || '';
+  const endDate = (document.getElementById('push-end')||{}).value || '';
+  const resolved = resolvePushRecipients();
+  if(!title){ alert2('請填寫通知標題。'); return; }
+  if(!content && !pushDraftFiles.length){ alert2('請填寫詳細內容，或至少添加 1 個附件。'); return; }
+  if(!resolved.ids.length){ alert2('請至少選擇一位收件人。'); return; }
+  if(!endDate){ alert2('請選擇完結日期。'); return; }
+  const catName = (NOTICE_CAT_META[cat]||NOTICE_CAT_META.general).name;
+  showModal('<h3>確認發布</h3>'
+    +'<p style="font-size:14px;line-height:1.7">類別：<b>'+escHtml(catName)+'</b>｜優先：<b>'+escHtml(priority)+'</b><br>'
+    +'標題：<b>'+escHtml(title)+'</b><br>'
+    +'接收：'+escHtml(resolved.desc)+'（'+resolved.ids.length+' 人）<br>'
+    +'生效：'+escHtml(startDate)+'｜完結：'+escHtml(endDate)+'<br>'
+    +'附件：'+pushDraftFiles.length+' 個</p>'
+    +'<div class="actions"><button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
+    +'<button type="button" class="btn green sm" data-action="submit-push-publish">確定發布</button></div>');
 }
 async function sendPushNotification(){
   if(!requireCloud('推送通知')) return;
-  const category = (document.getElementById('push-cat')||{}).value || '一般通知';
+  const cat = (document.getElementById('push-cat')||{}).value || 'general';
   const priority = (document.getElementById('push-pri')||{}).value || '一般';
   const title = ((document.getElementById('push-title')||{}).value || '').trim();
+  const summary = ((document.getElementById('push-summary')||{}).value || '').trim();
   const content = ((document.getElementById('push-content')||{}).value || '').trim();
-  const recipientIds = selectedPushRecipientIds();
-  if((!content && !pushDraftFiles.length) || !recipientIds.length || !currentUser) return;
+  const startDate = (document.getElementById('push-start')||{}).value || '';
+  const endDate = (document.getElementById('push-end')||{}).value || '';
+  const resolved = resolvePushRecipients();
+  if(!title || (!content && !pushDraftFiles.length) || !resolved.ids.length || !currentUser) return;
   let attachments = [];
-  try{
-    attachments = await uploadPushAttachments();
-  }catch(e){
-    alert2('上傳附件失敗：'+(e.message||e));
-    return;
-  }
+  try{ attachments = await uploadPushAttachments(); }
+  catch(e){ alert2('上傳附件失敗：'+(e.message||e)); return; }
+  const category = (NOTICE_CAT_META[cat]||NOTICE_CAT_META.general).name;
   const payload = {
-    category, priority, title,
-    content: content || (attachments.length ? '（見附件）' : ''),
-    attachments,
-    fromUserId: currentUser.id,
-    fromName: currentUser.name,
-    recipientIds,
-    createdAt: nowStr(),
-    createdAtMs: Date.now()
+    cat, category, priority, title, summary, content: content || (attachments.length?'（見附件）':''),
+    attachments, recipientIds: resolved.ids, recipientDesc: resolved.desc,
+    startDate, endDate, pinned: cat==='urgent' || priority==='緊急'
   };
   try{
-    if(apiEnabled){
-      await apiFetch('/api/notifications', {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify(payload)
-      });
-      await loadNotifications();
-    } else {
-      const id = 'N' + String(notifSeq).padStart(3,'0');
-      notifSeq += 1;
-      notifications.unshift({
-        id,
-        category, priority, title,
-        content: payload.content,
-        attachments,
-        fromUserId: currentUser.id,
-        fromName: currentUser.name,
-        createdAt: payload.createdAt,
-        createdAtMs: payload.createdAtMs,
-        recipients: recipientIds.map(userId => ({ userId, read:false, readAt:null }))
-      });
-      saveNotificationsLocal();
-      refreshMailboxUi();
-    }
-    const titleEl = document.getElementById('push-title');
-    const contentEl = document.getElementById('push-content');
-    if(titleEl) titleEl.value = '';
-    if(contentEl) contentEl.value = '';
+    const item = await apiFetch('/api/notifications', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    await loadNotifications();
     pushDraftFiles = [];
-    pushRenderFileList();
-    const fileInput = document.getElementById('push-files');
-    if(fileInput) fileInput.value = '';
-    togglePushRecipients(false);
-    const catEl = document.getElementById('push-cat');
-    const priEl = document.getElementById('push-pri');
-    if(catEl) catEl.value = '一般通知';
-    if(priEl) priEl.value = '一般';
-    alert2('已推送通知給 '+recipientIds.length+' 位用戶'+(attachments.length?'（含附件 '+attachments.length+' 個）':'')+'。');
-  }catch(e){
-    alert2('推送失敗：'+e.message);
-  }
+    currentView = 'pushMine';
+    render();
+    const id = item && item.id ? item.id : '';
+    showModal('<h3 style="color:#2e7d32">✅ 通知已發布</h3>'
+      +'<p style="font-size:14px">通知編號：<b>'+escHtml(id)+'</b><br>共 '+resolved.ids.length+' 位接收者將收到未讀提示。</p>'
+      +'<div class="actions">'
+      +(id?'<button type="button" class="btn sm" data-call="viewPushStats" data-arg0="'+escHtml(id)+'">查看閱讀統計</button>':'')
+      +'<button type="button" class="btn gray sm" data-action="close-modal" data-call="go" data-arg0="pushMine">我發布的通知</button></div>');
+  }catch(e){ alert2('發布失敗：'+(e.message||e)); }
 }
-function vPushNotify(){
+function vPushCreate(){
+  const today = new Date();
+  const ymd = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0')+'-'+String(today.getDate()).padStart(2,'0');
+  const end = new Date(today.getTime()+14*86400000);
+  const endYmd = end.getFullYear()+'-'+String(end.getMonth()+1).padStart(2,'0')+'-'+String(end.getDate()).padStart(2,'0');
+  const catOpts = Object.keys(NOTICE_CAT_META).map(function(k){
+    const m = NOTICE_CAT_META[k];
+    return '<option value="'+k+'">'+m.icon+' '+m.name+'</option>';
+  }).join('');
+  const priOpts = NOTIF_PRIORITIES.map(function(p){ return '<option'+(p==='一般'?' selected':'')+'>'+p+'</option>'; }).join('');
+  const regionChecks = TRANSFER_STORES_FE.map(function(s){
+    return '<label class="rc-item"><input type="checkbox" class="push-region" value="'+escHtml(s)+'"> '+escHtml(s)+'</label>';
+  }).join('');
   const cands = pushRecipientCandidates();
-  const catOpts = NOTIF_CATEGORIES.map(c=>`<option value="${c}"${c==='一般通知'?' selected':''}>${c}</option>`).join('');
-  const priOpts = NOTIF_PRIORITIES.map(p=>`<option value="${p}"${p==='一般'?' selected':''}>${p}</option>`).join('');
   const rows = cands.length
-    ? cands.map(u=>`<label class="rc-item"><input type="checkbox" value="${u.id}"> ${escHtml(u.name)} <span style="color:#888">（${escHtml(roleLabel(u))}）</span></label>`).join('')
+    ? cands.map(function(u){ return '<label class="rc-item"><input type="checkbox" value="'+u.id+'"> '+escHtml(u.name)+' <span style="color:#888">（'+escHtml(roleLabel(u))+'）</span></label>'; }).join('')
     : '<p style="color:#888;font-size:13px;margin:0">目前沒有可選收件人。</p>';
   setTimeout(pushRenderFileList, 0);
-  return `<div class="card">
-    <h2>📢 推送通知</h2>
-    <p style="font-size:13px;color:#666;margin-bottom:8px">填寫內容並選擇收件人，送出後對方可在「信箱通知」查看並標為已讀。訊息可附加檔案。</p>
-    <label>通知類別</label>
-    <select id="push-cat">${catOpts}</select>
-    <label>優先程度</label>
-    <select id="push-pri">${priOpts}</select>
-    <label>標題（選填）</label>
-    <input type="text" id="push-title" placeholder="簡短標題，可留空">
-    <label>訊息內容</label>
-    <textarea id="push-content" placeholder="輸入要推送的內容（可與附件擇一或同時使用）" style="min-height:110px"></textarea>
-    <label>附件</label>
-    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0">
-      <button type="button" class="btn green sm" onclick="document.getElementById('push-files').click()">📎 添加附件</button>
-      <span style="font-size:12px;color:#888">可多選、可多次添加（圖片／PDF／Office 等）</span>
-    </div>
-    <input type="file" id="push-files" multiple onchange="pushOnFilesPick(this)" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">
-    <div id="push-file-list">${pushFileListHtml()}</div>
-    <label>收件人（可多選）</label>
-    <div class="recipient-box" id="push-recipients">
-      <div class="rc-tools">
-        <button type="button" class="btn sm gray" onclick="togglePushRecipients(true)">全選</button>
-        <button type="button" class="btn sm gray" onclick="togglePushRecipients(false)">取消全選</button>
-      </div>
-      ${rows}
-    </div>
-    <button type="button" class="btn green" onclick="confirmSendPush()">送出推送</button>
-  </div>`;
+  return '<div class="card"><h2>➕ 新增通知</h2>'
+    +'<div class="info-banner" style="background:#ede7f6;border:1px solid #b39ddb;color:#4a2c6b;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:13px">發布人：<b>'+escHtml(currentUser.name)+'</b>｜不可匿名；發布後保留操作記錄。</div>'
+    +'<label>通知類別</label><select id="push-cat">'+catOpts+'</select>'
+    +'<label>優先程度</label><select id="push-pri">'+priOpts+'</select>'
+    +'<label>通知標題</label><input type="text" id="push-title" placeholder="例如：WS-777 新產品上架通知">'
+    +'<label>通知摘要（列表顯示）</label><input type="text" id="push-summary" placeholder="簡短一句概括">'
+    +'<label>詳細內容</label><textarea id="push-content" style="min-height:110px" placeholder="支援分行說明"></textarea>'
+    +'<label>接收對象</label><select id="push-target" onchange="onPushTargetChange()">'
+    +'<option value="all">全部同事</option>'
+    +'<option value="stores">指定單位：全部門市（四間港店）</option>'
+    +'<option value="regions">指定地區（多選）</option>'
+    +'<option value="person">指定個人</option></select>'
+    +'<div id="push-regions-wrap" style="display:none;margin-top:8px;padding:10px;background:#f8f6fb;border-radius:8px">'+regionChecks+'</div>'
+    +'<div id="push-persons-wrap" style="display:none;margin-top:8px">'
+    +'<div class="recipient-box" id="push-recipients"><div class="rc-tools">'
+    +'<button type="button" class="btn sm gray" onclick="togglePushRecipients(true)">全選</button>'
+    +'<button type="button" class="btn sm gray" onclick="togglePushRecipients(false)">取消全選</button></div>'+rows+'</div></div>'
+    +'<label>生效日期</label><input type="date" id="push-start" value="'+ymd+'">'
+    +'<label>完結日期</label><input type="date" id="push-end" value="'+endYmd+'">'
+    +'<label>附件</label><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0">'
+    +'<button type="button" class="btn green sm" onclick="document.getElementById(\'push-files\').click()">📎 添加附件</button></div>'
+    +'<input type="file" id="push-files" multiple onchange="pushOnFilesPick(this)" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">'
+    +'<div id="push-file-list">'+pushFileListHtml()+'</div>'
+    +'<button type="button" class="btn green" onclick="confirmSendPush()">預覽並發布</button></div>';
+}
+function vPushLogs(){
+  if(!(isAdmin()||isManager())) return '<div class="card"><h2>📜 操作記錄</h2><p>僅管理層可查看。</p></div>';
+  const rows = [];
+  announcementList().forEach(function(n){
+    (n.logs||[]).forEach(function(l){
+      rows.push({ time:l.time||'', user:l.user||l.userName||'', action:l.action||'', detail:(n.id||'')+'｜'+(l.detail||'') });
+    });
+  });
+  (moduleLogs.push||[]).forEach(function(l){
+    rows.push({ time:l.time||'', user:l.user||l.userName||'', action:l.action||'', detail:l.detail||'' });
+  });
+  rows.sort(function(a,b){ return String(b.time).localeCompare(String(a.time)); });
+  return '<div class="card"><h2>📜 系統操作記錄（管理層）</h2>'
+    +'<div class="table-wrap"><table><tr><th>時間</th><th>操作人員</th><th>操作</th><th>詳情</th></tr>'
+    +(rows.length?rows.slice(0,300).map(function(l){
+      return '<tr><td style="font-size:11px;white-space:nowrap">'+escHtml(l.time)+'</td><td>'+escHtml(l.user)+'</td><td><b>'+escHtml(l.action)+'</b></td><td style="font-size:12px">'+escHtml(l.detail)+'</td></tr>';
+    }).join(''):'<tr><td colspan="4" style="color:#888;text-align:center">暫無記錄</td></tr>')
+    +'</table></div></div>';
+}
+function vPushNotify(){ return vPushCreate(); }
+function maybePromptUrgentNotices(){
+  if(!currentUser || pushUrgentPrompted) return;
+  const list = myUnreadAnnouncements().filter(function(n){ return noticeCatKey(n)==='urgent'; });
+  if(!list.length) return;
+  pushUrgentPrompted = true;
+  const n = list[0];
+  showModal('<h3>🚨 你有未讀的緊急通知</h3>'
+    +'<p style="font-size:14px;line-height:1.6"><b>'+escHtml(n.title||'')+'</b><br>'
+    +'<span style="font-size:12px;color:#888">發布人：'+escHtml(n.fromName||'')+'｜'+escHtml(n.createdAt||'')+(n.endDate?'｜有效期至 '+escHtml(n.endDate):'')+'</span></p>'
+    +'<p style="font-size:13px;color:#c62828;margin-top:8px">你必須進入通知閱讀完整內容並剔選確認，才會計算為已讀。</p>'
+    +'<div class="actions"><button type="button" class="btn gray sm" data-action="close-modal">暫時關閉</button>'
+    +'<button type="button" class="btn red sm" data-action="close-modal" data-call="openPushNotice" data-arg0="'+escHtml(String(n.id))+'">立即閱讀</button></div>');
 }
 
 /* ═══════════ 貨品調動｜庫存查詢／調動記錄／庫存校正 ═══════════ */
@@ -2583,6 +3018,7 @@ function enterAppAs(user, opts){
   if(typeof flushCloudSaves==='function'){
     flushCloudSaves().catch(function(e){ if(typeof noteCloudError==='function') noteCloudError(e); });
   }
+  setTimeout(function(){ try{ maybePromptUrgentNotices(); }catch(_e){} }, 400);
 }
 async function doLogin(){
   const u = document.getElementById('login-user').value.trim();
@@ -2655,7 +3091,7 @@ function setModule(m){
     currentView = isPersonal() ? 'myTasks' : 'home';
     listType='dev';
   }
-  else if(m==='push'){ currentView='pushNotify'; }
+  else if(m==='push'){ currentView='pushAll'; pushFilterCat='全部'; pushFilterRead='全部'; pushFilterKw=''; }
   else if(m==='createStaff'){ currentView='createStaff'; }
   else if(m==='settings'){ currentView='settings'; }
   else if(m==='transfer'){ currentView='transferInventory'; }
@@ -2686,7 +3122,22 @@ function render(){
     if(isAdmin()) items.push(['addProject','建立項目']);
     if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
   } else if(currentModule==='push'){
-    items = [['pushNotify','撰寫推送']];
+    const unreadN = myUnreadAnnouncements().length;
+    const readN = myActiveAnnouncements().filter(function(n){ const s=myNoticeReader(n); return s&&s.status==='read'; }).length;
+    const endedN = announcementList().filter(function(n){ return n.status!=='進行中' && (isNoticeRecipient(n)||String(n.fromUserId)===String(currentUser.id)||isAdmin()||isManager()); }).length;
+    const mineN = announcementList().filter(function(n){ return String(n.fromUserId)===String(currentUser.id)||isAdmin()||isManager(); }).length;
+    const allN = (isAdmin()||isManager())
+      ? announcementList().filter(function(n){ return n.status==='進行中'; }).length
+      : myActiveAnnouncements().length;
+    items = [
+      ['pushAll','所有通知（'+allN+'）'],
+      ['pushUnread','未回覆／未閱讀'+(unreadN?'（'+unreadN+'）':'')],
+      ['pushRead','已讀取（'+readN+'）'],
+      ['pushEnded','已完結（'+endedN+'）'],
+      ['pushMine','我發布的（'+mineN+'）'],
+      ['pushCreate','＋ 新增通知']
+    ];
+    if(isAdmin()||isManager()) items.push(['pushLogs','操作記錄']);
   } else if(currentModule==='createStaff'){
     items = [];
   } else if(currentModule==='settings'){
@@ -2716,7 +3167,16 @@ function render(){
     dailyUnit:()=>vDailyUnit(currentUser), dailyRecords:()=>vDailyRecords(currentUser),
     dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser),
     dailyOpLogs:()=>vDailyOpLogs(currentUser),
-    pushNotify: vPushNotify,
+    pushNotify: vPushCreate,
+    pushAll: vPushAll,
+    pushUnread: vPushUnread,
+    pushRead: vPushRead,
+    pushEnded: vPushEnded,
+    pushMine: vPushMine,
+    pushCreate: vPushCreate,
+    pushDetail: vPushDetail,
+    pushStats: vPushStats,
+    pushLogs: vPushLogs,
     createStaff: vCreateStaff,
     settings: vPersonalSettings,
     transferInventory: vTransferInventory,
@@ -2734,7 +3194,7 @@ function go(v){
   currentView=v; currentProject=null;
   if(v==='devList'){ listType='dev'; currentModule='production'; }
   if(v==='repList'){ listType='rep'; currentModule='replenishment'; }
-  if(v==='pushNotify'){ currentModule='push'; }
+  if(v==='pushNotify' || v==='pushAll' || v==='pushUnread' || v==='pushRead' || v==='pushEnded' || v==='pushMine' || v==='pushCreate' || v==='pushDetail' || v==='pushStats' || v==='pushLogs'){ currentModule='push'; }
   if(v==='createStaff'){ currentModule='createStaff'; }
   if(v==='settings'){ currentModule='settings'; }
   if(v==='transferInventory' || v==='transferHistory' || v==='transferStockLog' || v==='transferProducts' || v==='transferProductLog'){ currentModule='transfer'; }
