@@ -220,12 +220,24 @@ export async function exportUsersToDrive(users) {
 
   // 優先用明確檔案 ID（避開「服務帳戶不能新建」與 list 找不到）
   const overrideId = getUsersFileIdOverride();
+  // 已為本專案建立的 users.json（Store_system_test）；無 env 時作後援
+  const FALLBACK_USERS_FILE_ID = '1WkFU5XmnNxwxWGtByeZcWlPcv9crc1pD';
   let fileId;
   if (overrideId) {
     fileId = await updateJsonFileById(overrideId, payload);
     fileIdCache.set(USERS_NAME, fileId);
   } else {
-    fileId = await writeJsonFile(USERS_NAME, payload);
+    try {
+      fileId = await writeJsonFile(USERS_NAME, payload);
+    } catch (e) {
+      const msg = String(e.message || e);
+      if (/儲存配額|storageQuota|無法在「我的雲端硬碟」新建/i.test(msg)) {
+        fileId = await updateJsonFileById(FALLBACK_USERS_FILE_ID, payload);
+        fileIdCache.set(USERS_NAME, fileId);
+      } else {
+        throw e;
+      }
+    }
   }
 
   return {

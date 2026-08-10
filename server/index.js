@@ -166,9 +166,9 @@ function getAppVersionInfo() {
   };
 }
 
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', async (req, res) => {
   const ver = getAppVersionInfo();
-  res.json({
+  const payload = {
     ok: true,
     configured: mongoConfigured(),
     mongoConfigured: mongoConfigured(),
@@ -180,7 +180,18 @@ app.get('/api/health', (_req, res) => {
     version: ver.version,
     buildId: ver.buildId,
     builtAt: ver.builtAt,
-  });
+  };
+  // ?driveProbe=1 → 不需登入的 Drive 連線檢查（不含金鑰內容）
+  if (String(req.query.driveProbe || '') === '1' && driveConfigured()) {
+    try {
+      payload.driveProbe = await getDriveExportStatus();
+    } catch (e) {
+      payload.driveProbe = { ok: false, error: String(e.message || e) };
+    }
+  } else if (String(req.query.driveProbe || '') === '1') {
+    payload.driveProbe = { ok: false, configured: false, error: 'Drive 未設定' };
+  }
+  res.json(payload);
 });
 
 app.get('/api/version', (_req, res) => {
