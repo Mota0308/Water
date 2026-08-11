@@ -19,9 +19,10 @@
   .topbar .brand-wrap { display:flex; align-items:center; gap:10px; flex-wrap:wrap; position:relative; }
   .topbar .brand { font-weight:bold; font-size:15px; }
   .topbar .userinfo { font-size:13px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-  .topbar button { background:#fff; color:#37474f; border:none; padding:5px 12px; border-radius:6px; cursor:pointer; font-size:13px; }
+  .topbar button { background:#fff; color:#37474f; border:none; padding:5px 12px; border-radius:6px; cursor:pointer; font-size:13px; box-shadow:0 1px 2px rgba(0,0,0,.12); }
   .mailbox-btn { display:inline-flex; align-items:center; gap:6px; background:#546e7a !important; color:#fff !important; }
   .mailbox-btn:hover { background:#607d8b !important; }
+  .mailbox-btn:active { background:#455a64 !important; }
   .mailbox-badge {
     display:inline-flex; align-items:center; justify-content:center;
     min-width:18px; height:18px; padding:0 5px; border-radius:9px;
@@ -42,7 +43,9 @@
     background:#f7f9fc; border-bottom:1px solid #e5e9f0;
     padding:14px 16px; font-weight:bold; color:#37474f; flex-shrink:0;
   }
-  .mailbox-modal .mb-head button { background:#eceff1; color:#37474f; border:none; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; }
+  .mailbox-modal .mb-head button { background:#eceff1; color:#37474f; border:none; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; box-shadow:0 1px 2px rgba(0,0,0,.08); }
+  .mailbox-modal .mb-head button:hover { background:#e0e5ea; }
+  .mailbox-modal .mb-head button:active { background:#cfd8dc; }
   .mailbox-tabs {
     display:flex; gap:0; border-bottom:1px solid #e5e9f0; background:#fff; flex-shrink:0;
   }
@@ -98,7 +101,9 @@
     background:#f7f9fc; border-bottom:1px solid #e5e9f0; padding:14px 16px; flex-shrink:0;
   }
   .mailbox-detail .md-head h3 { margin:0; font-size:16px; color:#37474f; line-height:1.4; }
-  .mailbox-detail .md-head button { background:#eceff1; color:#37474f; border:none; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; flex-shrink:0; }
+  .mailbox-detail .md-head button { background:#eceff1; color:#37474f; border:none; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; flex-shrink:0; box-shadow:0 1px 2px rgba(0,0,0,.08); }
+  .mailbox-detail .md-head button:hover { background:#e0e5ea; }
+  .mailbox-detail .md-head button:active { background:#cfd8dc; }
   .mailbox-detail .md-body { padding:14px 16px; overflow:auto; flex:1; min-height:80px; }
   .mailbox-detail .md-meta { font-size:12px; color:#78909c; margin-bottom:10px; line-height:1.5; }
   .mailbox-detail .md-content { font-size:14px; white-space:pre-wrap; color:#37474f; line-height:1.55; }
@@ -113,7 +118,8 @@
   }
   .mailbox-detail .md-read-toggle.is-unread { background:#bbdefb; color:#0d47a1; }
   .mailbox-detail .md-read-toggle.is-read { background:#eceff1; color:#546e7a; }
-  .mailbox-detail .md-read-toggle:hover { filter:brightness(.96); }
+  .mailbox-detail .md-read-toggle:hover { filter:brightness(1.04); }
+  .mailbox-detail .md-read-toggle:active { filter:brightness(.92); }
   .inv-low { color:#c62828; font-weight:bold; }
   .inv-ok { color:#263238; }
   .tf-apply-products { display:flex; flex-direction:column; gap:6px; margin-top:10px; max-height:280px; overflow:auto; }
@@ -146,11 +152,11 @@
   .recipient-box label.rc-item input { width:auto; }
 
   .module-nav { display:flex; gap:6px; background:#eceff1; padding:8px 12px; overflow-x:auto; border-bottom:1px solid #ddd; }
-  .module-nav button { border:none; background:#fff; padding:8px 14px; border-radius:20px; cursor:pointer; white-space:nowrap; font-size:14px; font-weight:600; color:#37474f; }
-  .module-nav button.active { background:#37474f; color:#fff; }
+  .module-nav button { border:none; background:#fff; padding:8px 14px; border-radius:20px; cursor:pointer; white-space:nowrap; font-size:14px; font-weight:600; color:#37474f; box-shadow:0 1px 2px rgba(0,0,0,.06); }
+  .module-nav button.active { background:#37474f; color:#fff; box-shadow:0 2px 8px rgba(55,71,79,.28); }
   .nav { display:flex; gap:6px; background:#fff; padding:8px 12px; overflow-x:auto; border-bottom:1px solid #ddd; }
-  .nav button { border:none; background:#eef2f7; padding:8px 14px; border-radius:20px; cursor:pointer; white-space:nowrap; font-size:14px; }
-  .nav button.active { background:#37474f; color:#fff; }
+  .nav button { border:none; background:#eef2f7; padding:8px 14px; border-radius:20px; cursor:pointer; white-space:nowrap; font-size:14px; box-shadow:0 1px 2px rgba(0,0,0,.05); }
+  .nav button.active { background:#37474f; color:#fff; box-shadow:0 2px 8px rgba(55,71,79,.28); }
 
   .card { background:#fff; border-radius:10px; padding:16px; margin-bottom:14px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
   .card h2 { font-size:17px; margin-bottom:12px; color:#37474f; }
@@ -187,10 +193,66 @@
   input[type=text],input[type=password],input[type=date],select,textarea {
     width:100%; padding:9px 10px; border:1px solid #ccd4de; border-radius:6px; font-size:14px; }
   textarea { resize:vertical; min-height:70px; }
-  .btn { background:#37474f; color:#fff; border:none; padding:10px 20px; border-radius:6px; cursor:pointer; font-size:14px; margin-top:12px; }
+  /* 全站按鈕點擊質感 */
+  button, .btn, a.btn {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    user-select: none;
+  }
+  button:not(:disabled), .btn:not(:disabled), a.btn {
+    transition:
+      transform .12s cubic-bezier(.2,.8,.2,1),
+      box-shadow .15s ease,
+      background-color .15s ease,
+      filter .12s ease,
+      color .12s ease,
+      border-color .15s ease,
+      opacity .15s ease;
+  }
+  button:not(:disabled):hover, .btn:not(:disabled):hover, a.btn:hover {
+    filter: brightness(1.05);
+  }
+  button:not(:disabled):active, .btn:not(:disabled):active, a.btn:active {
+    transform: translateY(1px) scale(.97);
+    filter: brightness(.93);
+  }
+  button:focus-visible, .btn:focus-visible, a.btn:focus-visible {
+    outline: 2px solid #1565c0;
+    outline-offset: 2px;
+  }
+  button:disabled, .btn:disabled {
+    opacity: .55;
+    cursor: not-allowed;
+    transform: none !important;
+    filter: none !important;
+    box-shadow: none !important;
+  }
+  .btn {
+    background:#37474f; color:#fff; border:none; padding:10px 20px; border-radius:6px; cursor:pointer; font-size:14px; margin-top:12px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.12) inset, 0 1px 2px rgba(0,0,0,.14), 0 3px 8px rgba(0,0,0,.12);
+  }
+  .btn:not(:disabled):hover {
+    box-shadow: 0 1px 0 rgba(255,255,255,.16) inset, 0 2px 4px rgba(0,0,0,.16), 0 6px 14px rgba(0,0,0,.14);
+    transform: translateY(-1px);
+  }
+  .btn:not(:disabled):active {
+    box-shadow: 0 1px 0 rgba(0,0,0,.12) inset, 0 1px 2px rgba(0,0,0,.18);
+    transform: translateY(1px) scale(.98);
+  }
   .btn.sm { padding:5px 12px; font-size:12px; margin-top:0; }
   .btn.green{background:#2e7d32} .btn.warn{background:#ef6c00} .btn.red{background:#c62828}
   .btn.gray{background:#78909c} .btn.purple{background:#7b1fa2}
+  .btn.green:not(:disabled):hover{background:#348f39}
+  .btn.warn:not(:disabled):hover{background:#f57c00}
+  .btn.red:not(:disabled):hover{background:#d32f2f}
+  .btn.gray:not(:disabled):hover{background:#90a4ae}
+  .btn.purple:not(:disabled):hover{background:#8e24aa}
+  @media (prefers-reduced-motion: reduce) {
+    button, .btn, a.btn {
+      transition: none !important;
+      transform: none !important;
+    }
+  }
 
   .filters { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
   .filters select, .filters input { width:auto; min-width:120px; font-size:13px; padding:7px 8px; }
@@ -225,8 +287,10 @@
 
   /* 分頁 */
   .tabs { display:flex; gap:4px; border-bottom:2px solid #e5e9f0; margin-bottom:14px; overflow-x:auto; }
-  .tabs button { border:none; background:none; padding:9px 14px; cursor:pointer; font-size:14px; color:#666; white-space:nowrap; border-bottom:3px solid transparent; }
-  .tabs button.active { color:#37474f; font-weight:bold; border-bottom-color:#37474f; }
+  .tabs button { border:none; background:none; padding:9px 14px; cursor:pointer; font-size:14px; color:#666; white-space:nowrap; border-bottom:3px solid transparent; border-radius:6px 6px 0 0; }
+  .tabs button:hover { color:#37474f; background:#f5f7fa; }
+  .tabs button.active { color:#37474f; font-weight:bold; border-bottom-color:#37474f; background:transparent; }
+  .tabs button:active { transform: translateY(1px) scale(.98); }
 
   /* 登入 */
   .login-wrap { max-width:400px; margin:40px auto; padding:0 16px; }
@@ -278,9 +342,12 @@
   .app-update-banner .aub-actions { display:flex; gap:8px; flex-shrink:0; }
   .app-update-banner button {
     border:none; border-radius:6px; padding:8px 14px; cursor:pointer; font-size:13px; font-weight:bold;
+    box-shadow:0 1px 3px rgba(0,0,0,.18);
   }
   .app-update-banner .aub-update { background:#fff; color:#1b5e20; }
   .app-update-banner .aub-later { background:rgba(255,255,255,.18); color:#fff; }
+  .app-update-banner .aub-update:hover { background:#f1f8f1; }
+  .app-update-banner .aub-later:hover { background:rgba(255,255,255,.28); }
   @media (max-width:600px){ body{font-size:14px} .stat .num{font-size:20px} .stage-body{padding-left:14px} }
 </style>
 </head>
