@@ -4752,6 +4752,8 @@ var dailyUnitFilter='全部';
 var dailyHistoryUnit='全部';
 var dailyHistoryStatus='全部';
 var dailyHistoryKw='';
+var dailyHistoryFrom='';
+var dailyHistoryTo='';
 var dailyProgressUnit=null;
 var dailyStateCache=null;
 var dailyPersistSeq=0;
@@ -4864,6 +4866,8 @@ function mkWork(o){
     completedBy:o.completedBy||null,
     completedByName:o.completedByName||null,
     createdBy:o.createdBy||'system',
+    createdAt:o.createdAt||dailyNowStr(),
+    createdDate:o.createdDate||dailyTodayStr(),
     updatedAt:o.updatedAt||dailyNowStr()
   };
 }
@@ -5062,6 +5066,11 @@ function ensureDailySeed(){
     if(!Array.isArray(w.attachments)) w.attachments=[];
     if(!Array.isArray(w.assigneeIds)) w.assigneeIds=[];
     if(!Array.isArray(w.assigneeNames)) w.assigneeNames=[];
+    if(!w.createdDate){
+      var d=workCreatedDate(w);
+      if(d) w.createdDate=d;
+    }
+    if(!w.createdAt) w.createdAt=w.updatedAt||dailyNowStr();
   });
   saveDailyState(s);
   generateRecurringForToday();
@@ -5322,8 +5331,33 @@ function setDailyUnitFilter(unit){ dailyUnitFilter=unit||'全部'; render(); }
 function setDailyHistoryUnit(unit){ dailyHistoryUnit=unit||'全部'; render(); }
 function setDailyHistoryStatus(st){ dailyHistoryStatus=st||'全部'; render(); }
 function setDailyHistoryKw(v){ dailyHistoryKw=String(v||''); render(); }
+function setDailyHistoryFrom(v){ dailyHistoryFrom=String(v||''); render(); }
+function setDailyHistoryTo(v){ dailyHistoryTo=String(v||''); render(); }
+/** 從各種時間字串抽出 YYYY-MM-DD */
+function dailyParseDateYmd(v){
+  if(v==null || v==='') return '';
+  var s=String(v).trim();
+  var m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if(m) return m[1]+'-'+String(m[2]).padStart(2,'0')+'-'+String(m[3]).padStart(2,'0');
+  m=s.match(/^(\d{4})年(\d{1,2})月(\d{1,2})日/);
+  if(m) return m[1]+'-'+String(m[2]).padStart(2,'0')+'-'+String(m[3]).padStart(2,'0');
+  m=s.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})/);
+  if(m) return m[1]+'-'+String(m[2]).padStart(2,'0')+'-'+String(m[3]).padStart(2,'0');
+  return '';
+}
+/** 工作建立日：createdDate／createdAt → dueDate → updatedAt */
+function workCreatedDate(w){
+  if(!w) return '';
+  var d=dailyParseDateYmd(w.createdDate);
+  if(d) return d;
+  d=dailyParseDateYmd(w.createdAt);
+  if(d) return d;
+  d=dailyParseDateYmd(w.dueDate);
+  if(d) return d;
+  return dailyParseDateYmd(w.updatedAt);
+}
 function getDailyHistoryWorks(){
-  var today=todayStr();
+  var today=dailyTodayStr();
   var list=(loadDailyState().works||[]).filter(function(w){
     if(!w) return false;
     // 過往：期限早於今天，或已完成／已取消（含今日已完成）
@@ -5337,6 +5371,18 @@ function getDailyHistoryWorks(){
   if(dailyHistoryStatus==='done') list=list.filter(function(w){ return w.status==='done'; });
   else if(dailyHistoryStatus==='cancelled') list=list.filter(function(w){ return w.status==='cancelled'; });
   else if(dailyHistoryStatus==='open') list=list.filter(function(w){ return w.status==='open'; });
+  var from=dailyParseDateYmd(dailyHistoryFrom);
+  var to=dailyParseDateYmd(dailyHistoryTo);
+  if(from && to && from>to){ var tmp=from; from=to; to=tmp; }
+  if(from || to){
+    list=list.filter(function(w){
+      var d=workCreatedDate(w);
+      if(!d) return false;
+      if(from && d<from) return false;
+      if(to && d>to) return false;
+      return true;
+    });
+  }
   var kw=String(dailyHistoryKw||'').trim().toLowerCase();
   if(kw){
     list=list.filter(function(w){
@@ -5347,6 +5393,9 @@ function getDailyHistoryWorks(){
     });
   }
   list.sort(function(a,b){
+    var ca=workCreatedDate(a);
+    var cb=workCreatedDate(b);
+    if(ca!==cb) return String(cb).localeCompare(String(ca));
     var da=String(b.completedAt||b.dueDate||b.updatedAt||'');
     var db=String(a.completedAt||a.dueDate||a.updatedAt||'');
     var c=da.localeCompare(db);
@@ -5766,6 +5815,7 @@ function dailyWorkRows(list,user,opts){
   var readonly=!!opts.readonly;
   var mirrors=opts.mirrors||[];
   var pinAdhoc=opts.pinAdhoc!==false; // 今日工作等：突發置頂
+  var showCreated=!!opts.showCreatedDate;
   if(!list.length&&!mirrors.length) return '<p style="color:#888">沒有工作。</p>';
   var showAdmin=dailyCanManage(user)&&!readonly;
   var sorted=(list||[]).slice();
@@ -5809,18 +5859,21 @@ function dailyWorkRows(list,user,opts){
           (isAdhoc?'<div style="font-size:11px;color:'+assignColor+';margin-top:4px">指派：'+dailyEsc(workAssigneesLabel(w))+'</div>':'')+
           dailyAttachHtml(w,user,readonly)+'</td>'+
         '<td>'+dailyEsc(w.unit)+'</td><td>'+dailyKindTag(w)+'</td><td>'+priorityTag(w.priority)+'</td>'+
+        (showCreated?'<td style="white-space:nowrap;font-size:12px">'+dailyEsc(workCreatedDate(w)||'—')+'</td>':'')+
         '<td>'+dailyEsc(w.dueDate||'—')+'</td><td>'+dailyStatusTag(w)+'</td><td>'+doneInfo+'</td>'+
         (showAdmin?'<td><div class="actions-row">'+admin+'</div></td>':'')+
         '</tr>';
     }).join('');
-  body+=mirrors.map(function(t){ return dailyProjectMirrorRow(t,readonly); }).join('');
+  body+=mirrors.map(function(t){ return dailyProjectMirrorRow(t,readonly,showCreated); }).join('');
   return '<div class="table-wrap"><table><thead><tr>'+
     (readonly?'':'<th style="width:40px">剔選</th>')+
-    '<th>工作</th><th>單位</th><th>類型</th><th>優先</th><th>期限</th><th>狀態</th><th>完成資訊</th>'+
+    '<th>工作</th><th>單位</th><th>類型</th><th>優先</th>'+
+    (showCreated?'<th>建立日</th>':'')+
+    '<th>期限</th><th>狀態</th><th>完成資訊</th>'+
     (showAdmin?'<th>管理</th>':'')+
     '</tr></thead><tbody>'+body+'</tbody></table></div>';
 }
-function dailyProjectMirrorRow(t,readonly){
+function dailyProjectMirrorRow(t,readonly,showCreated){
   var submitted=t.status==='待確認';
   var tick='';
   if(!readonly){
@@ -5841,6 +5894,7 @@ function dailyProjectMirrorRow(t,readonly){
     (readonly?'':'<td>'+tick+'</td>')+
     '<td><b>'+dailyEsc(title)+'</b><div style="font-size:12px;color:#777;margin-top:2px">'+dailyEsc(t.pname)+'</div>'+extra+'</td>'+
     '<td>—</td><td>'+typeTag(t.type)+'</td><td>—</td>'+
+    (showCreated?'<td>—</td>':'')+
     '<td>'+dailyEsc(t.deadline||'—')+'</td><td>'+stTag(t.status)+'</td><td>—</td></tr>';
 }
 function dailyToggleProject(pid,idx,el){
@@ -6100,17 +6154,23 @@ function vDailyHistory(user){
   }).join('');
   return '<div class="card">'+
     '<h2>📚 歷史記錄</h2>'+
-    '<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">顯示過往工作（期限早於今天，或已完成／已取消）。附件可點擊在彈窗內檢視。</p>'+
+    '<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">顯示過往工作（期限早於今天，或已完成／已取消）。可依<strong>建立日</strong>起迄篩選（可只填一邊）。附件可點擊在彈窗內檢視。</p>'+
     '<div class="filters">'+
     '<input type="text" placeholder="搜尋標題／內容／完成人" value="'+escHtml(dailyHistoryKw)+'" onchange="setDailyHistoryKw(this.value)" onkeydown="if(event.key===\'Enter\'){setDailyHistoryKw(this.value)}">'+
     '<select onchange="setDailyHistoryUnit(this.value)">'+unitOpts+'</select>'+
     '<select onchange="setDailyHistoryStatus(this.value)">'+statusOpts+'</select>'+
+    '<label style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:12px;color:#666">建立由'+
+      '<input type="date" value="'+escHtml(dailyHistoryFrom)+'" onchange="setDailyHistoryFrom(this.value)" style="width:auto;min-width:140px">'+
+    '</label>'+
+    '<label style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:12px;color:#666">至'+
+      '<input type="date" value="'+escHtml(dailyHistoryTo)+'" onchange="setDailyHistoryTo(this.value)" style="width:auto;min-width:140px">'+
+    '</label>'+
     '</div>'+
     '<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+list.length+' 筆</p>'+
     '</div>'+
     '<div class="card">'+
     (list.length
-      ? dailyWorkRows(list,user,{readonly:true,pinAdhoc:false})
+      ? dailyWorkRows(list,user,{readonly:true,pinAdhoc:false,showCreatedDate:true})
       : '<p style="color:#888">沒有符合條件的歷史記錄。</p>')+
     '</div>';
 }
