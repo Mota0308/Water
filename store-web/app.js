@@ -5511,23 +5511,74 @@ function dailyToggleTemplate(id,active){
   setTemplateActive(id,active,currentUser);
   render();
 }
-function dailyDownloadAttach(workId,idx){
-  var w=loadDailyState().works.find(function(x){ return x.id===workId; });
-  if(!w||!Array.isArray(w.attachments)||!w.attachments[idx]) return;
-  var f=ensureFilePayload(w.attachments[idx]);
+function dailyIsImageFile(f,name){
+  var mime=String((f&&f.mimeType)||'').toLowerCase();
+  if(mime.indexOf('image/')===0) return true;
+  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(String(name||''));
+}
+function dailyIsPdfFile(f,name){
+  var mime=String((f&&f.mimeType)||'').toLowerCase();
+  if(mime==='application/pdf') return true;
+  return /\.pdf$/i.test(String(name||''));
+}
+function dailyShowAttachPreview(f){
+  f=ensureFilePayload(f);
+  var name=(f&&f.name)?f.name:'附件';
   var href=fileHref(f);
   if(!href || href==='#'){ alert2('無法開啟此附件。'); return; }
-  // 新分頁檢視（不強制 download，圖片／PDF 可直接預覽）
-  window.open(href, '_blank', 'noopener');
+  var safeHref=String(href).replace(/"/g,'&quot;');
+  var body='';
+  if(dailyIsImageFile(f,name)){
+    body='<div style="text-align:center;background:#f5f7fa;border-radius:8px;padding:10px">'+
+      '<img src="'+safeHref+'" alt="'+dailyEsc(name)+'" style="max-width:100%;max-height:70vh;object-fit:contain;border-radius:4px">'+
+      '</div>';
+  }else if(dailyIsPdfFile(f,name)){
+    body='<iframe src="'+safeHref+'" title="'+dailyEsc(name)+'" style="width:100%;height:70vh;border:1px solid #e0e5ec;border-radius:8px;background:#fafafa"></iframe>';
+  }else{
+    body='<p style="font-size:14px;color:#555;line-height:1.6">此檔案類型無法在彈窗內直接預覽，請用下方按鈕開啟。</p>'+
+      '<p style="margin-top:8px"><a class="file-link" href="'+safeHref+'" target="_blank" rel="noopener">在新分頁開啟／下載</a></p>';
+  }
+  var el=document.getElementById('modal-content');
+  if(el) el.classList.add('modal-wide');
+  showModal(
+    '<h3>📎 '+dailyEsc(name)+'</h3>'+body+
+    '<div class="actions">'+
+      '<a class="btn gray sm" href="'+safeHref+'" target="_blank" rel="noopener" style="text-decoration:none;display:inline-flex;align-items:center">新分頁開啟</a>'+
+      '<button type="button" class="btn sm" onclick="closeModal()">關閉</button>'+
+    '</div>'
+  );
 }
-function dailyFileViewHtml(f){
+function dailyPreviewAttach(workId,idx){
+  var w=loadDailyState().works.find(function(x){ return x.id===workId; });
+  if(!w||!Array.isArray(w.attachments)||w.attachments[idx]==null){
+    alert2('找不到此附件。');
+    return;
+  }
+  dailyShowAttachPreview(w.attachments[idx]);
+}
+function dailyDownloadAttach(workId,idx){
+  dailyPreviewAttach(workId,idx);
+}
+function dailyFileViewHtml(f,workId,idx){
   f=ensureFilePayload(f);
   var name=f&&f.name?f.name:'附件';
   var href=fileHref(f);
   if(!href || href==='#'){
     return '<span style="color:#999;margin:2px 8px 2px 0;display:inline-block">📎 '+dailyEsc(name)+'</span>';
   }
-  return '<a class="file-link" href="'+String(href).replace(/"/g,'&quot;')+'" target="_blank" rel="noopener" title="點擊檢視">📎 '+dailyEsc(name)+'</a>';
+  if(workId!=null && idx!=null && idx!==''){
+    return '<a class="file-link" href="#" data-call="dailyPreviewAttach" data-arg0="'+escHtml(String(workId))+'" data-arg1="'+escHtml(String(idx))+'" title="點擊在彈窗檢視">📎 '+dailyEsc(name)+'</a>';
+  }
+  // 無工作上下文時仍開彈窗（暫存檔案物件）
+  if(!window._dailyPreviewFiles) window._dailyPreviewFiles={};
+  var key='p'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+  window._dailyPreviewFiles[key]=f;
+  return '<a class="file-link" href="#" data-call="dailyPreviewAttachCached" data-arg0="'+escHtml(key)+'" title="點擊在彈窗檢視">📎 '+dailyEsc(name)+'</a>';
+}
+function dailyPreviewAttachCached(key){
+  var f=window._dailyPreviewFiles && window._dailyPreviewFiles[key];
+  if(!f){ alert2('找不到此附件。'); return; }
+  dailyShowAttachPreview(f);
 }
 function dailyAttachHtml(w,user,readonly){
   var files=Array.isArray(w.attachments)?w.attachments:[];
@@ -5537,8 +5588,8 @@ function dailyAttachHtml(w,user,readonly){
     bits.push('<span class="tag" style="background:#fff3e0;color:#e65100">需附件</span>');
   }
   if(files.length){
-    bits.push('<div style="margin-top:4px;font-size:12px;line-height:1.8">'+files.map(function(f){
-      return dailyFileViewHtml(f);
+    bits.push('<div style="margin-top:4px;font-size:12px;line-height:1.8">'+files.map(function(f,i){
+      return dailyFileViewHtml(f, w.id, i);
     }).join(' ')+'</div>');
   }else if(w.status==='done'){
     bits.push('<div style="font-size:11px;color:#aaa;margin-top:2px">無附件</div>');
@@ -5865,14 +5916,14 @@ function vDailyRecords(user){
     '<div class="table-wrap"><table><thead><tr><th>工作</th><th>單位</th><th>類型</th><th>完成時間</th><th>附件</th></tr></thead><tbody>'+
     list.map(function(w){
       var attach=Array.isArray(w.attachments)&&w.attachments.length
-        ? w.attachments.map(function(f){ return dailyFileViewHtml(f); }).join(' ')
+        ? w.attachments.map(function(f,i){ return dailyFileViewHtml(f, w.id, i); }).join(' ')
         : '<span style="color:#aaa">—</span>';
       return '<tr><td><b>'+dailyEsc(w.title)+'</b></td><td>'+dailyEsc(w.unit)+'</td><td>'+dailyKindTag(w)+'</td>'+
         '<td style="font-size:12px">'+dailyEsc(w.completedAt||'—')+'</td>'+
         '<td style="font-size:12px;line-height:1.8">'+attach+'</td></tr>';
     }).join('')+'</tbody></table></div>';
   return '<div class="card"><h2>📋 我的完成記錄</h2>'+
-    '<p style="color:#666;font-size:13px;margin-bottom:10px">只顯示你本人剔選完成的工作。附件可點擊檢視。</p>'+rows+'</div>';
+    '<p style="color:#666;font-size:13px;margin-bottom:10px">只顯示你本人剔選完成的工作。附件可點擊在彈窗內檢視。</p>'+rows+'</div>';
 }
 function vDailyHistory(user){
   ensureDailySeed();
@@ -5887,7 +5938,7 @@ function vDailyHistory(user){
   }).join('');
   return '<div class="card">'+
     '<h2>📚 歷史記錄</h2>'+
-    '<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">顯示過往工作（期限早於今天，或已完成／已取消）。附件可點擊在新分頁檢視。</p>'+
+    '<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">顯示過往工作（期限早於今天，或已完成／已取消）。附件可點擊在彈窗內檢視。</p>'+
     '<div class="filters">'+
     '<input type="text" placeholder="搜尋標題／內容／完成人" value="'+escHtml(dailyHistoryKw)+'" onchange="setDailyHistoryKw(this.value)" onkeydown="if(event.key===\'Enter\'){setDailyHistoryKw(this.value)}">'+
     '<select onchange="setDailyHistoryUnit(this.value)">'+unitOpts+'</select>'+
@@ -5920,7 +5971,11 @@ function vDailyOpLogs(user){
 
 /* ═══════════ Modal ═══════════ */
 function showModal(html){ document.getElementById('modal-content').innerHTML=html; document.getElementById('modal-bg').classList.remove('hidden'); }
-function closeModal(){ document.getElementById('modal-bg').classList.add('hidden'); }
+function closeModal(){
+  var el=document.getElementById('modal-content');
+  if(el) el.classList.remove('modal-wide');
+  document.getElementById('modal-bg').classList.add('hidden');
+}
 function alert2(msg){ showModal(`<h3>提示</h3><p style="font-size:14px">${msg}</p><div class="actions"><button class="btn sm" onclick="closeModal()">確定</button></div>`); }
 document.getElementById('modal-bg').addEventListener('click', e=>{ if(e.target.id==='modal-bg') closeModal(); });
 document.getElementById('login-pw').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
