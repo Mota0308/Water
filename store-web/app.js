@@ -875,19 +875,34 @@ async function toggleMailboxDetailRead(){
   if(!item) return;
   if(!isTransferNotice(item)){
     if(isNotifUnreadForMe(item)){
-      try{
-        await apiFetch('/api/notifications/'+encodeURIComponent(mailboxDetailId)+'/confirm', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
-        await loadNotifications();
-        refreshMailboxUi();
-        refreshMailboxDetailUi();
-        alert2('已成功確認閱讀。');
-      }catch(e){ alert2('確認失敗：'+(e.message||e)); }
+      askConfirmMailboxRead(mailboxDetailId);
     }
     return;
   }
   const rec = (item.recipients||[]).find(function(r){ return r.userId === currentUser.id; });
   const isRead = !!(rec && rec.read);
   await setNotifReadState(mailboxDetailId, !isRead);
+}
+function askConfirmMailboxRead(id){
+  showModal(
+    '<h3>確認已讀？</h3>'+
+    '<p style="font-size:14px;line-height:1.6">確定已閱讀並知悉此通知內容？<br><span style="color:#888">確認後將標記為已讀，通常不可改回。</span></p>'+
+    '<div class="actions">'+
+      '<button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'+
+      '<button type="button" class="btn green sm" data-call="doConfirmMailboxRead" data-arg0="'+escHtml(String(id))+'">確定確認已讀</button>'+
+    '</div>'
+  );
+}
+async function doConfirmMailboxRead(id){
+  closeModal();
+  if(!id || !currentUser) return;
+  try{
+    await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/confirm', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+    await loadNotifications();
+    refreshMailboxUi();
+    refreshMailboxDetailUi();
+    alert2('已成功確認閱讀。');
+  }catch(e){ alert2('確認失敗：'+(e.message||e)); }
 }
 function refreshMailboxUi(){
   const badge = document.getElementById('mailbox-badge');
@@ -1019,7 +1034,7 @@ function bindStaticChrome(){
     if(action==='submit-transfer-product-edit'){ submitTransferProductEdit(); return; }
     if(action==='confirm-push-read'){
       const nid = actionEl.getAttribute('data-nid');
-      if(nid) confirmPushRead(nid);
+      if(nid) askConfirmPushRead(nid);
       return;
     }
     if(action==='submit-push-end'){
@@ -1592,6 +1607,20 @@ function vPushDetail(){
       +((isAdmin()||isManager())?'<button type="button" class="btn orange sm" data-call="togglePushPin" data-arg0="'+escHtml(String(n.id))+'">'+(n.pinned?'取消置頂':'置頂通知')+'</button>':'')
       +'</div>':'')
     +'</div>';
+}
+function askConfirmPushRead(id){
+  showModal(
+    '<h3>確認已讀？</h3>'+
+    '<p style="font-size:14px;line-height:1.6">確定已閱讀並知悉此通知內容？<br><span style="color:#888">確認後將標記為已讀，通常不可改回。</span></p>'+
+    '<div class="actions">'+
+      '<button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'+
+      '<button type="button" class="btn green sm" data-call="doConfirmPushRead" data-arg0="'+escHtml(String(id))+'">確定確認已讀</button>'+
+    '</div>'
+  );
+}
+async function doConfirmPushRead(id){
+  closeModal();
+  await confirmPushRead(id);
 }
 async function confirmPushRead(id){
   try{
