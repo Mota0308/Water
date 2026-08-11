@@ -3456,7 +3456,7 @@ function render(){
   const nav = document.getElementById('nav');
   let items = [];
   if(currentModule==='daily'){
-    items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyRecords','我的記錄']];
+    items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyHistory','歷史記錄'],['dailyRecords','我的記錄']];
     if(isAdmin()||isManager()) items.push(['dailyNew','新增突發'],['dailyRecurring','恆常任務'],['dailyOpLogs','操作記錄']);
   } else if(currentModule==='production'){
     // 員工：我的工作優先；仍可看首頁與項目列表
@@ -3508,7 +3508,8 @@ function render(){
     home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : vHomeFiltered('dev'),
     devList:()=>vList('dev'), repList:()=>vList('rep'), myTasks:vMyTasks, addProject:vAddProject, sysLogs:vSysLogs, project:vProject,
     dailyToday:()=>vDailyToday(currentUser), dailyProgress:()=>vDailyProgress(currentUser),
-    dailyUnit:()=>vDailyUnit(currentUser), dailyRecords:()=>vDailyRecords(currentUser),
+    dailyUnit:()=>vDailyUnit(currentUser), dailyHistory:()=>vDailyHistory(currentUser),
+    dailyRecords:()=>vDailyRecords(currentUser),
     dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser),
     dailyOpLogs:()=>vDailyOpLogs(currentUser),
     pushNotify: vPushCreate,
@@ -4535,6 +4536,9 @@ var FIXED_UNITS=['觀塘','荔枝角','灣仔','屯門'];
 var STORE_UNITS=['觀塘','荔枝角','灣仔','屯門','國內倉'];
 var PRIORITIES=['高','中','低'];
 var dailyUnitFilter='全部';
+var dailyHistoryUnit='全部';
+var dailyHistoryStatus='全部';
+var dailyHistoryKw='';
 var dailyProgressUnit=null;
 var dailyStateCache=null;
 var dailyPersistSeq=0;
@@ -4992,12 +4996,48 @@ function dailyStatusTag(w){
 }
 function goDailyView(v){
   currentModule='daily';
-  var map={today:'dailyToday',progress:'dailyProgress',new:'dailyNew',recurring:'dailyRecurring',records:'dailyRecords',unit:'dailyUnit',logs:'dailyOpLogs'};
+  var map={today:'dailyToday',progress:'dailyProgress',new:'dailyNew',recurring:'dailyRecurring',records:'dailyRecords',history:'dailyHistory',unit:'dailyUnit',logs:'dailyOpLogs'};
   currentView=map[v]||'dailyToday';
   if(v!=='unit') dailyProgressUnit=null;
   render();
 }
 function setDailyUnitFilter(unit){ dailyUnitFilter=unit||'全部'; render(); }
+function setDailyHistoryUnit(unit){ dailyHistoryUnit=unit||'全部'; render(); }
+function setDailyHistoryStatus(st){ dailyHistoryStatus=st||'全部'; render(); }
+function setDailyHistoryKw(v){ dailyHistoryKw=String(v||''); render(); }
+function getDailyHistoryWorks(){
+  var today=todayStr();
+  var list=(loadDailyState().works||[]).filter(function(w){
+    if(!w) return false;
+    // 過往：期限早於今天，或已完成／已取消（含今日已完成）
+    var pastDue=String(w.dueDate||'') < today;
+    var closed=w.status==='done' || w.status==='cancelled';
+    return pastDue || closed;
+  });
+  if(dailyHistoryUnit && dailyHistoryUnit!=='全部'){
+    list=list.filter(function(w){ return w.unit===dailyHistoryUnit; });
+  }
+  if(dailyHistoryStatus==='done') list=list.filter(function(w){ return w.status==='done'; });
+  else if(dailyHistoryStatus==='cancelled') list=list.filter(function(w){ return w.status==='cancelled'; });
+  else if(dailyHistoryStatus==='open') list=list.filter(function(w){ return w.status==='open'; });
+  var kw=String(dailyHistoryKw||'').trim().toLowerCase();
+  if(kw){
+    list=list.filter(function(w){
+      return String(w.title||'').toLowerCase().indexOf(kw)>=0
+        || String(w.content||'').toLowerCase().indexOf(kw)>=0
+        || String(w.completedByName||'').toLowerCase().indexOf(kw)>=0
+        || String(w.unit||'').toLowerCase().indexOf(kw)>=0;
+    });
+  }
+  list.sort(function(a,b){
+    var da=String(b.completedAt||b.dueDate||b.updatedAt||'');
+    var db=String(a.completedAt||a.dueDate||a.updatedAt||'');
+    var c=da.localeCompare(db);
+    if(c) return c;
+    return String(a.title||'').localeCompare(String(b.title||''),'zh-Hant');
+  });
+  return list;
+}
 function openDailyUnit(unit){ dailyProgressUnit=unit; currentModule='daily'; currentView='dailyUnit'; render(); }
 function dailyToggle(id,el){
   var s=loadDailyState();
@@ -5309,10 +5349,20 @@ function dailyToggleTemplate(id,active){
 function dailyDownloadAttach(workId,idx){
   var w=loadDailyState().works.find(function(x){ return x.id===workId; });
   if(!w||!Array.isArray(w.attachments)||!w.attachments[idx]) return;
-  var f=w.attachments[idx];
-  var a=document.createElement('a');
-  a.href=fileHref(f); a.download=f.name||('file-'+idx); a.target='_blank'; a.rel='noopener';
-  document.body.appendChild(a); a.click(); a.remove();
+  var f=ensureFilePayload(w.attachments[idx]);
+  var href=fileHref(f);
+  if(!href || href==='#'){ alert2('無法開啟此附件。'); return; }
+  // 新分頁檢視（不強制 download，圖片／PDF 可直接預覽）
+  window.open(href, '_blank', 'noopener');
+}
+function dailyFileViewHtml(f){
+  f=ensureFilePayload(f);
+  var name=f&&f.name?f.name:'附件';
+  var href=fileHref(f);
+  if(!href || href==='#'){
+    return '<span style="color:#999;margin:2px 8px 2px 0;display:inline-block">📎 '+dailyEsc(name)+'</span>';
+  }
+  return '<a class="file-link" href="'+String(href).replace(/"/g,'&quot;')+'" target="_blank" rel="noopener" title="點擊檢視">📎 '+dailyEsc(name)+'</a>';
 }
 function dailyAttachHtml(w,user,readonly){
   var files=Array.isArray(w.attachments)?w.attachments:[];
@@ -5322,9 +5372,9 @@ function dailyAttachHtml(w,user,readonly){
     bits.push('<span class="tag" style="background:#fff3e0;color:#e65100">需附件</span>');
   }
   if(files.length){
-    bits.push('<div style="margin-top:4px;font-size:12px">'+files.map(function(f,i){
-      return '<button type="button" class="btn gray sm" style="margin:2px 4px 2px 0" data-call="dailyDownloadAttach" data-arg0="'+escHtml(String(w.id))+'" data-arg1="'+i+'">📎 '+dailyEsc(f.name)+'</button>';
-    }).join('')+'</div>');
+    bits.push('<div style="margin-top:4px;font-size:12px;line-height:1.8">'+files.map(function(f){
+      return dailyFileViewHtml(f);
+    }).join(' ')+'</div>');
   }else if(w.status==='done'){
     bits.push('<div style="font-size:11px;color:#aaa;margin-top:2px">無附件</div>');
   }
@@ -5644,13 +5694,44 @@ function vDailyRecords(user){
     return w.status==='done' && w.completedBy===uid;
   }).sort(function(a,b){ return String(b.completedAt||'').localeCompare(String(a.completedAt||'')); });
   var rows=!list.length?'<p style="color:#888">暫無你的完成記錄。</p>':
-    '<div class="table-wrap"><table><thead><tr><th>工作</th><th>單位</th><th>類型</th><th>完成時間</th></tr></thead><tbody>'+
+    '<div class="table-wrap"><table><thead><tr><th>工作</th><th>單位</th><th>類型</th><th>完成時間</th><th>附件</th></tr></thead><tbody>'+
     list.map(function(w){
+      var attach=Array.isArray(w.attachments)&&w.attachments.length
+        ? w.attachments.map(function(f){ return dailyFileViewHtml(f); }).join(' ')
+        : '<span style="color:#aaa">—</span>';
       return '<tr><td><b>'+dailyEsc(w.title)+'</b></td><td>'+dailyEsc(w.unit)+'</td><td>'+dailyKindTag(w)+'</td>'+
-        '<td style="font-size:12px">'+dailyEsc(w.completedAt||'—')+'</td></tr>';
+        '<td style="font-size:12px">'+dailyEsc(w.completedAt||'—')+'</td>'+
+        '<td style="font-size:12px;line-height:1.8">'+attach+'</td></tr>';
     }).join('')+'</tbody></table></div>';
   return '<div class="card"><h2>📋 我的完成記錄</h2>'+
-    '<p style="color:#666;font-size:13px;margin-bottom:10px">只顯示你本人剔選完成的工作。</p>'+rows+'</div>';
+    '<p style="color:#666;font-size:13px;margin-bottom:10px">只顯示你本人剔選完成的工作。附件可點擊檢視。</p>'+rows+'</div>';
+}
+function vDailyHistory(user){
+  ensureDailySeed();
+  var list=getDailyHistoryWorks();
+  var unitOpts=['全部'].concat(STORE_UNITS).map(function(u){
+    return '<option value="'+escHtml(u)+'"'+(dailyHistoryUnit===u?' selected':'')+'>'+escHtml(u)+'</option>';
+  }).join('');
+  var statusOpts=[
+    ['全部','全部狀態'],['done','已完成'],['open','未完成（含逾期）'],['cancelled','已取消']
+  ].map(function(pair){
+    return '<option value="'+pair[0]+'"'+(dailyHistoryStatus===pair[0]?' selected':'')+'>'+pair[1]+'</option>';
+  }).join('');
+  return '<div class="card">'+
+    '<h2>📚 歷史記錄</h2>'+
+    '<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">顯示過往工作（期限早於今天，或已完成／已取消）。附件可點擊在新分頁檢視。</p>'+
+    '<div class="filters">'+
+    '<input type="text" placeholder="搜尋標題／內容／完成人" value="'+escHtml(dailyHistoryKw)+'" onchange="setDailyHistoryKw(this.value)" onkeydown="if(event.key===\'Enter\'){setDailyHistoryKw(this.value)}">'+
+    '<select onchange="setDailyHistoryUnit(this.value)">'+unitOpts+'</select>'+
+    '<select onchange="setDailyHistoryStatus(this.value)">'+statusOpts+'</select>'+
+    '</div>'+
+    '<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+list.length+' 筆</p>'+
+    '</div>'+
+    '<div class="card">'+
+    (list.length
+      ? dailyWorkRows(list,user,{readonly:true,pinAdhoc:false})
+      : '<p style="color:#888">沒有符合條件的歷史記錄。</p>')+
+    '</div>';
 }
 function vDailyOpLogs(user){
   if(!dailyCanManage(user)){
