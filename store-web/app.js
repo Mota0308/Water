@@ -371,6 +371,10 @@ function slimDailyPayload(state){
   const cloned = JSON.parse(JSON.stringify(state));
   (cloned.works||[]).forEach(w=>{
     if(Array.isArray(w.attachments)) w.attachments = w.attachments.map(slimFileRef);
+    if(Array.isArray(w.descImages)) w.descImages = w.descImages.map(slimFileRef);
+  });
+  (cloned.recurringTemplates||[]).forEach(t=>{
+    if(Array.isArray(t.descImages)) t.descImages = t.descImages.map(slimFileRef);
   });
   return cloned;
 }
@@ -4860,6 +4864,7 @@ function mkWork(o){
     templateId:o.templateId||null,
     requireAttachment:!!o.requireAttachment,
     attachments:Array.isArray(o.attachments)?o.attachments.slice():[],
+    descImages:Array.isArray(o.descImages)?o.descImages.slice():[],
     assigneeIds:assigneeIds,
     assigneeNames:assigneeNames,
     completedAt:o.completedAt||null,
@@ -4955,7 +4960,9 @@ function generateRecurringForToday(){
         var w=mkWork({
           title:t.title, content:t.content||'', unit:unit, kind:'recurring',
           dueDate:today, priority:t.priority||'中', templateId:t.id,
-          requireAttachment:!!t.requireAttachment, attachments:[], createdBy:'system',
+          requireAttachment:!!t.requireAttachment, attachments:[],
+          descImages:Array.isArray(t.descImages)?t.descImages.slice():[],
+          createdBy:'system',
           assigneeIds:unitAssigneeIds,
           assigneeNames:unitAssigneeIds.map(function(id){ return userName(id); })
         });
@@ -5045,6 +5052,7 @@ function syncOpenRecurringFromTemplate(t){
       });
       w.assigneeIds=unitAssigneeIds;
       w.assigneeNames=unitAssigneeIds.map(function(id){ return userName(id); });
+      w.descImages=Array.isArray(t.descImages)?t.descImages.slice():[];
       w.updatedAt=dailyNowStr();
     }
   });
@@ -5060,10 +5068,14 @@ function ensureDailySeed(){
   }catch(e){}
   var s=loadDailyState();
   purgeSampleDailyState(s);
-  s.recurringTemplates.forEach(function(t){ if(typeof t.requireAttachment==='undefined') t.requireAttachment=false; });
+  s.recurringTemplates.forEach(function(t){
+    if(typeof t.requireAttachment==='undefined') t.requireAttachment=false;
+    if(!Array.isArray(t.descImages)) t.descImages=[];
+  });
   s.works.forEach(function(w){
     if(typeof w.requireAttachment==='undefined') w.requireAttachment=false;
     if(!Array.isArray(w.attachments)) w.attachments=[];
+    if(!Array.isArray(w.descImages)) w.descImages=[];
     if(!Array.isArray(w.assigneeIds)) w.assigneeIds=[];
     if(!Array.isArray(w.assigneeNames)) w.assigneeNames=[];
     if(!w.createdDate){
@@ -5210,6 +5222,7 @@ function createAdhocWork(data,user){
   }
   var s=loadDailyState();
   var requireAttachment=!!data.requireAttachment;
+  var descImages=Array.isArray(data.descImages)?data.descImages.slice(0,5):[];
   units.forEach(function(unit){
     var unitAssigneeIds=assigneeIds.filter(function(id){
       return dailyUserUnits(validIds[id]).indexOf(unit)>=0;
@@ -5218,6 +5231,7 @@ function createAdhocWork(data,user){
       title:title, content:content, unit:unit, kind:'adhoc',
       dueDate:dueDate, priority:priority, createdBy:dailyUserId(user),
       requireAttachment:requireAttachment, attachments:[],
+      descImages:descImages.slice(),
       assigneeIds:unitAssigneeIds,
       assigneeNames:unitAssigneeIds.map(function(id){ return validIds[id].name||userName(id); })
     }));
@@ -5226,7 +5240,7 @@ function createAdhocWork(data,user){
   var assignLabel=assigneeIds.length
     ?('｜指派：'+assigneeIds.map(function(id){ return (validIds[id]&&validIds[id].name)||userName(id); }).join('、'))
     :'｜整單位';
-  addDailyOpLog('建立突發工作', title+'｜單位：'+units.join('、')+'｜期限 '+dueDate+assignLabel+(requireAttachment?'｜需附件':''));
+  addDailyOpLog('建立突發工作', title+'｜單位：'+units.join('、')+'｜期限 '+dueDate+assignLabel+(requireAttachment?'｜需附件':'')+(descImages.length?'｜說明圖 '+descImages.length:'') );
   return true;
 }
 function createRecurringTemplate(data,user){
@@ -5243,9 +5257,11 @@ function createRecurringTemplate(data,user){
   validStaff.forEach(function(u){ validIds[String(u.id)]=u; });
   assigneeIds=assigneeIds.filter(function(id){ return !!validIds[id]; });
   var s=loadDailyState();
+  var descImages=Array.isArray(data.descImages)?data.descImages.slice(0,5):[];
   var t={
     id:dailyId('tpl'), title:title, content:content, units:units, priority:priority, active:true,
     requireAttachment:!!data.requireAttachment,
+    descImages:descImages,
     assigneeIds:assigneeIds,
     assigneeNames:assigneeIds.map(function(id){ return validIds[id].name||userName(id); })
   };
@@ -5253,7 +5269,7 @@ function createRecurringTemplate(data,user){
   saveDailyState(s);
   generateRecurringForToday();
   var assignLabel=assigneeIds.length?('｜指派：'+t.assigneeNames.join('、')):'｜整單位';
-  addDailyOpLog('建立恆常任務', title+'｜單位：'+units.join('、')+assignLabel+(t.requireAttachment?'｜需附件':''));
+  addDailyOpLog('建立恆常任務', title+'｜單位：'+units.join('、')+assignLabel+(t.requireAttachment?'｜需附件':'')+(descImages.length?'｜說明圖 '+descImages.length:''));
   return true;
 }
 function setTemplateActive(id,active,user){
@@ -5279,6 +5295,7 @@ function editTemplate(id,data,user){
   if(data.priority!=null&&PRIORITIES.indexOf(data.priority)>=0) t.priority=data.priority;
   if(Array.isArray(data.units)) t.units=data.units.filter(function(u){ return STORE_UNITS.indexOf(u)>=0; });
   if(typeof data.requireAttachment!=='undefined') t.requireAttachment=!!data.requireAttachment;
+  if(Array.isArray(data.descImages)) t.descImages=data.descImages.slice(0,5);
   if(Array.isArray(data.assigneeIds)){
     var validStaff=listDailyStaffForUnits(t.units||[]);
     var validIds={};
@@ -5289,7 +5306,7 @@ function editTemplate(id,data,user){
   saveDailyState(s);
   syncOpenRecurringFromTemplate(t);
   generateRecurringForToday();
-  addDailyOpLog('編輯恆常任務', t.title+'｜單位：'+(t.units||[]).join('、')+(t.assigneeIds&&t.assigneeIds.length?('｜指派 '+(t.assigneeNames||[]).join('、')):'')+(t.requireAttachment?'｜需附件':''));
+  addDailyOpLog('編輯恆常任務', t.title+'｜單位：'+(t.units||[]).join('、')+(t.assigneeIds&&t.assigneeIds.length?('｜指派 '+(t.assigneeNames||[]).join('、')):'')+(t.requireAttachment?'｜需附件':'')+(t.descImages&&t.descImages.length?('｜說明圖 '+t.descImages.length):''));
   return true;
 }
 function deleteTemplate(id,user){
@@ -5630,6 +5647,50 @@ function prioritySelectHtml(val,id){
   id=id||'d-priority';
   return '<select id="'+id+'">'+PRIORITIES.map(function(p){ return '<option value="'+p+'" '+(p===(val||'中')?'selected':'')+'>'+p+'</option>'; }).join('')+'</select>';
 }
+var DAILY_DESC_IMAGE_MAX=5;
+function dailyDescImagesFieldHtml(existing){
+  existing=Array.isArray(existing)?existing:[];
+  var keep=existing.length
+    ?('<p style="font-size:12px;color:#555;margin:0 0 6px">現有說明圖 '+existing.length+' 張：'+existing.map(function(f){ return dailyEsc((f&&f.name)||'圖'); }).join('、')+'</p>'+
+      '<label style="display:flex;align-items:center;gap:8px;margin:0 0 8px;font-size:13px"><input type="checkbox" id="d-desc-clear"> 清除全部現有說明圖</label>')
+    :'';
+  return keep+
+    '<label>說明圖（可選，最多 '+DAILY_DESC_IMAGE_MAX+' 張，僅 JPG／PNG／WebP／GIF）</label>'+
+    '<input type="file" id="d-desc-images" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" multiple>'+
+    '<p style="font-size:12px;color:#888;margin-top:4px">參考圖／說明用，與「完成時需上傳附件」無關。'+(existing.length?'新選圖片會加在現有圖之後（合計最多 '+DAILY_DESC_IMAGE_MAX+' 張）。':'')+'</p>';
+}
+function dailyIsAllowedDescImageFile(file){
+  if(!file) return false;
+  var mime=String(file.type||'').toLowerCase();
+  if(mime.indexOf('image/')===0 && /jpeg|jpg|png|webp|gif/.test(mime)) return true;
+  return /\.(jpe?g|png|webp|gif)$/i.test(String(file.name||''));
+}
+async function dailyUploadDescImagesFromInput(existingKeep){
+  existingKeep=Array.isArray(existingKeep)?existingKeep.slice():[];
+  var input=document.getElementById('d-desc-images');
+  var clear=!!(document.getElementById('d-desc-clear')||{}).checked;
+  var base=clear?[]:existingKeep;
+  var files=input&&input.files?Array.prototype.slice.call(input.files):[];
+  if(!files.length) return base.slice(0,DAILY_DESC_IMAGE_MAX);
+  if(base.length+files.length>DAILY_DESC_IMAGE_MAX){
+    throw new Error('說明圖合計最多 '+DAILY_DESC_IMAGE_MAX+' 張（含現有）。');
+  }
+  var out=base.slice();
+  for(var i=0;i<files.length;i++){
+    var f=files[i];
+    if(!dailyIsAllowedDescImageFile(f)) throw new Error('「'+f.name+'」不是允許的圖片格式。');
+    var up=await cloudUploadFile(f);
+    out.push({
+      name:up.name||f.name,
+      dataUrl:up.dataUrl,
+      driveFileId:up.driveFileId,
+      mimeType:up.mimeType||f.type||'image/jpeg',
+      by:dailyUserId(currentUser),
+      time:dailyNowStr()
+    });
+  }
+  return out.slice(0,DAILY_DESC_IMAGE_MAX);
+}
 function dailyCreateAdhoc(){
   if(!dailyCanManage(currentUser)) return alert2('只有管理層可以建立突發工作。');
   if(!requireCloud('建立突發工作')) return;
@@ -5638,6 +5699,7 @@ function dailyCreateAdhoc(){
     '<h3>🛠️ 建立突發工作</h3>'+
     '<label>標題</label><input id="d-title" type="text" placeholder="例如：臨時補貨核對">'+
     '<label>內容</label><textarea id="d-content" placeholder="工作說明"></textarea>'+
+    dailyDescImagesFieldHtml([])+
     '<label>完成期限</label><input id="d-due" type="date" value="'+dailyTodayStr()+'">'+
     '<label>優先級</label>'+prioritySelectHtml('中')+
     '<label>適用單位（可多選）</label><div class="card" style="padding:10px">'+unitChecksHtml(defaultUnits)+'</div>'+
@@ -5709,7 +5771,11 @@ async function dailySubmitAdhoc(){
   var assigneeIds=[].slice.call(document.querySelectorAll('#modal-content .d-staff:checked')).map(function(x){return x.value;});
   if(!title||!units.length) return alert2('請輸入標題並選擇至少一個單位。');
   if(!requireCloud('建立突發工作')) return;
-  if(!createAdhocWork({title:title,content:content,dueDate:due,priority:priority,units:units,assigneeIds:assigneeIds,requireAttachment:requireAttachment},currentUser)){
+  var descImages=[];
+  try{
+    descImages=await dailyUploadDescImagesFromInput([]);
+  }catch(e){ return alert2(e&&e.message?e.message:e); }
+  if(!createAdhocWork({title:title,content:content,dueDate:due,priority:priority,units:units,assigneeIds:assigneeIds,requireAttachment:requireAttachment,descImages:descImages},currentUser)){
     return alert2('建立失敗：請確認所選員工屬於已勾選的單位。');
   }
   closeModal();
@@ -5730,6 +5796,7 @@ function dailyCreateRecurring(){
     '<h3>🔁 建立恆常任務</h3>'+
     '<label>標題</label><input id="d-title" type="text" placeholder="輸入工作標題">'+
     '<label>內容</label><textarea id="d-content" placeholder="工作說明"></textarea>'+
+    dailyDescImagesFieldHtml([])+
     '<label>優先級</label>'+prioritySelectHtml('中')+
     '<label>適用單位（可多選）</label><div class="card" style="padding:10px">'+unitChecksHtml(defaultUnits)+'</div>'+
     '<label>指定人員（可選，含員工／主管／經理）</label><div id="d-staff-box" class="card" style="padding:10px;max-height:180px;overflow:auto">'+staffChecksHtml(defaultUnits)+'</div>'+
@@ -5748,7 +5815,11 @@ async function dailySubmitRecurring(){
   var assigneeIds=[].slice.call(document.querySelectorAll('#modal-content .d-staff:checked')).map(function(x){return x.value;});
   if(!title||!units.length) return alert2('請輸入標題並選擇至少一個單位。');
   if(!requireCloud('建立恆常任務')) return;
-  createRecurringTemplate({title:title,content:content,priority:priority,units:units,assigneeIds:assigneeIds,requireAttachment:requireAttachment},currentUser);
+  var descImages=[];
+  try{
+    descImages=await dailyUploadDescImagesFromInput([]);
+  }catch(e){ return alert2(e&&e.message?e.message:e); }
+  createRecurringTemplate({title:title,content:content,priority:priority,units:units,assigneeIds:assigneeIds,requireAttachment:requireAttachment,descImages:descImages},currentUser);
   closeModal();
   try{
     await flushCloudSaves();
@@ -5788,6 +5859,7 @@ function dailyEditTemplate(id){
     '<h3>✏️ 編輯恆常任務</h3>'+
     '<label>標題</label><input id="d-title" type="text" value="'+dailyEsc(t.title)+'">'+
     '<label>內容</label><textarea id="d-content">'+dailyEsc(t.content||'')+'</textarea>'+
+    dailyDescImagesFieldHtml(t.descImages||[])+
     '<label>優先級</label>'+prioritySelectHtml(t.priority||'中')+
     '<label>適用單位</label><div class="card" style="padding:10px">'+unitChecksHtml(t.units||[])+'</div>'+
     '<label>指定人員（可選，含員工／主管／經理）</label><div id="d-staff-box" class="card" style="padding:10px;max-height:180px;overflow:auto">'+staffChecksHtml(t.units||[], t.assigneeIds||[])+'</div>'+
@@ -5796,18 +5868,28 @@ function dailyEditTemplate(id){
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button><button class="btn sm" data-call="dailySubmitEditTemplate" data-arg0="'+escHtml(String(id))+'">儲存</button></div>'
   );
 }
-function dailySubmitEditTemplate(id){
+async function dailySubmitEditTemplate(id){
   var units=[].slice.call(document.querySelectorAll('#modal-content .d-unit:checked')).map(function(x){return x.value;});
   var assigneeIds=[].slice.call(document.querySelectorAll('#modal-content .d-staff:checked')).map(function(x){return x.value;});
+  var t=loadDailyState().recurringTemplates.find(function(x){return x.id===id;});
+  var descImages=[];
+  try{
+    descImages=await dailyUploadDescImagesFromInput((t&&t.descImages)||[]);
+  }catch(e){ return alert2(e&&e.message?e.message:e); }
   editTemplate(id,{
     title:document.getElementById('d-title').value,
     content:document.getElementById('d-content').value,
     priority:document.getElementById('d-priority').value,
     units:units,
     assigneeIds:assigneeIds,
-    requireAttachment:!!(document.getElementById('d-require-attach')||{}).checked
+    requireAttachment:!!(document.getElementById('d-require-attach')||{}).checked,
+    descImages:descImages
   },currentUser);
-  closeModal(); render();
+  closeModal();
+  try{
+    await flushCloudSaves();
+  }catch(_e){}
+  render();
 }
 function dailyToggleTemplate(id,active){
   setTemplateActive(id,active,currentUser);
@@ -5882,19 +5964,45 @@ function dailyPreviewAttachCached(key){
   if(!f){ alert2('找不到此附件。'); return; }
   dailyShowAttachPreview(f);
 }
+function dailyPreviewDescImage(workId,idx){
+  var w=loadDailyState().works.find(function(x){ return x.id===workId; });
+  if(!w||!Array.isArray(w.descImages)||w.descImages[idx]==null){
+    alert2('找不到此說明圖。');
+    return;
+  }
+  dailyShowAttachPreview(w.descImages[idx]);
+}
+function dailyDescImagesHtml(w){
+  var imgs=Array.isArray(w&&w.descImages)?w.descImages:[];
+  if(!imgs.length) return '';
+  return '<div style="margin-top:4px;font-size:12px;line-height:1.8">'+
+    '<span style="color:#546e7a;margin-right:6px">說明圖：</span>'+
+    imgs.map(function(f,i){
+      f=ensureFilePayload(f);
+      var name=f&&f.name?f.name:('圖'+(i+1));
+      var href=fileHref(f);
+      if(!href||href==='#'){
+        return '<span style="color:#999;margin:2px 8px 2px 0;display:inline-block">🖼 '+dailyEsc(name)+'</span>';
+      }
+      return '<a class="file-link" href="#" data-call="dailyPreviewDescImage" data-arg0="'+escHtml(String(w.id))+'" data-arg1="'+escHtml(String(i))+'" title="點擊在彈窗檢視">🖼 '+dailyEsc(name)+'</a>';
+    }).join(' ')+
+    '</div>';
+}
 function dailyAttachHtml(w,user,readonly){
   var files=Array.isArray(w.attachments)?w.attachments:[];
   var can=canTickWork(w,user);
   var bits=[];
+  var desc=dailyDescImagesHtml(w);
+  if(desc) bits.push(desc);
   if(w.requireAttachment){
     bits.push('<span class="tag" style="background:#fff3e0;color:#e65100">需附件</span>');
   }
   if(files.length){
-    bits.push('<div style="margin-top:4px;font-size:12px;line-height:1.8">'+files.map(function(f,i){
+    bits.push('<div style="margin-top:4px;font-size:12px;line-height:1.8"><span style="color:#546e7a;margin-right:6px">完成附件：</span>'+files.map(function(f,i){
       return dailyFileViewHtml(f, w.id, i);
     }).join(' ')+'</div>');
   }else if(w.status==='done'){
-    bits.push('<div style="font-size:11px;color:#aaa;margin-top:2px">無附件</div>');
+    bits.push('<div style="font-size:11px;color:#aaa;margin-top:2px">無完成附件</div>');
   }
   if(!readonly&&can&&w.status==='done'){
     bits.push('<div style="margin-top:4px"><button type="button" class="btn gray sm" data-call="dailyAskAddFiles" data-arg0="'+escHtml(String(w.id))+'">補傳附件</button></div>');
