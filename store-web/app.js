@@ -1235,6 +1235,8 @@ function noticeCatKey(n){
   const c = String(n.category||'');
   if(c.indexOf('調動')>=0) return 'transfer';
   if(c.indexOf('突發')>=0) return 'adhoc';
+  if(c.indexOf('恆常')>=0) return 'general';
+  if(c.indexOf('開發')>=0) return 'general';
   if(c.indexOf('補貨')>=0) return 'restock';
   if(c.indexOf('價錢')>=0) return 'price';
   if(c.indexOf('緊急')>=0) return 'urgent';
@@ -4183,6 +4185,53 @@ function tabFlow(p){
   }).join('');
 }
 
+function projectAllHandlerIds(p){
+  const ids = [];
+  (p && p.stages || []).forEach(function(s){
+    stageHandlers(s).forEach(function(id){
+      const sid = String(id||'');
+      if(sid && ids.indexOf(sid)<0) ids.push(sid);
+    });
+  });
+  return ids;
+}
+async function notifyProjectStageTurn(p, stageName, reason){
+  if(!apiEnabled || !authToken || !currentUser || !p) return;
+  const recipientIds = projectAllHandlerIds(p);
+  if(!recipientIds.length) return;
+  const typeLabel = p.type==='rep' ? '補貨' : '開發及生產';
+  const title = typeLabel+'：'+(p.code||'')+'｜目前階段 '+(stageName||'');
+  const body = (reason||'項目階段已更新')+'\n\n'
+    +'類型：'+typeLabel+'\n'
+    +'編號：'+(p.code||'')+'\n'
+    +'項目：'+(p.name||'')+'\n'
+    +'目前階段：'+(stageName||'')+'\n'
+    +'操作人：'+(currentUser.name||currentUser.login||'')+'\n'
+    +'時間：'+nowStr();
+  try{
+    await apiFetch('/api/notifications', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        cat: 'general',
+        category: typeLabel,
+        priority: '重要',
+        title: title,
+        summary: typeLabel+'｜'+(p.code||'')+'｜'+(stageName||''),
+        content: body,
+        recipientIds: recipientIds,
+        recipientDesc: '項目經手人 '+recipientIds.length+' 人',
+        startDate: todayStr(),
+        endDate: todayStr(),
+        pinned: false
+      })
+    });
+    await loadNotifications();
+    refreshMailboxUi();
+  }catch(e){
+    console.warn('notify project stage', e);
+  }
+}
 function stageAction(pid, idx, act){
   if(isManager()){ alert2('一般管理層只可監督查看，不可推進階段。'); return; }
   if(['confirm','reopen'].includes(act) && !isAdmin()){ alert2('只有系統管理員可以確認或重開。'); return; }
@@ -4190,7 +4239,15 @@ function stageAction(pid, idx, act){
   if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法推進階段。'); return; }
   if(act==='start'){ s.status='進行中'; addProjLog(p,'開始處理', s.name+' → 進行中'); }
   if(act==='submit'){ s.status='待確認'; s.returnReason=''; addProjLog(p,'提交確認', s.name+' → 待確認'); }
-  if(act==='confirm'){ s.status='已完成'; s.completedAt=todayStr(); addProjLog(p,'確認完成', s.name+'｜經手人：'+stageHandlersLabel(s)); }
+  if(act==='confirm'){
+    s.status='已完成'; s.completedAt=todayStr();
+    addProjLog(p,'確認完成', s.name+'｜經手人：'+stageHandlersLabel(s));
+    const next = (p.stages||[]).find(function(x){ return !stageDone(x); });
+    if(next){
+      notifyProjectStageTurn(p, next.name, '上一階段「'+s.name+'」已確認完成，目前輪到新階段。')
+        .catch(function(e){ console.warn(e); });
+    }
+  }
   if(act==='reopen'){ s.status='進行中'; s.completedAt=null; addProjLog(p,'重新開啟階段', s.name); }
   render();
 }
@@ -4226,6 +4283,11 @@ function doSkip(pid, idx){
   if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法跳過。'); return; }
   s.status='直接下一階段'; s.skipReason=r; s.completedAt=todayStr();
   addProjLog(p,'跳過階段', s.name+(r?'｜原因：'+r:''));
+  const next = (p.stages||[]).find(function(x){ return !stageDone(x); });
+  if(next){
+    notifyProjectStageTurn(p, next.name, '上一階段「'+s.name+'」已跳過，目前輪到新階段。')
+      .catch(function(e){ console.warn(e); });
+  }
   closeModal(); render();
 }
 function askReassign(pid, idx){
@@ -4607,6 +4669,12 @@ async function createProject(){
     alert2('項目已建立於記憶體，但雲端同步失敗：'+(e.message||e));
     return;
   }
+  const firstStage = p.stages && p.stages[0];
+  if(firstStage){
+    try{
+      await notifyProjectStageTurn(p, firstStage.name, '項目已建立，目前為第一階段。');
+    }catch(_e){}
+  }
   showModal(`<h3>✅ 已建立項目</h3><p>「${code}｜${name}」已建立並同步到雲端，共 ${stages.length} 個階段${files.length?'，附件 '+files.length+' 個':''}。</p>
     <div class="actions"><button class="btn sm" onclick="closeModal();openProject('${p.id}','files')">查看文件及圖片</button>
     <button class="btn gray sm" onclick="closeModal();openProject('${p.id}','flow')">查看工作流程</button></div>`);
@@ -4827,6 +4895,7 @@ function workCountsForUnit(unit){
 }
 function generateRecurringForToday(){
   var s=loadDailyState(), today=dailyTodayStr();
+  var newlyCreated=[];
   // 不再自動植入「每日結算」示範工作
   s.works=(s.works||[]).filter(function(w){ return !isSampleDailyWork(w); });
   s.recurringTemplates=(s.recurringTemplates||[]).filter(function(t){ return !isSampleDailyTemplate(t); });
@@ -4850,17 +4919,81 @@ function generateRecurringForToday(){
           var us=dailyUserUnits(u);
           return !us.length || us.indexOf(unit)>=0;
         });
-        s.works.push(mkWork({
+        var w=mkWork({
           title:t.title, content:t.content||'', unit:unit, kind:'recurring',
           dueDate:today, priority:t.priority||'中', templateId:t.id,
           requireAttachment:!!t.requireAttachment, attachments:[], createdBy:'system',
           assigneeIds:unitAssigneeIds,
           assigneeNames:unitAssigneeIds.map(function(id){ return userName(id); })
-        }));
+        });
+        s.works.push(w);
+        // 僅有指定人的新實例才排程信箱通知（跨日延續不會走到這裡）
+        if(unitAssigneeIds.length) newlyCreated.push(w);
       }
     });
   });
-  return saveDailyState(s);
+  saveDailyState(s);
+  if(newlyCreated.length) queueRecurringMailboxNotifies(newlyCreated);
+  return newlyCreated;
+}
+var _pendingRecurringNotifies=[];
+var _recurringNotifyTimer=null;
+function queueRecurringMailboxNotifies(works){
+  if(!works||!works.length) return;
+  _pendingRecurringNotifies=_pendingRecurringNotifies.concat(works);
+  if(_recurringNotifyTimer) return;
+  _recurringNotifyTimer=setTimeout(function(){
+    _recurringNotifyTimer=null;
+    var batch=_pendingRecurringNotifies.splice(0);
+    notifyRecurringInstancesCreated(batch).catch(function(e){ console.warn('notify recurring', e); });
+  }, 400);
+}
+async function notifyRecurringInstancesCreated(works){
+  if(!apiEnabled || !authToken || !currentUser || !works || !works.length) return;
+  var seen={};
+  var priMap={ '高':'緊急', '中':'重要', '低':'一般' };
+  var any=false;
+  for(var i=0;i<works.length;i++){
+    var w=works[i];
+    if(!w||!w.id||seen[w.id]) continue;
+    seen[w.id]=true;
+    var recipientIds=Array.from(new Set((w.assigneeIds||[]).map(String).filter(Boolean)));
+    if(!recipientIds.length) continue;
+    var priority=priMap[w.priority]||'重要';
+    var title='恆常任務：'+(w.title||'');
+    var body='你有今日恆常任務需要處理。\n\n'
+      +'標題：'+(w.title||'')+'\n'
+      +'單位：'+(w.unit||'')+'\n'
+      +'期限：'+(w.dueDate||'')+'\n'
+      +'優先級：'+(w.priority||'')+'\n'
+      +(w.requireAttachment?'完成時需要上傳附件。\n':'')
+      +'\n'+(w.content||'');
+    try{
+      await apiFetch('/api/notifications', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          cat: priority==='緊急' ? 'urgent' : 'general',
+          category: '恆常任務',
+          priority: priority,
+          title: title,
+          summary: '恆常任務｜'+(w.unit||'')+'｜期限 '+(w.dueDate||''),
+          content: body,
+          recipientIds: recipientIds,
+          recipientDesc: '指定人員 '+recipientIds.length+' 人',
+          startDate: dailyTodayStr(),
+          endDate: w.dueDate || dailyTodayStr(),
+          pinned: priority==='緊急'
+        })
+      });
+      any=true;
+    }catch(e){
+      console.warn('notify recurring one', e);
+    }
+  }
+  if(any){
+    try{ await loadNotifications(); refreshMailboxUi(); }catch(_e){}
+  }
 }
 function syncOpenRecurringFromTemplate(t){
   var s=loadDailyState();
