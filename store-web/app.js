@@ -5121,6 +5121,35 @@ function completeDailyWork(id,user,checked,opts){
   }
   return true;
 }
+function dailyTomorrowStr(){
+  var d=new Date();
+  d.setDate(d.getDate()+1);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+/** 延期：改 dueDate，維持未完成；日期須嚴格晚於今天 */
+function postponeDailyWork(id,newDueDate,user){
+  user=user||currentUser;
+  var s=loadDailyState();
+  var w=s.works.find(function(x){ return x.id===id; });
+  if(!w||w.status==='cancelled'||w.status==='done') return false;
+  if(!canTickWork(w,user)) return false;
+  var due=dailyParseDateYmd(newDueDate);
+  var today=dailyTodayStr();
+  if(!due||due<=today) return false;
+  var prev=w.dueDate||'';
+  w.dueDate=due;
+  w.lastPostpone={
+    fromDue:prev,
+    toDue:due,
+    byId:dailyUserId(user),
+    byName:dailyUserName(user),
+    at:dailyNowStr()
+  };
+  w.updatedAt=dailyNowStr();
+  saveDailyState(s);
+  addDailyOpLog('延期工作', w.unit+'｜'+w.title+'｜'+prev+' → '+due+'｜填寫人 '+dailyUserName(user));
+  return true;
+}
 function addAttachmentsToWork(id,files,user){
   user=user||currentUser;
   var s=loadDailyState();
@@ -5410,15 +5439,13 @@ function dailyToggle(id,el){
   var w=s.works.find(function(x){ return x.id===id; });
   if(!w){ el.checked=!el.checked; return; }
   if(el.checked){
-    // 要完成：需附件的恆常任務先開上傳窗，成功前不打勾
-    if(w.requireAttachment){
-      el.checked=false;
-      dailyAskCompleteWithFiles(id);
+    // 先還原未勾，確認完成／延期後再變更
+    el.checked=false;
+    if(!canTickWork(w,currentUser)){
+      alert2('無法更新此工作。你只能操作自己所屬單位的工作。');
       return;
     }
-    var ok=completeDailyWork(id,currentUser,true);
-    if(!ok){ el.checked=false; alert2('無法更新此工作。你只能操作自己所屬單位的工作。'); return; }
-    render();
+    dailyAskTickAction(id);
     return;
   }
   // 取消剔選：確認後清空全部附件並重開
@@ -5429,6 +5456,70 @@ function dailyToggle(id,el){
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">返回</button>'+
     '<button class="btn red sm" data-call="dailyConfirmUntick" data-arg0="'+escHtml(String(id))+'">確認取消完成</button></div>'
   );
+}
+function dailyAskTickAction(id){
+  var w=loadDailyState().works.find(function(x){ return x.id===id; });
+  if(!w) return;
+  showModal(
+    '<h3>完成或延期？</h3>'+
+    '<p style="font-size:14px;line-height:1.55">「<b>'+dailyEsc(w.title)+'</b>」目前期限：'+dailyEsc(w.dueDate||'—')+'<br>請選擇操作：</p>'+
+    '<div class="actions">'+
+      '<button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'+
+      '<button type="button" class="btn warn sm" data-call="dailyAskPostpone" data-arg0="'+escHtml(String(id))+'">延期</button>'+
+      '<button type="button" class="btn green sm" data-call="dailyChooseComplete" data-arg0="'+escHtml(String(id))+'">完成</button>'+
+    '</div>'
+  );
+}
+function dailyChooseComplete(id){
+  closeModal();
+  var w=loadDailyState().works.find(function(x){ return x.id===id; });
+  if(!w) return;
+  if(!canTickWork(w,currentUser)){
+    alert2('無法更新此工作。你只能操作自己所屬單位的工作。');
+    return;
+  }
+  if(w.requireAttachment){
+    dailyAskCompleteWithFiles(id);
+    return;
+  }
+  var ok=completeDailyWork(id,currentUser,true);
+  if(!ok){ alert2('無法完成此工作。'); return; }
+  render();
+  if(typeof flushCloudSaves==='function') flushCloudSaves().catch(function(){});
+}
+function dailyAskPostpone(id){
+  var w=loadDailyState().works.find(function(x){ return x.id===id; });
+  if(!w) return;
+  if(!canTickWork(w,currentUser)){
+    alert2('無法延期此工作。');
+    return;
+  }
+  var minDue=dailyTomorrowStr();
+  showModal(
+    '<h3>延期工作</h3>'+
+    '<p style="font-size:13px;color:#555;line-height:1.55">「'+dailyEsc(w.title)+'」將維持未完成，期限改為你指定的日期（須晚於今天）。</p>'+
+    '<label>延期日期</label><input type="date" id="d-postpone-due" min="'+escHtml(minDue)+'" value="'+escHtml(minDue)+'">'+
+    '<label>填寫人</label><input type="text" value="'+dailyEsc(dailyUserName(currentUser))+'" readonly style="background:#f5f5f5;color:#555">'+
+    '<p style="font-size:12px;color:#888;margin-top:6px">填寫人固定為目前登入賬戶，不可更改。</p>'+
+    '<div class="actions">'+
+      '<button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'+
+      '<button type="button" class="btn sm" data-call="dailySubmitPostpone" data-arg0="'+escHtml(String(id))+'">確認延期</button>'+
+    '</div>'
+  );
+}
+function dailySubmitPostpone(id){
+  var due=((document.getElementById('d-postpone-due')||{}).value||'').trim();
+  if(!due){ alert2('請選擇延期日期。'); return; }
+  if(due<=dailyTodayStr()){ alert2('延期日期必須晚於今天。'); return; }
+  var ok=postponeDailyWork(id,due,currentUser);
+  closeModal();
+  if(!ok){ alert2('延期失敗：請確認日期晚於今天，且你有權限操作。'); return; }
+  render();
+  if(typeof flushCloudSaves==='function'){
+    flushCloudSaves().catch(function(e){
+      alert2('延期已保存在本機，但雲端同步失敗：'+(e&&e.message?e.message:e));
+    });
+  }
 }
 function dailyConfirmUntick(id){
   var ok=completeDailyWork(id,currentUser,false);
@@ -5838,7 +5929,7 @@ function dailyWorkRows(list,user,opts){
             :'<input type="checkbox" checked disabled title="已完成（不可操作其他單位）">';
         }else{
           tick=can
-            ?'<input type="checkbox" onchange="dailyToggle(\''+w.id+'\',this)" title="'+(w.requireAttachment?'需先上傳附件':'剔選完成')+'">'
+            ?'<input type="checkbox" onchange="dailyToggle(\''+w.id+'\',this)" title="點擊選擇完成或延期">'
             :'<input type="checkbox" disabled title="不可操作">';
         }
       }
@@ -5853,10 +5944,15 @@ function dailyWorkRows(list,user,opts){
       }
       var subColor=isAdhoc?'#e53935':'#777';
       var assignColor=isAdhoc?'#c62828':'#666';
+      var postponeHint=w.lastPostpone
+        ?('<div style="font-size:11px;color:#ef6c00;margin-top:4px">曾延期至 '+dailyEsc(w.lastPostpone.toDue||'')
+          +'（'+dailyEsc(w.lastPostpone.byName||'')+(w.lastPostpone.at?'｜'+dailyEsc(w.lastPostpone.at):'')+'）</div>')
+        :'';
       return '<tr class="'+(isAdhoc?'daily-adhoc-row':'')+'"'+(isAdhoc?' style="color:#c62828"':'')+'>'+
         (readonly?'':'<td>'+tick+'</td>')+
         '<td><b'+(isAdhoc?' style="color:#c62828"':'')+'>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:'+subColor+';margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+
           (isAdhoc?'<div style="font-size:11px;color:'+assignColor+';margin-top:4px">指派：'+dailyEsc(workAssigneesLabel(w))+'</div>':'')+
+          postponeHint+
           dailyAttachHtml(w,user,readonly)+'</td>'+
         '<td>'+dailyEsc(w.unit)+'</td><td>'+dailyKindTag(w)+'</td><td>'+priorityTag(w.priority)+'</td>'+
         (showCreated?'<td style="white-space:nowrap;font-size:12px">'+dailyEsc(workCreatedDate(w)||'—')+'</td>':'')+
