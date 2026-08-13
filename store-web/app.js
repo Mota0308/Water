@@ -699,10 +699,16 @@ function notifPriorityRank(p){
 }
 function isNotifUnreadForMe(n){
   if(!currentUser || !n) return false;
+  // 推送通知完結／取消後不可再確認已讀，亦不計入未讀待辦
+  if(!isTransferNotice(n) && n.status && n.status!=='進行中') return false;
   const rec = (n.recipients||[]).find(r => String(r.userId) === String(currentUser.id));
   if(!rec) return false;
   if(rec.status) return rec.status !== 'read';
   return !rec.read;
+}
+function isPushNoticeConfirmable(n){
+  if(!n || isTransferNotice(n)) return false;
+  return !n.status || n.status==='進行中';
 }
 function notifReadStats(n){
   const recs = Array.isArray(n && n.recipients) ? n.recipients : [];
@@ -760,8 +766,7 @@ function myMailboxItems(){
 }
 function unreadCount(){
   if(!currentUser) return 0;
-  const uid = currentUser.id;
-  return notifications.filter(n => (n.recipients||[]).some(r => r.userId===uid && !r.read)).length;
+  return notifications.filter(function(n){ return isNotifUnreadForMe(n); }).length;
 }
 function setMailboxTab(tab){
   mailboxTab = (tab === 'sent') ? 'sent' : 'inbox';
@@ -865,6 +870,10 @@ function refreshMailboxDetailUi(){
       readBtn.className = 'md-read-toggle is-read';
       readBtn.textContent = '已確認';
       readBtn.title = '已確認閱讀（不可改回）';
+    } else if(!isPushNoticeConfirmable(item)){
+      readBtn.className = 'md-read-toggle is-read';
+      readBtn.textContent = '已完結未確認';
+      readBtn.title = '通知已完結，無法再確認已讀';
     } else {
       readBtn.className = 'md-read-toggle is-unread';
       readBtn.textContent = '確認已讀';
@@ -878,6 +887,10 @@ async function toggleMailboxDetailRead(){
   const item = findMailboxItem(mailboxDetailId);
   if(!item) return;
   if(!isTransferNotice(item)){
+    if(!isPushNoticeConfirmable(item)){
+      alert2('此通知已完結，無法再確認已讀。');
+      return;
+    }
     if(isNotifUnreadForMe(item)){
       askConfirmMailboxRead(mailboxDetailId);
     }
@@ -888,6 +901,11 @@ async function toggleMailboxDetailRead(){
   await setNotifReadState(mailboxDetailId, !isRead);
 }
 function askConfirmMailboxRead(id){
+  const item = findMailboxItem(id);
+  if(item && !isPushNoticeConfirmable(item)){
+    alert2('此通知已完結，無法再確認已讀。');
+    return;
+  }
   showModal(
     '<h3>確認已讀？</h3>'+
     '<p style="font-size:14px;line-height:1.6">確定已閱讀並知悉此通知內容？<br><span style="color:#888">確認後將標記為已讀，通常不可改回。</span></p>'+
@@ -900,6 +918,11 @@ function askConfirmMailboxRead(id){
 async function doConfirmMailboxRead(id){
   closeModal();
   if(!id || !currentUser) return;
+  const item = findMailboxItem(id);
+  if(item && !isPushNoticeConfirmable(item)){
+    alert2('此通知已完結，無法再確認已讀。');
+    return;
+  }
   try{
     await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/confirm', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
     await loadNotifications();
@@ -945,8 +968,11 @@ function refreshMailboxUi(){
       } else {
         const rec = (item.recipients||[]).find(r => r.userId === uid);
         const st = recipientReadStatus(rec);
-        if(st!=='read') rowClass += ' unread';
-        statusHtml = '<span class="mb-status">'+(st==='read'?'已讀':st==='opened'?'已開啟':'未讀')+'</span>';
+        const ended = !isTransferNotice(item) && item.status && item.status!=='進行中';
+        if(st!=='read' && !ended) rowClass += ' unread';
+        if(st==='read') statusHtml = '<span class="mb-status">已讀</span>';
+        else if(ended) statusHtml = '<span class="mb-status">完結未確認</span>';
+        else statusHtml = '<span class="mb-status">'+(st==='opened'?'已開啟':'未讀')+'</span>';
       }
       const who = isSent
         ? '<span class="mb-from">收件 '+(Array.isArray(item.recipients)?item.recipients.length:0)+' 人</span>'
@@ -1613,6 +1639,11 @@ function vPushDetail(){
     +'</div>';
 }
 function askConfirmPushRead(id){
+  const n = (notifications||[]).find(function(x){ return String(x.id)===String(id); });
+  if(n && !isPushNoticeConfirmable(n)){
+    alert2('此通知已完結，無法再確認已讀。');
+    return;
+  }
   showModal(
     '<h3>確認已讀？</h3>'+
     '<p style="font-size:14px;line-height:1.6">確定已閱讀並知悉此通知內容？<br><span style="color:#888">確認後將標記為已讀，通常不可改回。</span></p>'+
@@ -1627,6 +1658,11 @@ async function doConfirmPushRead(id){
   await confirmPushRead(id);
 }
 async function confirmPushRead(id){
+  const n = (notifications||[]).find(function(x){ return String(x.id)===String(id); });
+  if(n && !isPushNoticeConfirmable(n)){
+    alert2('此通知已完結，無法再確認已讀。');
+    return;
+  }
   try{
     await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/confirm', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
     await loadNotifications();
