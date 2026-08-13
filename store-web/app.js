@@ -4764,8 +4764,26 @@ var dailyPersistSeq=0;
 
 function dailyMergeById(cloudArr, localArr){
   var m={};
-  (cloudArr||[]).forEach(function(x){ if(x&&x.id!=null) m[String(x.id)]=x; });
-  (localArr||[]).forEach(function(x){ if(x&&x.id!=null) m[String(x.id)]=x; });
+  function prefer(a,b){
+    if(!a) return b;
+    if(!b) return a;
+    // 已完成優先於未完成，避免雲端舊 open 蓋掉本機／較新的 done（剔選消失）
+    if(a.status==='done' && b.status!=='done') return a;
+    if(b.status==='done' && a.status!=='done') return b;
+    var ta=String(a.updatedAt||a.completedAt||'');
+    var tb=String(b.updatedAt||b.completedAt||'');
+    return tb.localeCompare(ta)>=0 ? b : a;
+  }
+  (cloudArr||[]).forEach(function(x){
+    if(!x||x.id==null) return;
+    var id=String(x.id);
+    m[id]=prefer(m[id], x);
+  });
+  (localArr||[]).forEach(function(x){
+    if(!x||x.id==null) return;
+    var id=String(x.id);
+    m[id]=prefer(m[id], x);
+  });
   return Object.keys(m).map(function(k){ return m[k]; });
 }
 function dailyOpLogKey(l){
@@ -4909,12 +4927,17 @@ function isActiveWork(w){ return w&&w.status!=='cancelled'; }
 /**
  * 今日清單：
  * - 未完成：期限為今天，或更早（跨日延續／逾期）
- * - 已完成：只顯示期限為今天的（避免舊完成紀錄刷滿今日）
+ * - 已完成：期限為今天，或今日才剔選完成（含逾期後今日完成）
  */
 function isDailyTodayWork(w){
   if(!isActiveWork(w) || !w.dueDate) return false;
   var today = dailyTodayStr();
-  if(w.status==='done') return w.dueDate===today;
+  if(w.status==='done'){
+    // 期限為今天，或今日才剔選完成（含逾期後今日完成）
+    if(w.dueDate===today) return true;
+    var completedDay=dailyParseDateYmd(w.completedAt);
+    return completedDay===today;
+  }
   return w.dueDate<=today;
 }
 function isOverdue(w){
@@ -4945,7 +4968,14 @@ function generateRecurringForToday(){
       var openExisting=s.works.find(function(w){
         return w.kind==='recurring'&&w.templateId===t.id&&w.unit===unit&&w.status==='open';
       });
-      if(openExisting) return;
+      if(openExisting){
+        // 未完成恆常：每日把期限滾到今天（跨日延續仍顯示正確期限）
+        if(openExisting.dueDate!==today){
+          openExisting.dueDate=today;
+          openExisting.updatedAt=dailyNowStr();
+        }
+        return;
+      }
       var existsToday=s.works.some(function(w){
         return w.kind==='recurring'&&w.templateId===t.id&&w.unit===unit&&w.dueDate===today&&w.status!=='cancelled';
       });
@@ -5117,6 +5147,8 @@ function completeDailyWork(id,user,checked,opts){
     w.completedAt=dailyNowStr();
     w.completedBy=dailyUserId(user);
     w.completedByName=dailyUserName(user);
+    // 逾期項今日完成時，把期限滾到今天，避免完成後從今日清單消失
+    if(w.dueDate && w.dueDate<dailyTodayStr()) w.dueDate=dailyTodayStr();
     w.updatedAt=dailyNowStr();
     saveDailyState(s);
     addDailyOpLog(w.kind==='settlement'?'完成結算':'完成工作', w.unit+'｜'+w.title+(w.attachments.length?'｜附件 '+w.attachments.length+' 個':''));
@@ -5336,9 +5368,14 @@ function getTodayWorksForUser(user){
     var uid=String(user.id);
     list=list.filter(function(w){
       var ids=workAssigneeIds(w);
-      if(ids.length && ids.indexOf(uid)>=0) return true;
+      if(ids.length && ids.indexOf(uid)>=0){
+        // 指定人員：仍可依單位篩選
+        if(dailyUnitFilter && dailyUnitFilter!=='全部') return w.unit===dailyUnitFilter;
+        return true;
+      }
       if(units.indexOf(w.unit)<0) return false;
       if(ids.length) return false;
+      if(dailyUnitFilter && dailyUnitFilter!=='全部') return w.unit===dailyUnitFilter;
       return true;
     });
   }
@@ -5905,7 +5942,8 @@ function dailyIsPdfFile(f,name){
   if(mime==='application/pdf') return true;
   return /\.pdf$/i.test(String(name||''));
 }
-function dailyShowAttachPreview(f){
+function dailyShowAttachPreview(f, opts){
+  opts=opts||{};
   f=ensureFilePayload(f);
   var name=(f&&f.name)?f.name:'附件';
   var href=fileHref(f);
@@ -5922,15 +5960,54 @@ function dailyShowAttachPreview(f){
     body='<p style="font-size:14px;color:#555;line-height:1.6">此檔案類型無法在彈窗內直接預覽，請用下方按鈕開啟。</p>'+
       '<p style="margin-top:8px"><a class="file-link" href="'+safeHref+'" target="_blank" rel="noopener">在新分頁開啟／下載</a></p>';
   }
+  var deleteBtn='';
+  if(opts.canDelete && opts.workId!=null && opts.idx!=null && opts.kind){
+    deleteBtn='<button type="button" class="btn red sm" data-call="dailyDeletePreviewAttach" data-arg0="'+escHtml(String(opts.workId))+'" data-arg1="'+escHtml(String(opts.idx))+'" data-arg2="'+escHtml(String(opts.kind))+'">刪除</button>';
+  }
   var el=document.getElementById('modal-content');
   if(el) el.classList.add('modal-wide');
   showModal(
     '<h3>📎 '+dailyEsc(name)+'</h3>'+body+
     '<div class="actions">'+
       '<a class="btn gray sm" href="'+safeHref+'" target="_blank" rel="noopener" style="text-decoration:none;display:inline-flex;align-items:center">新分頁開啟</a>'+
+      deleteBtn+
       '<button type="button" class="btn sm" onclick="closeModal()">關閉</button>'+
     '</div>'
   );
+}
+function dailyCanDeleteWorkAttach(w,user){
+  user=user||currentUser;
+  if(!w||!user||w.status==='cancelled') return false;
+  return canTickWork(w,user) || dailyCanManage(user);
+}
+function dailyDeletePreviewAttach(workId,idx,kind){
+  kind=kind||'attachments';
+  var s=loadDailyState();
+  var w=s.works.find(function(x){ return x.id===workId; });
+  if(!w){ alert2('找不到此工作。'); return; }
+  if(!dailyCanDeleteWorkAttach(w,currentUser)){
+    alert2('你沒有權限刪除此附件。');
+    return;
+  }
+  var arr=kind==='descImages' ? w.descImages : w.attachments;
+  if(!Array.isArray(arr) || arr[idx]==null){
+    alert2('找不到此附件。');
+    return;
+  }
+  var fname=(arr[idx]&&arr[idx].name)?arr[idx].name:'附件';
+  if(!confirm('確定刪除「'+fname+'」？此操作無法復原。')) return;
+  arr.splice(idx,1);
+  if(kind==='descImages') w.descImages=arr;
+  else w.attachments=arr;
+  w.updatedAt=dailyNowStr();
+  saveDailyState(s);
+  addDailyOpLog(kind==='descImages'?'刪除說明圖':'刪除附件', w.unit+'｜'+w.title+'｜'+fname);
+  closeModal();
+  if(typeof flushCloudSaves==='function'){
+    flushCloudSaves().then(function(){ render(); }).catch(function(){ render(); });
+  }else{
+    render();
+  }
 }
 function dailyPreviewAttach(workId,idx){
   var w=loadDailyState().works.find(function(x){ return x.id===workId; });
@@ -5938,7 +6015,12 @@ function dailyPreviewAttach(workId,idx){
     alert2('找不到此附件。');
     return;
   }
-  dailyShowAttachPreview(w.attachments[idx]);
+  dailyShowAttachPreview(w.attachments[idx], {
+    workId:workId,
+    idx:idx,
+    kind:'attachments',
+    canDelete:dailyCanDeleteWorkAttach(w,currentUser)
+  });
 }
 function dailyDownloadAttach(workId,idx){
   dailyPreviewAttach(workId,idx);
@@ -5970,7 +6052,12 @@ function dailyPreviewDescImage(workId,idx){
     alert2('找不到此說明圖。');
     return;
   }
-  dailyShowAttachPreview(w.descImages[idx]);
+  dailyShowAttachPreview(w.descImages[idx], {
+    workId:workId,
+    idx:idx,
+    kind:'descImages',
+    canDelete:dailyCanManage(currentUser)
+  });
 }
 function dailyDescImagesHtml(w){
   var imgs=Array.isArray(w&&w.descImages)?w.descImages:[];
@@ -6188,7 +6275,17 @@ function vDailyToday(user){
     }).join('')+'</select>';
   }else{
     var myUnits=dailyUserUnits(user);
-    filter='<span class="tag dept">所屬單位：'+dailyEsc(myUnits.length?myUnits.join('、'):'—')+'</span>';
+    if(myUnits.length>1){
+      // 多單位：可切換地點，只看該單位工作
+      var opts=['全部'].concat(myUnits);
+      if(dailyUnitFilter!=='全部' && myUnits.indexOf(dailyUnitFilter)<0) dailyUnitFilter='全部';
+      filter='<label style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:13px;color:#555">單位 '+
+        '<select onchange="setDailyUnitFilter(this.value)">'+opts.map(function(u){
+          return '<option value="'+escHtml(u)+'"'+(dailyUnitFilter===u?' selected':'')+'>'+escHtml(u)+'</option>';
+        }).join('')+'</select></label>';
+    }else{
+      filter='<span class="tag dept">所屬單位：'+dailyEsc(myUnits.length?myUnits.join('、'):'—')+'</span>';
+    }
   }
   return '<div class="card"><h2>🗓️ 今日工作｜'+dailyEsc(todayStr())+'</h2>'+
     '<div class="stats">'+
