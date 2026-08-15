@@ -2879,7 +2879,7 @@ function vTransferStockLog(){
     }).join('');
   return '<div class="card">'
     +'<h2>📝 庫存校正記錄</h2>'
-    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">手改庫存、<b>POS 銷售</b> 出庫與 <b>POS 退貨</b> 回庫痕跡：誰、何時、各店舊→新。所有已登入可查看。</p>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">手改庫存、<b>POS 銷售</b> 出庫、<b>POS 退貨</b> 回庫與 <b>POS 換貨</b>（回庫／出庫）痕跡：誰、何時、各店舊→新。所有已登入可查看。</p>'
     +'<div class="filters"><button type="button" class="btn gray sm" data-call="refreshTransferAdjustments">重新整理</button></div>'
     +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 筆</p>'
     +'</div>'

@@ -53,14 +53,21 @@ import {
   adjustPosProduct,
   checkoutPos,
   returnPosTransaction,
+  exchangePosTransaction,
   resetPosDemo,
   getPosSalesReport,
   exportPosSalesReportCsv,
   getPosSettlement,
   submitPosSettlement,
   unlockPosSettlement,
+  approvePosSettlement,
+  rejectPosSettlement,
+  getPosPointsSettings,
+  updatePosPointsSettings,
   listPosCatalogOptions,
   addPosSellable,
+  addPosSellablesBatch,
+  adjustPosProductsBatch,
   listMembers,
   createMember,
   updateMember,
@@ -597,6 +604,16 @@ app.post('/api/pos/transactions/:id/return', requireAuth, async (req, res) => {
   }
 });
 
+app.post('/api/pos/transactions/:id/exchange', requireAuth, async (req, res) => {
+  try {
+    const transaction = await exchangePosTransaction(req.user, req.params.id, req.body || {});
+    res.json({ transaction });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
 app.post('/api/pos/checkout', requireAuth, async (req, res) => {
   try {
     const transaction = await checkoutPos(req.user, req.body || {});
@@ -629,6 +646,42 @@ app.get('/api/pos/catalog-options', requireAuth, async (req, res) => {
 app.post('/api/pos/sellables', requireAuth, async (req, res) => {
   try {
     res.json(await addPosSellable(req.user, req.body || {}));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/sellables/batch', requireAuth, async (req, res) => {
+  try {
+    res.json(await addPosSellablesBatch(req.user, req.body || {}));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/products/batch-adjust', requireAuth, async (req, res) => {
+  try {
+    res.json(await adjustPosProductsBatch(req.user, req.body || {}));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/pos/points-settings', requireAuth, async (req, res) => {
+  try {
+    res.json(await getPosPointsSettings(req.user));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.put('/api/pos/points-settings', requireAuth, async (req, res) => {
+  try {
+    res.json(await updatePosPointsSettings(req.user, req.body || {}));
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });
@@ -746,6 +799,24 @@ app.post('/api/pos/settlement/submit', requireAuth, async (req, res) => {
 app.post('/api/pos/settlement/unlock', requireAuth, async (req, res) => {
   try {
     res.json(await unlockPosSettlement(req.user, req.body || {}));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/settlement/approve', requireAuth, async (req, res) => {
+  try {
+    res.json(await approvePosSettlement(req.user, req.body || {}));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/settlement/reject', requireAuth, async (req, res) => {
+  try {
+    res.json(await rejectPosSettlement(req.user, req.body || {}));
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });

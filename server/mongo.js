@@ -2497,6 +2497,19 @@ function posMetaCol() {
   return db.collection('pos_meta');
 }
 
+async function getPosPointsSettingsInternal() {
+  await posMetaCol().updateOne(
+    { _id: 'points' },
+    { $setOnInsert: { _id: 'points', pointsPerDollar: 100, redeemEnabled: true } },
+    { upsert: true }
+  );
+  const doc = await posMetaCol().findOne({ _id: 'points' });
+  return {
+    pointsPerDollar: Math.max(1, Math.floor(Number(doc?.pointsPerDollar) || 100)),
+    redeemEnabled: doc?.redeemEnabled !== false,
+  };
+}
+
 function posIsSystemAdmin(user) {
   const me = publicUser(user);
   return !!(me && (me.role === 'system_admin' || isAdminAccount(me)));
@@ -2812,7 +2825,31 @@ export async function checkoutPos(user, payload = {}) {
     };
   });
   subtotal = Math.round(subtotal * 100) / 100;
-  const orderTotal = Math.round((subtotal + accountBalance) * 100) / 100;
+
+  // 積分折抵（每 N 分＝$1，可設定）
+  await ensureMembersReady();
+  const ptsSettings = await getPosPointsSettingsInternal();
+  let pointsRedeemed = 0;
+  let pointsDiscount = 0;
+  const memberKey = String(payload.memberId || payload.memberPhone || '').trim();
+  const wantRedeem = Number(payload.pointsToRedeem || 0);
+  if (wantRedeem) {
+    if (!ptsSettings.redeemEnabled) throw new Error('積分兌換已關閉');
+    if (!memberKey) throw new Error('請先選擇會員才能折抵積分');
+    if (!Number.isInteger(wantRedeem) || wantRedeem <= 0) throw new Error('折抵積分無效');
+    const n = ptsSettings.pointsPerDollar;
+    if (wantRedeem % n !== 0) throw new Error(`折抵積分須為 ${n} 的倍數（每 ${n} 分＝$1）`);
+    pointsDiscount = wantRedeem / n;
+    const member = await findMemberDoc(memberKey);
+    if (!member) throw new Error('找不到會員');
+    const bal = Math.max(0, Number(member.points) || 0);
+    if (wantRedeem > bal) throw new Error(`積分不足（餘額 ${bal}）`);
+    const maxDiscount = Math.max(0, subtotal + accountBalance);
+    if (pointsDiscount > maxDiscount + 1e-9) throw new Error('折抵金額不可超過應付總額');
+    pointsRedeemed = wantRedeem;
+  }
+
+  const orderTotal = Math.round((subtotal + accountBalance - pointsDiscount) * 100) / 100;
   if (orderTotal < 0) {
     for (const d of deducted) {
       await adjustInventoryQty(d.sellable.transferProductId, d.sellable.size, store, d.qty);
@@ -2863,6 +2900,8 @@ export async function checkoutPos(user, payload = {}) {
     accountBalance,
     orderTotal,
     paid: orderTotal,
+    pointsRedeemed: 0,
+    pointsDiscount: 0,
     createdAt: stamp,
     createdAtMs: now.getTime(),
     createdAtLabel: time,
@@ -2871,13 +2910,28 @@ export async function checkoutPos(user, payload = {}) {
   };
   await posTransactionsCol().insertOne(tx);
 
-  // 會員積分：商品小計每 $1＝1 分（取整捨去）
-  const memberKey = String(payload.memberId || payload.memberPhone || '').trim();
+  // 會員積分：先扣折抵，再依「小計−折抵額」累積
   if (memberKey) {
-    const earn = pointsFromAmount(subtotal);
-    if (earn > 0) {
-      try {
-        await ensureMembersReady();
+    try {
+      let balanceAfter = null;
+      if (pointsRedeemed > 0) {
+        const red = await applyMemberPoints({
+          memberId: memberKey,
+          delta: -pointsRedeemed,
+          type: 'redeem',
+          reason: `結帳折抵｜${orderNo}｜${pointsRedeemed}分＝$${pointsDiscount}`,
+          actor: me,
+          posTransactionId: id,
+          posOrderNo: orderNo,
+          amountBase: pointsDiscount,
+        });
+        balanceAfter = red.entry.balanceAfter;
+        tx.pointsRedeemed = Math.abs(red.actualDelta);
+        tx.pointsDiscount = pointsDiscount;
+      }
+      const earnBase = Math.max(0, subtotal - pointsDiscount);
+      const earn = pointsFromAmount(earnBase);
+      if (earn > 0) {
         const pts = await applyMemberPoints({
           memberId: memberKey,
           delta: earn,
@@ -2886,17 +2940,25 @@ export async function checkoutPos(user, payload = {}) {
           actor: me,
           posTransactionId: id,
           posOrderNo: orderNo,
-          amountBase: subtotal,
+          amountBase: earnBase,
         });
         tx.pointsEarned = pts.actualDelta;
-        tx.pointsBalanceAfter = pts.entry.balanceAfter;
-        await posTransactionsCol().updateOne(
-          { id },
-          { $set: { pointsEarned: tx.pointsEarned, pointsBalanceAfter: tx.pointsBalanceAfter } }
-        );
-      } catch (e) {
-        console.warn('POS points earn skipped:', e.message || e);
+        balanceAfter = pts.entry.balanceAfter;
       }
+      tx.pointsBalanceAfter = balanceAfter;
+      await posTransactionsCol().updateOne(
+        { id },
+        {
+          $set: {
+            pointsEarned: tx.pointsEarned,
+            pointsRedeemed: tx.pointsRedeemed,
+            pointsDiscount: tx.pointsDiscount,
+            pointsBalanceAfter: tx.pointsBalanceAfter,
+          },
+        }
+      );
+    } catch (e) {
+      console.warn('POS points checkout skipped:', e.message || e);
     }
   }
 
@@ -3122,6 +3184,275 @@ export async function returnPosTransaction(user, txId, payload = {}) {
     time,
     action: 'POS 退貨',
     detail: `${tx.orderNo}｜${store}｜退 $${refundAmount.toFixed(2)}｜${reason}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+
+  const updated = await posTransactionsCol().findOne({ id });
+  return stripPosTransaction(updated);
+}
+
+export async function exchangePosTransaction(user, txId, payload = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可換貨');
+  const me = publicUser(user);
+  const id = String(txId || '');
+  const tx = await posTransactionsCol().findOne({ id });
+  if (!tx) throw new Error('找不到交易');
+  if (!posIsSystemAdmin(me)) {
+    const stores = posUserStores(me);
+    if (stores.length && !stores.includes(tx.store)) throw new Error('無權換此交易');
+  }
+  if (tx.status === 'full_return' || String(tx.orderStatus || '').indexOf('全部退貨') >= 0) {
+    throw new Error('此單已全部退貨，無法換貨');
+  }
+  const reason = String(payload.reason || '').trim();
+  if (!reason) throw new Error('請填寫換貨原因');
+  const paymentNames = { cash: '現金', credit_card: '信用卡', octopus: '八達通', fps: 'FPS' };
+  const settleMethod = String(payload.settleMethod || payload.paymentMethod || tx.paymentMethod || 'cash');
+  if (!paymentNames[settleMethod]) throw new Error('收／退款方式無效');
+
+  const returnReq = Array.isArray(payload.returnItems) ? payload.returnItems : [];
+  const exchangeReq = Array.isArray(payload.exchangeItems) ? payload.exchangeItems : [];
+  if (!returnReq.length) throw new Error('請選擇退回品項');
+  if (!exchangeReq.length) throw new Error('請選擇換入品項');
+
+  const items = Array.isArray(tx.items) ? tx.items.map((it) => ({ ...it })) : [];
+  const returnLines = [];
+  let returnAmount = 0;
+  for (const raw of returnReq) {
+    const productId = String(raw.productId || '');
+    const qty = Number(raw.qty);
+    if (!productId || !Number.isInteger(qty) || qty <= 0) throw new Error('退回數量無效');
+    const line = items.find((it) => String(it.productId) === productId);
+    if (!line) throw new Error('找不到退回品項：' + productId);
+    const already = Number(line.returnedQty) || 0;
+    const remain = Number(line.qty) - already;
+    if (qty > remain) throw new Error(`${line.name} 可退數量僅餘 ${remain}`);
+    if (!line.transferProductId) throw new Error(`${line.name} 缺少調動貨品對應`);
+    returnAmount += (Number(line.unitPrice) || 0) * qty;
+    returnLines.push({ line, qty, productId });
+  }
+  returnAmount = Math.round(returnAmount * 100) / 100;
+
+  const exchangeLines = [];
+  let exchangeAmount = 0;
+  for (const raw of exchangeReq) {
+    const sellableId = String(raw.productId || '');
+    const qty = Number(raw.qty);
+    if (!sellableId || !Number.isInteger(qty) || qty <= 0) throw new Error('換入數量無效');
+    const sellable = await posProductsCol().findOne({ id: sellableId, active: { $ne: false } });
+    if (!sellable || !sellable.transferProductId) throw new Error('找不到換入可售商品：' + sellableId);
+    const unitPrice = Number(sellable.price) || 0;
+    exchangeAmount += unitPrice * qty;
+    exchangeLines.push({ sellable, qty, unitPrice });
+  }
+  exchangeAmount = Math.round(exchangeAmount * 100) / 100;
+  const diff = Math.round((exchangeAmount - returnAmount) * 100) / 100;
+
+  const store = tx.store;
+  const restocked = [];
+  const deducted = [];
+  try {
+    for (const rl of returnLines) {
+      const before = await getInventoryQty(rl.line.transferProductId, rl.line.size, store);
+      await adjustInventoryQty(rl.line.transferProductId, rl.line.size, store, rl.qty);
+      restocked.push({ ...rl, before });
+    }
+    for (const el of exchangeLines) {
+      const d = await deductTransferStock(el.sellable.transferProductId, el.sellable.size, store, el.qty);
+      deducted.push({ ...el, ...d });
+    }
+  } catch (e) {
+    for (const d of deducted) {
+      try {
+        await adjustInventoryQty(d.sellable.transferProductId, d.sellable.size, store, d.qty);
+      } catch (_) {}
+    }
+    for (const r of restocked) {
+      try {
+        await adjustInventoryQty(r.line.transferProductId, r.line.size, store, -r.qty);
+      } catch (_) {}
+    }
+    throw e;
+  }
+
+  for (const rl of returnLines) {
+    const line = items.find((it) => String(it.productId) === rl.productId);
+    line.returnedQty = (Number(line.returnedQty) || 0) + rl.qty;
+  }
+
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const exchId = `ex_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const exchangeRec = {
+    id: exchId,
+    at: time,
+    atMs: now.getTime(),
+    byId: String(me.id),
+    byName: me.name || me.login || '',
+    reason,
+    settleMethod,
+    settleMethodName: paymentNames[settleMethod],
+    returnAmount,
+    exchangeAmount,
+    diff,
+    returnItems: returnLines.map((rl) => ({
+      productId: rl.productId,
+      transferProductId: rl.line.transferProductId,
+      name: rl.line.name,
+      sku: rl.line.sku,
+      size: rl.line.size,
+      qty: rl.qty,
+      unitPrice: rl.line.unitPrice,
+      lineRefund: Math.round((Number(rl.line.unitPrice) || 0) * rl.qty * 100) / 100,
+    })),
+    exchangeItems: deducted.map((d) => ({
+      productId: d.sellable.id,
+      transferProductId: d.sellable.transferProductId,
+      name: d.sellable.name,
+      sku: d.sellable.sku,
+      size: d.sellable.size,
+      qty: d.qty,
+      unitPrice: d.unitPrice,
+      lineTotal: Math.round(d.unitPrice * d.qty * 100) / 100,
+    })),
+    pointsReturned: 0,
+    pointsEarned: 0,
+    pointsClamped: false,
+  };
+
+  const memberKey = String(tx.memberId || tx.memberPhone || '').trim();
+  if (memberKey) {
+    try {
+      await ensureMembersReady();
+      const retPts = pointsFromAmount(returnAmount);
+      if (retPts > 0) {
+        const p = await applyMemberPoints({
+          memberId: memberKey,
+          delta: -retPts,
+          type: 'return',
+          reason: `換貨退回扣分｜${tx.orderNo}`,
+          actor: me,
+          posTransactionId: id,
+          posOrderNo: tx.orderNo,
+          returnId: exchId,
+          amountBase: returnAmount,
+        });
+        exchangeRec.pointsReturned = Math.abs(p.actualDelta);
+        exchangeRec.pointsClamped = !!p.clamped;
+        exchangeRec.pointsBalanceAfter = p.entry.balanceAfter;
+      }
+      const earnPts = pointsFromAmount(exchangeAmount);
+      if (earnPts > 0) {
+        const p = await applyMemberPoints({
+          memberId: memberKey,
+          delta: earnPts,
+          type: 'earn',
+          reason: `換貨換入累積｜${tx.orderNo}`,
+          actor: me,
+          posTransactionId: id,
+          posOrderNo: tx.orderNo,
+          returnId: exchId,
+          amountBase: exchangeAmount,
+        });
+        exchangeRec.pointsEarned = p.actualDelta;
+        exchangeRec.pointsBalanceAfter = p.entry.balanceAfter;
+      }
+    } catch (e) {
+      console.warn('POS points exchange skipped:', e.message || e);
+    }
+  }
+
+  const allReturned = items.every((it) => (Number(it.returnedQty) || 0) >= Number(it.qty));
+  const status = allReturned ? 'full_return' : 'partial_return';
+  const orderStatus = allReturned ? `全部退貨／已換貨（${store}店）` : `部分退貨／已換貨（${store}店）`;
+  const exchanges = Array.isArray(tx.exchanges) ? tx.exchanges.slice() : [];
+  exchanges.push(exchangeRec);
+
+  await posTransactionsCol().updateOne(
+    { id },
+    {
+      $set: {
+        items,
+        exchanges,
+        status,
+        orderStatus,
+        updatedAt: time,
+        updatedAtMs: now.getTime(),
+      },
+    }
+  );
+
+  const actorName = me.name || me.login || me.id;
+  for (const r of restocked) {
+    const before = {};
+    const after = {};
+    for (const s of TRANSFER_STORES) {
+      const q = await getInventoryQty(r.line.transferProductId, r.line.size, s);
+      after[s] = q;
+      before[s] = s === store ? r.before : q;
+    }
+    const adjId = 'AD' + String(Date.now()) + '-' + crypto.randomBytes(2).toString('hex');
+    await transferStockAdjustmentsCol().insertOne({
+      _id: adjId,
+      id: adjId,
+      type: 'pos_exchange_in',
+      reason: 'POS 換貨回庫',
+      productId: r.line.transferProductId,
+      productName: r.line.name || '',
+      size: r.line.size,
+      before,
+      after,
+      store,
+      qtyReturned: r.qty,
+      posTransactionId: id,
+      posOrderNo: tx.orderNo,
+      exchangeId: exchId,
+      createdAt: time,
+      createdAtMs: Date.now(),
+      createdBy: String(me.id),
+      createdByName: actorName,
+    });
+  }
+  for (const d of deducted) {
+    const before = {};
+    const after = {};
+    for (const s of TRANSFER_STORES) {
+      const q = await getInventoryQty(d.sellable.transferProductId, d.sellable.size, s);
+      after[s] = q;
+      before[s] = s === store ? d.before : q;
+    }
+    const adjId = 'AD' + String(Date.now()) + '-' + crypto.randomBytes(2).toString('hex');
+    await transferStockAdjustmentsCol().insertOne({
+      _id: adjId,
+      id: adjId,
+      type: 'pos_exchange_out',
+      reason: 'POS 換貨出庫',
+      productId: d.sellable.transferProductId,
+      productName: d.sellable.name || '',
+      size: d.sellable.size,
+      before,
+      after,
+      store,
+      qtySold: d.qty,
+      posTransactionId: id,
+      posOrderNo: tx.orderNo,
+      exchangeId: exchId,
+      createdAt: time,
+      createdAtMs: Date.now(),
+      createdBy: String(me.id),
+      createdByName: actorName,
+    });
+  }
+
+  await appendModuleLog({
+    module: 'pos',
+    time,
+    action: 'POS 換貨',
+    detail: `${tx.orderNo}｜${store}｜退 $${returnAmount.toFixed(2)}｜換 $${exchangeAmount.toFixed(2)}｜差 $${diff.toFixed(2)}｜${reason}`,
     userId: me.id,
     userName: me.name || me.login,
     user: me.name || me.login,
@@ -3454,6 +3785,7 @@ export async function getPosSettlement(user, query = {}) {
   const doc = await posSettlementsCol().findOne({ store, date });
   const settlement = stripPosSettlement(doc);
   const locked = !!(settlement && settlement.locked);
+  const reviewStatus = settlement?.reviewStatus || (locked ? 'pending_review' : '');
   const snapshotActivity = Number(settlement?.snapshot?.latestActivityMs) || Number(settlement?.submittedAtMs) || 0;
   const hasActivityAfter = locked && live.latestActivityMs > snapshotActivity;
   return {
@@ -3462,11 +3794,14 @@ export async function getPosSettlement(user, query = {}) {
     live,
     settlement,
     locked,
+    reviewStatus,
     hasActivityAfter,
     stores: canManage ? POS_STORES.slice() : stores,
     canManage,
     canSubmit: posCanAccessStore(me, store) && !locked,
     canUnlock: canManage && locked,
+    canApprove: canManage && locked && reviewStatus === 'pending_review',
+    canReject: canManage && locked && reviewStatus === 'pending_review',
   };
 }
 
@@ -3483,8 +3818,17 @@ export async function submitPosSettlement(user, payload = {}) {
   const cashCounted = Number(payload.cashCounted);
   if (!isFinite(cashCounted)) throw new Error('請填寫現金實點金額');
   const remark = String(payload.remark || '').trim();
+  const attachments = Array.isArray(payload.attachments)
+    ? payload.attachments
+        .map((a) => ({
+          id: String(a.id || a.fileId || ''),
+          name: String(a.name || ''),
+          mimeType: String(a.mimeType || ''),
+        }))
+        .filter((a) => a.id)
+    : [];
   const existing = await posSettlementsCol().findOne({ store, date });
-  if (existing && existing.locked) throw new Error('此日結已提交並鎖定；請主管解除後再重交');
+  if (existing && existing.locked) throw new Error('此日結已提交並鎖定；請主管退回或解除後再重交');
 
   const live = await buildPosSalesSummary({ store, from: date, to: date });
   const cashDiff = posRound2(cashCounted - live.expectedCash);
@@ -3501,6 +3845,7 @@ export async function submitPosSettlement(user, payload = {}) {
     cashDiff,
     expectedCash: live.expectedCash,
     remark,
+    attachmentCount: attachments.length,
   };
   const history = Array.isArray(existing?.history) ? existing.history.slice() : [];
   history.push(histEntry);
@@ -3511,10 +3856,16 @@ export async function submitPosSettlement(user, payload = {}) {
     store,
     date,
     locked: true,
+    reviewStatus: 'pending_review',
+    reviewNote: '',
+    reviewedAt: null,
+    reviewedById: null,
+    reviewedByName: null,
     snapshot,
     cashCounted: posRound2(cashCounted),
     cashDiff,
     remark,
+    attachments,
     submittedAt: time,
     submittedAtMs: now.getTime(),
     submittedById: String(me.id),
@@ -3567,6 +3918,7 @@ export async function unlockPosSettlement(user, payload = {}) {
     {
       $set: {
         locked: false,
+        reviewStatus: 'unlocked',
         unlockedAt: time,
         unlockedAtMs: now.getTime(),
         unlockedById: String(me.id),
@@ -3586,6 +3938,195 @@ export async function unlockPosSettlement(user, payload = {}) {
     user: me.name || me.login,
   });
   return getPosSettlement(me, { store, date });
+}
+
+export async function approvePosSettlement(user, payload = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  const me = publicUser(user);
+  if (!posCanManageCatalog(me)) throw new Error('只有管理員／主管可核對日結');
+  const store = String(payload.store || '').trim();
+  const date = String(payload.date || '');
+  if (!POS_STORES.includes(store)) throw new Error('店舖無效');
+  const existing = await posSettlementsCol().findOne({ store, date });
+  if (!existing) throw new Error('找不到日結紀錄');
+  if (!existing.locked) throw new Error('日結未鎖定，無法核對');
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const note = String(payload.note || '').trim();
+  const history = Array.isArray(existing.history) ? existing.history.slice() : [];
+  history.push({
+    action: 'approve',
+    at: time,
+    atMs: now.getTime(),
+    byId: String(me.id),
+    byName: me.name || me.login || '',
+    note,
+  });
+  await posSettlementsCol().updateOne(
+    { _id: existing._id },
+    {
+      $set: {
+        reviewStatus: 'approved',
+        reviewNote: note,
+        reviewedAt: time,
+        reviewedById: String(me.id),
+        reviewedByName: me.name || me.login || '',
+        history,
+      },
+    }
+  );
+  await appendModuleLog({
+    module: 'pos',
+    time,
+    action: '核對日結通過',
+    detail: `${store}｜${date}` + (note ? `｜${note}` : ''),
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return getPosSettlement(me, { store, date });
+}
+
+export async function rejectPosSettlement(user, payload = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  const me = publicUser(user);
+  if (!posCanManageCatalog(me)) throw new Error('只有管理員／主管可退回日結');
+  const store = String(payload.store || '').trim();
+  const date = String(payload.date || '');
+  const note = String(payload.note || payload.reason || '').trim();
+  if (!note) throw new Error('請填寫退回原因');
+  if (!POS_STORES.includes(store)) throw new Error('店舖無效');
+  const existing = await posSettlementsCol().findOne({ store, date });
+  if (!existing) throw new Error('找不到日結紀錄');
+  if (!existing.locked) throw new Error('日結未鎖定');
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const history = Array.isArray(existing.history) ? existing.history.slice() : [];
+  history.push({
+    action: 'reject',
+    at: time,
+    atMs: now.getTime(),
+    byId: String(me.id),
+    byName: me.name || me.login || '',
+    note,
+  });
+  await posSettlementsCol().updateOne(
+    { _id: existing._id },
+    {
+      $set: {
+        locked: false,
+        reviewStatus: 'rejected',
+        reviewNote: note,
+        reviewedAt: time,
+        reviewedById: String(me.id),
+        reviewedByName: me.name || me.login || '',
+        unlockedAt: time,
+        unlockedAtMs: now.getTime(),
+        unlockedById: String(me.id),
+        unlockedByName: me.name || me.login || '',
+        history,
+      },
+    }
+  );
+  await syncDailySettlementWork(store, date, { done: false, actor: me });
+  await appendModuleLog({
+    module: 'pos',
+    time,
+    action: '退回日結',
+    detail: `${store}｜${date}｜${note}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return getPosSettlement(me, { store, date });
+}
+
+export async function getPosPointsSettings(user) {
+  await connectMongo();
+  await ensurePosReady();
+  const me = publicUser(user);
+  if (!me) throw new Error('未登入');
+  const settings = await getPosPointsSettingsInternal();
+  return { settings, canEdit: posCanManageCatalog(me) };
+}
+
+export async function updatePosPointsSettings(user, input = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可修改積分設定');
+  const me = publicUser(user);
+  const $set = { updatedAt: formatHkDateTime(), updatedBy: String(me.id) };
+  if (input.pointsPerDollar != null) {
+    const n = Math.floor(Number(input.pointsPerDollar));
+    if (!Number.isInteger(n) || n < 1) throw new Error('每 N 分＝$1 的 N 須為 ≥1 的整數');
+    $set.pointsPerDollar = n;
+  }
+  if (input.redeemEnabled != null) $set.redeemEnabled = !!input.redeemEnabled;
+  await posMetaCol().updateOne({ _id: 'points' }, { $set, $setOnInsert: { _id: 'points' } }, { upsert: true });
+  const settings = await getPosPointsSettingsInternal();
+  await appendModuleLog({
+    module: 'pos',
+    time: $set.updatedAt,
+    action: '更新積分設定',
+    detail: `每 ${settings.pointsPerDollar} 分＝$1｜兌換${settings.redeemEnabled ? '開' : '關'}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return { settings, canEdit: true };
+}
+
+export async function addPosSellablesBatch(user, input = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可批次加入可售');
+  const rows = Array.isArray(input.items) ? input.items : [];
+  if (!rows.length) throw new Error('請選擇至少一項');
+  const added = [];
+  const errors = [];
+  for (const row of rows) {
+    try {
+      const r = await addPosSellable(user, {
+        transferProductId: row.transferProductId,
+        size: row.size,
+        price: row.price != null && row.price !== '' ? row.price : input.defaultPrice,
+        sku: row.sku,
+        name: row.name,
+      });
+      added.push(r.product);
+    } catch (e) {
+      errors.push({
+        transferProductId: row.transferProductId,
+        size: row.size,
+        error: String(e.message || e),
+      });
+    }
+  }
+  return { added, errors, addedCount: added.length, errorCount: errors.length };
+}
+
+export async function adjustPosProductsBatch(user, input = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可批次調整');
+  const ids = Array.isArray(input.ids) ? input.ids.map(String).filter(Boolean) : [];
+  if (!ids.length) throw new Error('請選擇商品');
+  const patch = {};
+  if (input.price != null && input.price !== '') patch.price = input.price;
+  if (input.active != null) patch.active = input.active;
+  if (!Object.keys(patch).length) throw new Error('請指定售價或上下架');
+  const updated = [];
+  const errors = [];
+  for (const id of ids) {
+    try {
+      updated.push(await adjustPosProduct(user, id, patch));
+    } catch (e) {
+      errors.push({ id, error: String(e.message || e) });
+    }
+  }
+  return { updated, errors, updatedCount: updated.length, errorCount: errors.length };
 }
 
 export async function resetPosDemo(user) {
