@@ -74,7 +74,6 @@ export interface PosTransaction {
   paymentStatus?: string
   memberName?: string
   memberPhone?: string
-  memberId?: string
   status?: string
   orderStatus?: string
   pointsBalanceAfter?: number | null
