@@ -55,6 +55,7 @@ import {
   returnPosTransaction,
   exchangePosTransaction,
   resetPosDemo,
+  seedPosSamples,
   getPosSalesReport,
   exportPosSalesReportCsv,
   getPosSettlement,
@@ -751,6 +752,16 @@ app.post('/api/pos/members/:id/points', requireAuth, async (req, res) => {
 app.post('/api/pos/reset', requireAuth, async (req, res) => {
   try {
     res.json(await resetPosDemo(req.user));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/seed-samples', requireAuth, async (req, res) => {
+  try {
+    const force = !!(req.body && req.body.force);
+    res.json(await seedPosSamples(req.user, { force }));
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });

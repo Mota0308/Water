@@ -2650,6 +2650,12 @@ function stockFromMap(qtyMap, transferProductId, size) {
 export async function listPosProducts(user) {
   await connectMongo();
   await ensurePosReady();
+  try {
+    const n = await posProductsCol().countDocuments({});
+    if (n === 0) await seedPosSamples(user, { force: false });
+  } catch (e) {
+    console.warn('POS sample seed skipped:', e.message || e);
+  }
   const docs = await posProductsCol().find({ active: { $ne: false } }).sort({ sku: 1, name: 1 }).toArray();
   const qtyMap = await buildTransferQtyMap();
   const products = docs.map((d) => {
@@ -4238,20 +4244,26 @@ export async function resetPosDemo(user) {
   await connectMongo();
   if (!posIsSystemAdmin(user)) throw new Error('只有系統管理員可重置 POS');
   await ensurePosIndexes();
+  await ensureMembersReady();
   await posProductsCol().deleteMany({});
   await posTransactionsCol().deleteMany({});
+  await posSettlementsCol().deleteMany({ isSample: true });
+  await membersCol().deleteMany({ isSample: true });
+  await memberPointsCol().deleteMany({ isSample: true });
   await posMetaCol().replaceOne({ _id: 'main' }, { _id: 'main', seq: 1000 }, { upsert: true });
+  await posMetaCol().deleteOne({ _id: 'samples' });
   const me = publicUser(user);
   await appendModuleLog({
     module: 'pos',
     time: formatHkDateTime(),
     action: '重置雲端 POS',
-    detail: '清空可售目錄與交易（不改調動庫存）',
+    detail: '清空可售目錄與交易，並重新載入示範資料（不改調動庫存）',
     userId: me?.id,
     userName: me?.name || me?.login,
     user: me?.name || me?.login,
   });
-  return { ok: true };
+  const seeded = await seedPosSamples(user, { force: true });
+  return { ok: true, seeded };
 }
 
 /* ═══════════ 雲端會員＋積分 ═══════════ */
@@ -4570,6 +4582,433 @@ export async function setMemberActive(user, id, active) {
     user: me.name || me.login,
   });
   return stripMember(updated);
+}
+
+/**
+ * 為 POS 各功能植入示範資料（可售、會員、積分、交易、日結）。
+ * 不改動調動庫存數量；交易為歷史樣本，不扣庫。
+ */
+export async function seedPosSamples(user, { force = false } = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  await ensureTransferSeed();
+  await ensureMembersReady();
+  await getPosPointsSettingsInternal();
+  await posSettlementsCol().createIndex({ store: 1, date: 1 }, { unique: true });
+
+  const me = publicUser(user);
+  if (!me) throw new Error('未登入');
+
+  const existingMeta = await posMetaCol().findOne({ _id: 'samples' });
+  const sellableCount = await posProductsCol().countDocuments({});
+  if (!force && existingMeta?.seededAt && sellableCount > 0) {
+    return { ok: true, skipped: true, reason: 'already_seeded' };
+  }
+
+  if (force) {
+    await posProductsCol().deleteMany({ isSample: true });
+    await posTransactionsCol().deleteMany({ isSample: true });
+    await membersCol().deleteMany({ isSample: true });
+    await memberPointsCol().deleteMany({ isSample: true });
+    await posSettlementsCol().deleteMany({ isSample: true });
+  }
+
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const today = hkTodayYmd();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const ymdOffset = (daysAgo) => hkYmdFromMs(now.getTime() - daysAgo * dayMs);
+  const actorName = me.name || me.login || '示範收銀';
+
+  // —— 可售商品（掛靠調動種子貨品）——
+  const sellableSpecs = [
+    { id: 'sell_sample_s001_m', transferProductId: 'WS-S001', size: 'M', price: 1280, sku: 'WS-S001-M', name: '成人 2mm 防寒膠衣' },
+    { id: 'sell_sample_s001_l', transferProductId: 'WS-S001', size: 'L', price: 1280, sku: 'WS-S001-L', name: '成人 2mm 防寒膠衣' },
+    { id: 'sell_sample_f001_m', transferProductId: 'WS-F001', size: 'M', price: 680, sku: 'WS-F001-M', name: '成人抓毛套裝' },
+    { id: 'sell_sample_f001_l', transferProductId: 'WS-F001', size: 'L', price: 680, sku: 'WS-F001-L', name: '成人抓毛套裝' },
+    { id: 'sell_sample_u001_s', transferProductId: 'WS-U001', size: 'S', price: 320, sku: 'WS-U001-S', name: '成人長袖防曬衣' },
+    { id: 'sell_sample_u001_m', transferProductId: 'WS-U001', size: 'M', price: 320, sku: 'WS-U001-M', name: '成人長袖防曬衣' },
+  ];
+  let sellablesAdded = 0;
+  for (const s of sellableSpecs) {
+    const tp = await transferProductsCol().findOne({
+      $or: [{ _id: s.transferProductId }, { id: s.transferProductId }],
+    });
+    if (!tp) continue;
+    const exists = await posProductsCol().findOne({
+      $or: [{ id: s.id }, { transferProductId: s.transferProductId, size: s.size }],
+    });
+    if (exists) continue;
+    await posProductsCol().insertOne({
+      _id: s.id,
+      id: s.id,
+      transferProductId: s.transferProductId,
+      name: s.name || tp.name,
+      sku: s.sku,
+      size: s.size,
+      price: s.price,
+      category: tp.category || '',
+      color: tp.color || '',
+      active: true,
+      isSample: true,
+      createdAt: time,
+      updatedAt: time,
+      createdBy: String(me.id),
+    });
+    sellablesAdded += 1;
+  }
+  const sellables = await posProductsCol()
+    .find({ id: { $in: sellableSpecs.map((x) => x.id) } })
+    .toArray();
+  const bySku = new Map(sellables.map((p) => [p.sku, p]));
+
+  // —— 會員 ——
+  const memberSpecs = [
+    { phone: '91110001', name: '陳志明', level: 'VIP 會員', points: 2580, remark: '示範 VIP' },
+    { phone: '91110002', name: '李美玲', level: '一般會員', points: 620, remark: '示範一般會員' },
+    { phone: '91110003', name: '王大偉', level: 'VIP 會員', points: 5120, remark: '示範長期客戶' },
+    { phone: '91110004', name: '張小燕', level: '一般會員', points: 150, remark: '示範新會員' },
+  ];
+  let membersAdded = 0;
+  for (const m of memberSpecs) {
+    const exists = await membersCol().findOne({ phone: m.phone });
+    if (exists) {
+      if (force || exists.isSample) {
+        await membersCol().updateOne(
+          { _id: exists._id },
+          {
+            $set: {
+              name: m.name,
+              level: m.level,
+              points: m.points,
+              remark: m.remark,
+              active: true,
+              isSample: true,
+              updatedAt: time,
+              updatedAtMs: now.getTime(),
+            },
+          }
+        );
+      }
+      continue;
+    }
+    await membersCol().insertOne({
+      _id: m.phone,
+      id: m.phone,
+      phone: m.phone,
+      name: m.name,
+      level: m.level,
+      remark: m.remark,
+      points: m.points,
+      active: true,
+      isSample: true,
+      createdAt: time,
+      createdAtMs: now.getTime(),
+      updatedAt: time,
+      updatedAtMs: now.getTime(),
+      createdBy: String(me.id),
+      createdByName: actorName,
+    });
+    membersAdded += 1;
+  }
+
+  // —— 積分流水（樣本）——
+  let pointsAdded = 0;
+  const pointSamples = [
+    { memberId: '91110001', delta: 500, type: 'adjust', reason: '示範：開戶贈分', daysAgo: 20 },
+    { memberId: '91110001', delta: -100, type: 'redeem', reason: '示範：結帳折抵', daysAgo: 3 },
+    { memberId: '91110002', delta: 200, type: 'earn', reason: '示範：消費累積', daysAgo: 5 },
+    { memberId: '91110003', delta: 800, type: 'earn', reason: '示範：消費累積', daysAgo: 8 },
+    { memberId: '91110004', delta: 150, type: 'adjust', reason: '示範：新會員禮', daysAgo: 2 },
+  ];
+  for (const [idx, p] of pointSamples.entries()) {
+    const id = `pt_sample_${idx + 1}`;
+    const exists = await memberPointsCol().findOne({ id });
+    if (exists && !force) continue;
+    if (exists) await memberPointsCol().deleteOne({ id });
+    const member = await findMemberDoc(p.memberId);
+    if (!member) continue;
+    const atMs = now.getTime() - p.daysAgo * dayMs;
+    const bal = Math.max(0, Number(member.points) || 0);
+    await memberPointsCol().insertOne({
+      _id: id,
+      id,
+      memberId: String(member.id || member.phone),
+      memberPhone: member.phone,
+      memberName: member.name || '',
+      delta: p.delta,
+      requestedDelta: p.delta,
+      balanceBefore: Math.max(0, bal - p.delta),
+      balanceAfter: bal,
+      clamped: false,
+      type: p.type,
+      reason: p.reason,
+      amountBase: null,
+      posTransactionId: '',
+      posOrderNo: '',
+      isSample: true,
+      createdAt: formatHkDateTime(new Date(atMs)),
+      createdAtMs: atMs,
+      createdBy: String(me.id),
+      createdByName: actorName,
+    });
+    pointsAdded += 1;
+  }
+
+  // —— 交易樣本（不扣庫存）——
+  function lineFromSku(sku, qty) {
+    const p = bySku.get(sku);
+    if (!p) return null;
+    const unitPrice = Number(p.price) || 0;
+    const lineTotal = Math.round(unitPrice * qty * 100) / 100;
+    return {
+      qty,
+      name: p.name,
+      sku: p.sku,
+      size: p.size,
+      unitPrice,
+      lineTotal,
+      productId: p.id,
+      transferProductId: p.transferProductId,
+      returnedQty: 0,
+    };
+  }
+
+  const txSpecs = [
+    {
+      id: 'tx_sample_1',
+      daysAgo: 0,
+      store: '觀塘',
+      paymentMethod: 'cash',
+      memberPhone: '91110002',
+      items: [
+        ['WS-U001-M', 2],
+        ['WS-F001-M', 1],
+      ],
+      remark: '示範：今日現金單',
+    },
+    {
+      id: 'tx_sample_2',
+      daysAgo: 0,
+      store: '觀塘',
+      paymentMethod: 'octopus',
+      memberPhone: '91110001',
+      items: [['WS-S001-M', 1]],
+      remark: '示範：今日八達通＋會員',
+      pointsRedeemed: 100,
+    },
+    {
+      id: 'tx_sample_3',
+      daysAgo: 1,
+      store: '荔枝角',
+      paymentMethod: 'credit_card',
+      memberPhone: '91110003',
+      items: [
+        ['WS-S001-L', 1],
+        ['WS-U001-S', 1],
+      ],
+      remark: '示範：昨日信用卡',
+    },
+    {
+      id: 'tx_sample_4',
+      daysAgo: 2,
+      store: '灣仔',
+      paymentMethod: 'fps',
+      items: [['WS-F001-L', 2]],
+      remark: '示範：FPS',
+    },
+    {
+      id: 'tx_sample_5',
+      daysAgo: 3,
+      store: '屯門',
+      paymentMethod: 'cash',
+      memberPhone: '91110004',
+      items: [['WS-U001-M', 1]],
+      remark: '示範：屯門現金',
+    },
+    {
+      id: 'tx_sample_6',
+      daysAgo: 5,
+      store: '觀塘',
+      paymentMethod: 'credit_card',
+      items: [
+        ['WS-S001-M', 1],
+        ['WS-F001-M', 1],
+      ],
+      remark: '示範：報表用歷史單',
+      status: 'partial_return',
+      orderStatus: '部分退貨',
+      returnedSku: 'WS-F001-M',
+    },
+  ];
+
+  const paymentNames = { cash: '現金', credit_card: '信用卡', octopus: '八達通', fps: 'FPS' };
+  const storePrefix = { 觀塘: 'KT', 荔枝角: 'LC', 灣仔: 'WC', 屯門: 'TM' };
+  let txsAdded = 0;
+  for (const [idx, spec] of txSpecs.entries()) {
+    const exists = await posTransactionsCol().findOne({ id: spec.id });
+    if (exists && !force) continue;
+    if (exists) await posTransactionsCol().deleteOne({ id: spec.id });
+
+    const items = [];
+    for (const [sku, qty] of spec.items) {
+      const line = lineFromSku(sku, qty);
+      if (line) items.push(line);
+    }
+    if (!items.length) continue;
+
+    let subtotal = items.reduce((s, it) => s + it.lineTotal, 0);
+    subtotal = Math.round(subtotal * 100) / 100;
+    const pointsRedeemed = Number(spec.pointsRedeemed) || 0;
+    const pointsDiscount = pointsRedeemed > 0 ? pointsRedeemed / 100 : 0;
+    const orderTotal = Math.max(0, Math.round((subtotal - pointsDiscount) * 100) / 100);
+    const atMs = now.getTime() - spec.daysAgo * dayMs - idx * 3600 * 1000;
+    const ymd = ymdOffset(spec.daysAgo);
+    const member = spec.memberPhone ? await findMemberDoc(spec.memberPhone) : null;
+    const orderNo = `${storePrefix[spec.store] || 'POS'}${ymd.replace(/-/g, '')}${String(idx + 1).padStart(4, '0')}`;
+
+    const returns = [];
+    if (spec.returnedSku) {
+      const line = items.find((it) => it.sku === spec.returnedSku);
+      if (line) {
+        line.returnedQty = 1;
+        const refundAmount = line.unitPrice;
+        returns.push({
+          id: `ret_sample_${idx + 1}`,
+          at: formatHkDateTime(new Date(atMs + 2 * 3600 * 1000)),
+          atMs: atMs + 2 * 3600 * 1000,
+          reason: '示範退貨',
+          refundMethod: 'cash',
+          refundMethodName: '現金',
+          refundAmount,
+          items: [{ productId: line.productId, qty: 1, name: line.name }],
+        });
+      }
+    }
+
+    await posTransactionsCol().insertOne({
+      _id: spec.id,
+      id: spec.id,
+      orderNo,
+      receiptNo: orderNo,
+      store: spec.store,
+      paymentMethod: spec.paymentMethod,
+      paymentMethodName: paymentNames[spec.paymentMethod] || spec.paymentMethod,
+      accountBalance: 0,
+      subtotal,
+      pointsRedeemed,
+      pointsDiscount,
+      pointsEarned: member ? Math.floor(subtotal - pointsDiscount) : 0,
+      orderTotal,
+      items,
+      returns,
+      exchanges: [],
+      status: spec.status || 'completed',
+      orderStatus: spec.orderStatus || '完成',
+      memberId: member ? String(member.id || member.phone) : '',
+      memberName: member?.name || '',
+      memberPhone: member?.phone || '',
+      remark: spec.remark || '',
+      staffId: String(me.id),
+      staffName: actorName,
+      cashierName: actorName,
+      isSample: true,
+      createdAt: formatHkDateTime(new Date(atMs)),
+      createdAtMs: atMs,
+      createdBy: String(me.id),
+      createdByName: actorName,
+    });
+    txsAdded += 1;
+  }
+
+  // —— 日結樣本：昨日觀塘「待核對」——
+  let settlementsAdded = 0;
+  const setDate = ymdOffset(1);
+  const setId = `set_sample_觀塘_${setDate}`;
+  const setExists = await posSettlementsCol().findOne({ _id: setId });
+  if (!setExists || force) {
+    if (setExists) await posSettlementsCol().deleteOne({ _id: setId });
+    const live = await buildPosSalesSummary({ store: '觀塘', from: setDate, to: setDate });
+    const cashCounted = posRound2((live.expectedCash || 0) + 20);
+    await posSettlementsCol().replaceOne(
+      { _id: setId },
+      {
+        _id: setId,
+        id: setId,
+        store: '觀塘',
+        date: setDate,
+        locked: true,
+        reviewStatus: 'pending_review',
+        reviewNote: '',
+        reviewedAt: null,
+        reviewedById: null,
+        reviewedByName: null,
+        snapshot: { ...live },
+        cashCounted,
+        cashDiff: posRound2(cashCounted - (live.expectedCash || 0)),
+        remark: '示範日結：待主管核對',
+        attachments: [],
+        submittedAt: time,
+        submittedAtMs: now.getTime(),
+        submittedById: String(me.id),
+        submittedByName: actorName,
+        history: [
+          {
+            action: 'submit',
+            at: time,
+            atMs: now.getTime(),
+            byId: String(me.id),
+            byName: actorName,
+            cashCounted,
+            remark: '示範提交',
+          },
+        ],
+        isSample: true,
+      },
+      { upsert: true }
+    );
+    settlementsAdded = 1;
+  }
+
+  await posMetaCol().updateOne(
+    { _id: 'samples' },
+    {
+      $set: {
+        _id: 'samples',
+        seededAt: time,
+        seededAtMs: now.getTime(),
+        seededBy: String(me.id),
+        counts: {
+          sellables: sellablesAdded,
+          members: membersAdded,
+          points: pointsAdded,
+          transactions: txsAdded,
+          settlements: settlementsAdded,
+        },
+      },
+    },
+    { upsert: true }
+  );
+
+  await appendModuleLog({
+    module: 'pos',
+    time,
+    action: '載入 POS 示範資料',
+    detail: `可售+${sellablesAdded}｜會員+${membersAdded}｜交易+${txsAdded}｜日結+${settlementsAdded}`,
+    userId: me.id,
+    userName: actorName,
+    user: actorName,
+  });
+
+  return {
+    ok: true,
+    skipped: false,
+    sellablesAdded,
+    membersAdded,
+    pointsAdded,
+    transactionsAdded: txsAdded,
+    settlementsAdded,
+  };
 }
 
 export { POS_STORES };

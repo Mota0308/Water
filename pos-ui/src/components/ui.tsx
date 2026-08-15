@@ -13,7 +13,7 @@ export function btnClass({
   variant?: ButtonVariant
   size?: ButtonSize
   className?: string
-}) {
+} = {}) {
   const variantClass: Record<ButtonVariant, string> = {
     primary: 'bg-sky-600 text-white hover:bg-sky-700',
     secondary: 'bg-slate-900 text-white hover:bg-slate-800',

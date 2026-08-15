@@ -3710,7 +3710,7 @@ function getSidebarItemsForModule(mod){
       ['posReport','銷售報表'],
       ['posMembers','會員管理'],
       ['posProducts','可售商品'],
-      ['posReset','重置示範資料']
+      ['posReset','示範資料']
     ];
   }
   if(mod==='production'){

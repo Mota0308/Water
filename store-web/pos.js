@@ -1145,17 +1145,47 @@ function vPosProducts() {
 function vPosReset() {
   posKickLoad();
   var can = posCloud.canReset || (typeof isAdmin === 'function' && isAdmin());
-  if (!can) {
-    return '<div class="card"><h2>♻️ 重置雲端 POS</h2>' +
-      '<p style="color:#c62828">只有系統管理員可重置雲端 POS 資料。</p>' +
+  var canManage = posCloud.canManage || (typeof isManager === 'function' && isManager()) || can;
+  if (!can && !canManage) {
+    return '<div class="card"><h2>♻️ POS 示範資料</h2>' +
+      '<p style="color:#c62828">只有管理員／主管可載入或重置示範資料。</p>' +
       '<button type="button" class="btn gray sm" data-call="go" data-arg0="posCashier">返回收銀</button></div>';
   }
-  return '<div class="card"><h2>♻️ 重置雲端 POS 資料</h2>' +
-    '<p style="font-size:14px;line-height:1.6;color:#455a64">會清空<strong>可售目錄與交易</strong>（所有裝置）。' +
-    '<br><b>不會</b>改動貨品調動的庫存數量。</p>' +
-    '<div class="actions" style="margin-top:14px">' +
-    '<button type="button" class="btn red" data-call="posResetDemoData">確認重置雲端 POS</button>' +
+  return '<div class="card"><h2>♻️ POS 示範資料</h2>' +
+    '<p style="font-size:14px;line-height:1.6;color:#455a64">示範資料涵蓋：可售商品、會員／積分、多日交易、日結待核對，方便試收銀／報表／結算／會員各頁。</p>' +
+    '<p style="font-size:13px;color:#78909c;margin-top:8px">樣本交易<strong>不扣</strong>調動庫存。會員電話示範：91110001–91110004。</p>' +
+    '<div class="actions" style="margin-top:14px;display:flex;flex-wrap:wrap;gap:8px">' +
+    '<button type="button" class="btn green" data-call="posSeedSamples" data-arg0="false">載入／補齊示範資料</button>' +
+    '<button type="button" class="btn orange" data-call="posSeedSamples" data-arg0="true">強制重載示範資料</button>' +
+    (can
+      ? '<button type="button" class="btn red" data-call="posResetDemoData">清空後重載示範</button>'
+      : '') +
     '<button type="button" class="btn gray sm" data-call="go" data-arg0="posCashier">返回收銀</button></div></div>';
+}
+
+async function posSeedSamples(force) {
+  if (!apiEnabled || !authToken) { alert2('需要連接雲端並登入。'); return; }
+  var doForce = force === true || force === 'true';
+  if (doForce && !confirm('強制重載會覆蓋已有的示範資料（isSample），確定？')) return;
+  try {
+    var res = await apiFetch('/api/pos/seed-samples', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: !!doForce })
+    });
+    if (res && res.skipped) alert2('示範資料已存在，未重複載入。可用「強制重載」。');
+    else {
+      alert2('已載入示範：可售 +' + (res.sellablesAdded || 0) +
+        '｜會員 +' + (res.membersAdded || 0) +
+        '｜交易 +' + (res.transactionsAdded || 0) +
+        '｜日結 +' + (res.settlementsAdded || 0));
+    }
+    posInvalidateCloud();
+    if (typeof posRefreshCloud === 'function') await posRefreshCloud(true);
+    if (typeof render === 'function') render();
+  } catch (e) {
+    alert2('載入失敗：' + (e.message || e));
+  }
 }
 
 function posKickReportLoad() {
@@ -1410,7 +1440,9 @@ function vPosSettlement() {
   getSidebarItemsForModule = function (mod) {
     var items = _orig(mod);
     if (mod !== 'pos') return items;
-    var can = (posCloud && posCloud.canReset) || (typeof isAdmin === 'function' && isAdmin());
+    var can = (posCloud && (posCloud.canReset || posCloud.canManage)) ||
+      (typeof isAdmin === 'function' && isAdmin()) ||
+      (typeof isManager === 'function' && isManager());
     if (can) return items;
     return (items || []).filter(function (it) { return it[0] !== 'posReset'; });
   };
