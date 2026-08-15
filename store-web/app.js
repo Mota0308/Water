@@ -3709,6 +3709,7 @@ function getSidebarItemsForModule(mod){
       ['posSettlement','每日結算'],
       ['posReport','銷售報表'],
       ['posMembers','會員管理'],
+      ['posProducts','可售商品'],
       ['posReset','重置示範資料']
     ];
   }
@@ -3874,9 +3875,13 @@ function render(){
     posMembers: typeof vPosMembers==='function' ? vPosMembers : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
     posSettlement: typeof vPosSettlement==='function' ? vPosSettlement : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
     posReport: typeof vPosReport==='function' ? vPosReport : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
+    posProducts: typeof vPosProducts==='function' ? vPosProducts : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
     posReset: typeof vPosReset==='function' ? vPosReset : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; }
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
+  try{
+    document.body.classList.toggle('pos-module', currentModule==='pos' && currentView!=='posReset');
+  }catch(e){}
   afterProjectChatRender();
   refreshMailboxUi();
   refreshCloudSyncStatus();
@@ -3907,7 +3912,7 @@ function go(v){
   if(v==='settings'){ currentModule='settings'; }
   if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProducts' || v==='transferProductLog'){ currentModule='transfer'; }
   if(v==='dailyToday' || v==='dailyProgress' || v==='dailyUnit' || v==='dailyHistory' || v==='dailyRecords' || v==='dailyNew' || v==='dailyRecurring' || v==='dailyOpLogs'){ currentModule='daily'; }
-  if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posSettlement' || v==='posReport' || v==='posReset'){ currentModule='pos'; }
+  if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posSettlement' || v==='posReport' || v==='posProducts' || v==='posReset'){ currentModule='pos'; }
   fCat='全部'; fStatus='全部'; fKw='';
   closeAppSidebar();
   render();

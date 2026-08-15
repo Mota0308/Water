@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
+    "build:pos-ui": "npm --prefix pos-ui ci && npm --prefix pos-ui run build",
     "test:daily-persist": "node scripts/repro-daily-persist.mjs"
   },
   "engines": {

@@ -1014,7 +1014,14 @@ app.use(
   express.static(webRoot, {
     setHeaders(res, filePath) {
       const p = String(filePath).replace(/\\/g, '/');
-      if (p.endsWith('index.html') || p.endsWith('/app.js') || p.endsWith('app.js') || p.endsWith('/pos.js') || p.endsWith('pos.js')) {
+      if (
+        p.endsWith('index.html') ||
+        p.endsWith('/app.js') ||
+        p.endsWith('app.js') ||
+        p.endsWith('/pos.js') ||
+        p.endsWith('pos.js') ||
+        p.includes('/pos-ui/')
+      ) {
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       } else {
         res.setHeader('Cache-Control', 'no-cache');
