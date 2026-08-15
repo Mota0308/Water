@@ -1,4 +1,4 @@
-/* ═══════════ POS 雲端模組（Mongo；會員示範仍本機） ═══════════ */
+/* ═══════════ POS 雲端模組（庫存＝調動；會員＝雲端） ═══════════ */
 var POS_LS_KEY = 'store-web-pos-demo-v1'; // 舊本機 key，載入時清除
 var POS_PAYMENTS = [
   { id: 'cash', name: '現金' },
@@ -27,13 +27,16 @@ var posCloud = {
   loading: false,
   error: ''
 };
-var posMembersLocal = [
-  { id: 'm1', name: '梁先生', phone: '56140870', level: '一般會員' },
-  { id: 'm2', name: '陳小姐', phone: '91234567', level: 'VIP 會員' },
-  { id: 'm3', name: '王先生', phone: '61239876', level: '一般會員' },
-  { id: 'm4', name: '李小姐', phone: '98881234', level: 'VIP 會員' },
-  { id: 'm5', name: '測試客人', phone: '60000000', level: '一般會員' }
-];
+var posMembersCloud = {
+  list: [],
+  canEdit: false,
+  loaded: false,
+  loading: false,
+  error: '',
+  kw: '',
+  includeInactive: false
+};
+var posMemberEditId = '';
 var posAdjustProductId = '';
 var posShowAddPanel = false;
 var posCatalogOptions = [];
@@ -118,7 +121,124 @@ function posFindProduct(id) {
   return (posCloud.products || []).find(function (p) { return p.id === id; }) || null;
 }
 function posFindMember(id) {
-  return posMembersLocal.find(function (m) { return m.id === id; }) || null;
+  return (posMembersCloud.list || []).find(function (m) { return m.id === id || m.phone === id; }) || null;
+}
+function posInvalidateMembers() {
+  posMembersCloud.loaded = false;
+  posMembersCloud.error = '';
+}
+async function posRefreshMembers(force) {
+  if (!apiEnabled || !authToken) {
+    posMembersCloud.error = '需要連接雲端並登入。';
+    posMembersCloud.loaded = true;
+    return;
+  }
+  if (posMembersCloud.loading) return;
+  if (posMembersCloud.loaded && !force) return;
+  posMembersCloud.loading = true;
+  posMembersCloud.error = '';
+  try {
+    var q = encodeURIComponent(posMembersCloud.kw || '');
+    var inc = posMembersCloud.includeInactive ? '1' : '0';
+    var res = await apiFetch('/api/pos/members?q=' + q + '&includeInactive=' + inc);
+    posMembersCloud.list = (res && res.members) || [];
+    posMembersCloud.canEdit = !!(res && res.canEdit);
+    posMembersCloud.loaded = true;
+  } catch (e) {
+    posMembersCloud.error = (e && e.message) || String(e);
+    posMembersCloud.loaded = true;
+  } finally {
+    posMembersCloud.loading = false;
+  }
+}
+function posKickMembersLoad() {
+  if (posMembersCloud.loading) return;
+  if (posMembersCloud.loaded) return;
+  posRefreshMembers(false).then(function () {
+    if (typeof render === 'function') render();
+  });
+}
+function posSetMembersKw(v) {
+  posMembersCloud.kw = String(v || '');
+  posInvalidateMembers();
+  posRefreshMembers(true).then(function () { if (typeof render === 'function') render(); });
+}
+function posToggleMembersInactive() {
+  posMembersCloud.includeInactive = !posMembersCloud.includeInactive;
+  posInvalidateMembers();
+  posRefreshMembers(true).then(function () { if (typeof render === 'function') render(); });
+}
+async function posCreateMember() {
+  var nameEl = document.getElementById('pos-mem-name');
+  var phoneEl = document.getElementById('pos-mem-phone');
+  var levelEl = document.getElementById('pos-mem-level');
+  var remarkEl = document.getElementById('pos-mem-remark');
+  try {
+    var res = await apiFetch('/api/pos/members', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: nameEl ? nameEl.value : '',
+        phone: phoneEl ? phoneEl.value : '',
+        level: levelEl ? levelEl.value : '一般會員',
+        remark: remarkEl ? remarkEl.value : ''
+      })
+    });
+    if (res && res.member) posMemberId = res.member.id || res.member.phone;
+    posInvalidateMembers();
+    await posRefreshMembers(true);
+    alert2('已新增會員。');
+    if (typeof render === 'function') render();
+  } catch (e) {
+    alert2('新增失敗：' + (e.message || e));
+  }
+}
+function posOpenMemberEdit(id) {
+  posMemberEditId = String(id || '');
+  if (typeof render === 'function') render();
+}
+function posCloseMemberEdit() {
+  posMemberEditId = '';
+  if (typeof render === 'function') render();
+}
+async function posSaveMemberEdit(id) {
+  var nameEl = document.getElementById('pos-mem-edit-name');
+  var phoneEl = document.getElementById('pos-mem-edit-phone');
+  var levelEl = document.getElementById('pos-mem-edit-level');
+  var remarkEl = document.getElementById('pos-mem-edit-remark');
+  try {
+    await apiFetch('/api/pos/members/' + encodeURIComponent(id), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: nameEl ? nameEl.value : undefined,
+        phone: phoneEl ? phoneEl.value : undefined,
+        level: levelEl ? levelEl.value : undefined,
+        remark: remarkEl ? remarkEl.value : undefined
+      })
+    });
+    posMemberEditId = '';
+    posInvalidateMembers();
+    await posRefreshMembers(true);
+    alert2('已更新會員。');
+    if (typeof render === 'function') render();
+  } catch (e) {
+    alert2('更新失敗：' + (e.message || e));
+  }
+}
+async function posSetMemberActive(id, active) {
+  try {
+    await apiFetch('/api/pos/members/' + encodeURIComponent(id) + '/active', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: !!active })
+    });
+    posInvalidateMembers();
+    await posRefreshMembers(true);
+    if (typeof render === 'function') render();
+  } catch (e) {
+    alert2('操作失敗：' + (e.message || e));
+  }
 }
 function posCartSubtotal() {
   return posCart.reduce(function (sum, line) {
@@ -345,6 +465,7 @@ function posForceReload() {
 
 function vPosCashier() {
   posKickLoad();
+  posKickMembersLoad();
   if (!posCloud.loaded || posCloud.loading) return posLoadingCard('🛒 POS 收銀');
   if (posCloud.error) return posLoadingCard('🛒 POS 收銀');
   var stores = posUserStoresLocal();
@@ -363,9 +484,11 @@ function vPosCashier() {
   var storeOpts = stores.map(function (s) {
     return '<option value="' + posEsc(s) + '"' + (s === store ? ' selected' : '') + '>' + posEsc(s) + '店</option>';
   }).join('');
-  var memberOpts = '<option value="">（不選擇會員）</option>' + posMembersLocal.map(function (m) {
-    return '<option value="' + posEsc(m.id) + '"' + (posMemberId === m.id ? ' selected' : '') + '>' +
-      posEsc(m.name + '｜' + m.phone + '｜' + m.level) + '</option>';
+  var memberOpts = '<option value="">（不選擇會員）</option>' + (posMembersCloud.list || []).filter(function (m) {
+    return m.active !== false;
+  }).map(function (m) {
+    return '<option value="' + posEsc(m.id || m.phone) + '"' + (posMemberId === (m.id || m.phone) ? ' selected' : '') + '>' +
+      posEsc(m.name + '｜' + m.phone + '｜' + (m.level || '一般會員')) + '</option>';
   }).join('');
   var payOpts = POS_PAYMENTS.map(function (p) {
     return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 12px 8px 0;font-size:13px;cursor:pointer">' +
@@ -455,7 +578,8 @@ function vPosCashier() {
     '<div class="card"><h3>購物車</h3><div class="table-wrap"><table><thead><tr>' +
     '<th>商品</th><th>數量</th><th>小計</th><th></th></tr></thead><tbody>' + cartRows +
     '</tbody></table></div>' +
-    '<label>示範會員（本機）</label><select onchange="posSetMember(this.value)">' + memberOpts + '</select>' +
+    '<label>會員（雲端）</label><select onchange="posSetMember(this.value)">' + memberOpts + '</select>' +
+    '<div style="font-size:12px;color:#78909c;margin:4px 0 8px">沒有名單？到側欄「會員管理」新增。</div>' +
     '<label>備註</label><input type="text" value="' + posEsc(posRemark) + '" placeholder="例如客人姓名" onchange="posSetRemark(this.value)" oninput="posRemark=this.value">' +
     '<label>賬戶餘額／抵扣（可負數）</label>' +
     '<input type="number" step="0.01" value="' + posEsc(String(balance)) + '" onchange="posSetAccountBalance(this.value)">' +
@@ -560,6 +684,71 @@ function vPosReceipt() {
   var tx = (posCloud.transactions || []).find(function (t) { return t.id === posReceiptFocusId; });
   if (!tx && posCloud.transactions && posCloud.transactions[0]) tx = posCloud.transactions[0];
   return posReceiptHtml(tx);
+}
+function vPosMembers() {
+  posKickMembersLoad();
+  if (!posMembersCloud.loaded || posMembersCloud.loading) {
+    return '<div class="card"><h2>👤 會員管理</h2><p style="color:#888">載入會員中…</p></div>';
+  }
+  if (posMembersCloud.error) {
+    return '<div class="card"><h2>👤 會員管理</h2><p style="color:#c62828">' + posEsc(posMembersCloud.error) + '</p>' +
+      '<button type="button" class="btn sm" data-call="posSetMembersKw" data-arg0="">重新載入</button></div>';
+  }
+  var canEdit = posMembersCloud.canEdit || (typeof isAdmin === 'function' && isAdmin()) || (typeof isManager === 'function' && isManager());
+  var rows = (posMembersCloud.list || []).map(function (m) {
+    var inactive = m.active === false;
+    var actions = '';
+    if (canEdit) {
+      actions = '<button type="button" class="btn gray sm" data-call="posOpenMemberEdit" data-arg0="' + posEsc(m.id || m.phone) + '">編輯</button> ' +
+        (inactive
+          ? '<button type="button" class="btn green sm" data-call="posSetMemberActive" data-arg0="' + posEsc(m.id || m.phone) + '" data-arg1="true">啟用</button>'
+          : '<button type="button" class="btn red sm" data-call="posSetMemberActive" data-arg0="' + posEsc(m.id || m.phone) + '" data-arg1="false">停用</button>');
+    }
+    return '<tr' + (inactive ? ' style="opacity:.6"' : '') + '>' +
+      '<td>' + posEsc(m.name) + '</td>' +
+      '<td>' + posEsc(m.phone) + '</td>' +
+      '<td>' + posEsc(m.level || '一般會員') + '</td>' +
+      '<td>' + posEsc(m.remark || '—') + '</td>' +
+      '<td>' + (inactive ? '停用' : '正常') + '</td>' +
+      '<td>' + actions + '</td></tr>';
+  }).join('');
+  var editPanel = '';
+  if (posMemberEditId && canEdit) {
+    var em = posFindMember(posMemberEditId);
+    if (em) {
+      editPanel = '<div class="card" style="border:1px solid #90caf9">' +
+        '<h3>編輯會員</h3>' +
+        '<label>姓名</label><input type="text" id="pos-mem-edit-name" value="' + posEsc(em.name || '') + '">' +
+        '<label>電話</label><input type="text" id="pos-mem-edit-phone" value="' + posEsc(em.phone || '') + '">' +
+        '<label>等級</label><select id="pos-mem-edit-level">' +
+        '<option value="一般會員"' + ((em.level || '') !== 'VIP 會員' ? ' selected' : '') + '>一般會員</option>' +
+        '<option value="VIP 會員"' + (em.level === 'VIP 會員' ? ' selected' : '') + '>VIP 會員</option></select>' +
+        '<label>備註</label><input type="text" id="pos-mem-edit-remark" value="' + posEsc(em.remark || '') + '">' +
+        '<div class="actions" style="margin-top:12px;display:flex;gap:8px">' +
+        '<button type="button" class="btn green sm" data-call="posSaveMemberEdit" data-arg0="' + posEsc(em.id || em.phone) + '">儲存</button>' +
+        '<button type="button" class="btn gray sm" data-call="posCloseMemberEdit">取消</button></div></div>';
+    }
+  }
+  return '<div class="card"><h2>👤 會員管理</h2>' +
+    '<div class="info-banner">雲端會員主檔（暫無積分）。全員可新增；編輯／停用僅管理員／主管。</div>' +
+    '<div class="filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">' +
+    '<div style="flex:1;min-width:180px"><label>搜尋</label>' +
+    '<input type="text" value="' + posEsc(posMembersCloud.kw) + '" placeholder="姓名／電話／備註" onchange="posSetMembersKw(this.value)"></div>' +
+    '<button type="button" class="btn gray sm" data-call="posToggleMembersInactive">' +
+    (posMembersCloud.includeInactive ? '隱藏停用' : '顯示停用') + '</button></div></div>' +
+    '<div class="card"><h3>新增會員</h3>' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">' +
+    '<div><label>姓名＊</label><input type="text" id="pos-mem-name" placeholder="客人姓名"></div>' +
+    '<div><label>電話＊</label><input type="text" id="pos-mem-phone" placeholder="8 位香港電話"></div>' +
+    '<div><label>等級</label><select id="pos-mem-level"><option>一般會員</option><option>VIP 會員</option></select></div>' +
+    '<div><label>備註</label><input type="text" id="pos-mem-remark" placeholder="選填"></div></div>' +
+    '<div class="actions" style="margin-top:12px"><button type="button" class="btn green sm" data-call="posCreateMember">新增</button></div></div>' +
+    editPanel +
+    '<div class="card"><h3>會員列表（' + (posMembersCloud.list || []).length + '）</h3>' +
+    '<div class="table-wrap"><table><thead><tr>' +
+    '<th>姓名</th><th>電話</th><th>等級</th><th>備註</th><th>狀態</th><th></th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="6" style="color:#888;text-align:center">尚無會員</td></tr>') +
+    '</tbody></table></div></div>';
 }
 function vPosReset() {
   posKickLoad();

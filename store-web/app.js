@@ -3635,6 +3635,7 @@ function getSidebarItemsForModule(mod){
     return [
       ['posCashier','POS 收銀'],
       ['posTransactions','交易記錄'],
+      ['posMembers','會員管理'],
       ['posReset','重置示範資料']
     ];
   }
@@ -3784,6 +3785,7 @@ function render(){
     posCashier: typeof vPosCashier==='function' ? vPosCashier : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
     posTransactions: typeof vPosTransactions==='function' ? vPosTransactions : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
     posReceipt: typeof vPosReceipt==='function' ? vPosReceipt : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
+    posMembers: typeof vPosMembers==='function' ? vPosMembers : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
     posReset: typeof vPosReset==='function' ? vPosReset : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; }
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
@@ -3813,7 +3815,7 @@ function go(v){
   if(v==='settings'){ currentModule='settings'; }
   if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProducts' || v==='transferProductLog'){ currentModule='transfer'; }
   if(v==='dailyToday' || v==='dailyProgress' || v==='dailyUnit' || v==='dailyHistory' || v==='dailyRecords' || v==='dailyNew' || v==='dailyRecurring' || v==='dailyOpLogs'){ currentModule='daily'; }
-  if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posReset'){ currentModule='pos'; }
+  if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posReset'){ currentModule='pos'; }
   fCat='全部'; fStatus='全部'; fKw='';
   closeAppSidebar();
   render();

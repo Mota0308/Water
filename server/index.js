@@ -55,6 +55,10 @@ import {
   resetPosDemo,
   listPosCatalogOptions,
   addPosSellable,
+  listMembers,
+  createMember,
+  updateMember,
+  setMemberActive,
 } from './mongo.js';
 import { driveConfigured, exportUsersToDrive, getDriveExportStatus } from './drive.js';
 
@@ -607,6 +611,48 @@ app.get('/api/pos/catalog-options', requireAuth, async (req, res) => {
 app.post('/api/pos/sellables', requireAuth, async (req, res) => {
   try {
     res.json(await addPosSellable(req.user, req.body || {}));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/pos/members', requireAuth, async (req, res) => {
+  try {
+    res.json(
+      await listMembers(req.user, {
+        q: req.query?.q,
+        includeInactive: String(req.query?.includeInactive || '') === '1',
+      })
+    );
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/members', requireAuth, async (req, res) => {
+  try {
+    res.json({ member: await createMember(req.user, req.body || {}) });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.put('/api/pos/members/:id', requireAuth, async (req, res) => {
+  try {
+    res.json({ member: await updateMember(req.user, req.params.id, req.body || {}) });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/members/:id/active', requireAuth, async (req, res) => {
+  try {
+    const active = req.body?.active !== false && req.body?.active !== 'false' && req.body?.active !== 0;
+    res.json({ member: await setMemberActive(req.user, req.params.id, active) });
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });

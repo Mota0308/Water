@@ -2931,6 +2931,185 @@ export async function resetPosDemo(user) {
   return { ok: true };
 }
 
+/* ═══════════ 雲端會員（暫無積分） ═══════════ */
+function membersCol() {
+  return db.collection('pos_members');
+}
+async function ensureMembersReady() {
+  await membersCol().createIndex({ phone: 1 }, { unique: true });
+  await membersCol().createIndex({ name: 1 });
+  await membersCol().createIndex({ active: 1, updatedAtMs: -1 });
+}
+function stripMember(doc) {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return rest;
+}
+function normalizeMemberLevel(raw) {
+  const s = String(raw || '').trim();
+  if (s === 'VIP' || s === 'VIP 會員' || s === 'vip') return 'VIP 會員';
+  return '一般會員';
+}
+
+export async function listMembers(user, { q, includeInactive } = {}) {
+  await connectMongo();
+  await ensureMembersReady();
+  const filter = {};
+  if (!includeInactive) filter.active = { $ne: false };
+  const kw = String(q || '').trim();
+  if (kw) {
+    const phone = normalizePhone(kw);
+    filter.$or = [
+      { name: { $regex: kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } },
+      { phone: phone || kw },
+      { remark: { $regex: kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } },
+    ];
+  }
+  const docs = await membersCol().find(filter).sort({ updatedAtMs: -1, name: 1 }).limit(300).toArray();
+  return {
+    members: docs.map(stripMember),
+    canEdit: posCanManageCatalog(user),
+  };
+}
+
+export async function createMember(user, input = {}) {
+  await connectMongo();
+  await ensureMembersReady();
+  const me = publicUser(user);
+  if (!me?.id) throw new Error('未登入');
+  const name = String(input.name || '').trim();
+  if (!name) throw new Error('請填寫姓名');
+  const phone = normalizePhone(input.phone);
+  if (!phone) throw new Error('請填寫有效的 8 位香港電話');
+  const existing = await membersCol().findOne({ phone });
+  if (existing) throw new Error('此電話已登記為會員：' + (existing.name || phone));
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const doc = {
+    _id: phone,
+    id: phone,
+    phone,
+    name,
+    level: normalizeMemberLevel(input.level),
+    remark: String(input.remark || '').trim(),
+    active: true,
+    createdAt: time,
+    createdAtMs: now.getTime(),
+    updatedAt: time,
+    updatedAtMs: now.getTime(),
+    createdBy: String(me.id),
+    createdByName: me.name || me.login || '',
+  };
+  await membersCol().insertOne(doc);
+  await appendModuleLog({
+    module: 'pos',
+    time,
+    action: '新增會員',
+    detail: `${name}｜${phone}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return stripMember(doc);
+}
+
+export async function updateMember(user, id, input = {}) {
+  await connectMongo();
+  await ensureMembersReady();
+  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可編輯會員');
+  const me = publicUser(user);
+  const phoneKey = normalizePhone(id) || String(id || '').trim();
+  const existing = await membersCol().findOne({ $or: [{ id: phoneKey }, { phone: phoneKey }, { _id: phoneKey }] });
+  if (!existing) throw new Error('找不到會員');
+  const $set = {
+    updatedAt: formatHkDateTime(),
+    updatedAtMs: Date.now(),
+    updatedBy: String(me.id),
+  };
+  if (input.name != null) {
+    const name = String(input.name).trim();
+    if (!name) throw new Error('姓名不可空白');
+    $set.name = name;
+  }
+  if (input.level != null) $set.level = normalizeMemberLevel(input.level);
+  if (input.remark != null) $set.remark = String(input.remark).trim();
+  if (input.phone != null && input.phone !== '') {
+    const newPhone = normalizePhone(input.phone);
+    if (!newPhone) throw new Error('新電話無效');
+    if (newPhone !== existing.phone) {
+      const clash = await membersCol().findOne({ phone: newPhone });
+      if (clash) throw new Error('新電話已被其他會員使用');
+      // 電話是主鍵：複製新文件、刪舊
+      const now = new Date();
+      const time = formatHkDateTime(now);
+      const next = {
+        ...existing,
+        _id: newPhone,
+        id: newPhone,
+        phone: newPhone,
+        name: $set.name || existing.name,
+        level: $set.level || existing.level,
+        remark: $set.remark != null ? $set.remark : existing.remark,
+        updatedAt: time,
+        updatedAtMs: now.getTime(),
+        updatedBy: String(me.id),
+      };
+      delete next.active; // keep from existing
+      next.active = existing.active !== false;
+      await membersCol().insertOne(next);
+      await membersCol().deleteOne({ _id: existing._id });
+      await appendModuleLog({
+        module: 'pos',
+        time,
+        action: '編輯會員',
+        detail: `${next.name}｜${existing.phone}→${newPhone}`,
+        userId: me.id,
+        userName: me.name || me.login,
+        user: me.name || me.login,
+      });
+      return stripMember(next);
+    }
+  }
+  await membersCol().updateOne({ _id: existing._id }, { $set });
+  const updated = await membersCol().findOne({ _id: existing._id });
+  await appendModuleLog({
+    module: 'pos',
+    time: $set.updatedAt,
+    action: '編輯會員',
+    detail: `${updated.name}｜${updated.phone}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return stripMember(updated);
+}
+
+export async function setMemberActive(user, id, active) {
+  await connectMongo();
+  await ensureMembersReady();
+  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可停用／啟用會員');
+  const me = publicUser(user);
+  const phoneKey = normalizePhone(id) || String(id || '').trim();
+  const existing = await membersCol().findOne({ $or: [{ id: phoneKey }, { phone: phoneKey }, { _id: phoneKey }] });
+  if (!existing) throw new Error('找不到會員');
+  const time = formatHkDateTime();
+  await membersCol().updateOne(
+    { _id: existing._id },
+    { $set: { active: !!active, updatedAt: time, updatedAtMs: Date.now(), updatedBy: String(me.id) } }
+  );
+  const updated = await membersCol().findOne({ _id: existing._id });
+  await appendModuleLog({
+    module: 'pos',
+    time,
+    action: active ? '啟用會員' : '停用會員',
+    detail: `${updated.name}｜${updated.phone}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return stripMember(updated);
+}
+
 export { POS_STORES };
 
 export async function closeMongo() {
