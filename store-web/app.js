@@ -3603,6 +3603,7 @@ function setModule(m){
   else if(m==='createStaff'){ currentView='createStaff'; }
   else if(m==='settings'){ currentView='settings'; }
   else if(m==='transfer'){ currentView='transferInventory'; }
+  else if(m==='pos'){ currentView='posCashier'; }
   else {
     currentView = isPersonal() ? 'myTasks' : 'home';
     listType='rep';
@@ -3613,7 +3614,7 @@ function setModule(m){
 }
 /** 側欄可見模組（分組標題） */
 function getSidebarModules(){
-  const modules = [['daily','📅 每日工作流程']];
+  const modules = [['daily','📅 每日工作流程'],['pos','🛒 POS 收銀']];
   if(!isPersonal()) modules.push(['production','📐 開發及生產']);
   modules.push(['replenishment','🔄 補貨'],['transfer','📦 貨品調動'],['push','📢 推送通知']);
   if(canCreateEmployee()) modules.push(['createStaff','👤 創建員工']);
@@ -3626,6 +3627,13 @@ function getSidebarItemsForModule(mod){
     const items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyHistory','歷史記錄'],['dailyRecords','我的記錄']];
     if(isAdmin()||isManager()) items.push(['dailyNew','新增突發'],['dailyRecurring','恆常任務'],['dailyOpLogs','操作記錄']);
     return items;
+  }
+  if(mod==='pos'){
+    return [
+      ['posCashier','POS 收銀'],
+      ['posTransactions','交易記錄'],
+      ['posReset','重置示範資料']
+    ];
   }
   if(mod==='production'){
     const items = isPersonal()
@@ -3681,6 +3689,7 @@ function isSidebarItemActive(mod, viewKey){
   if(currentView==='dailyUnit' && viewKey==='dailyProgress') return true;
   if((currentView==='pushDetail' || currentView==='pushStats') && viewKey==='pushAll') return true;
   if(currentView==='transferApply' && viewKey==='transferInventory') return true;
+  if(currentView==='posReceipt' && mod==='pos' && viewKey==='posTransactions') return true;
   return false;
 }
 function closeAppSidebar(){
@@ -3768,7 +3777,11 @@ function render(){
     transferHistory: vTransferHistory,
     transferStockLog: vTransferStockLog,
     transferProducts: vTransferProducts,
-    transferProductLog: vTransferProductLog
+    transferProductLog: vTransferProductLog,
+    posCashier: typeof vPosCashier==='function' ? vPosCashier : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
+    posTransactions: typeof vPosTransactions==='function' ? vPosTransactions : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
+    posReceipt: typeof vPosReceipt==='function' ? vPosReceipt : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
+    posReset: typeof vPosReset==='function' ? vPosReset : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; }
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
   afterProjectChatRender();
@@ -3797,6 +3810,7 @@ function go(v){
   if(v==='settings'){ currentModule='settings'; }
   if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProducts' || v==='transferProductLog'){ currentModule='transfer'; }
   if(v==='dailyToday' || v==='dailyProgress' || v==='dailyUnit' || v==='dailyHistory' || v==='dailyRecords' || v==='dailyNew' || v==='dailyRecurring' || v==='dailyOpLogs'){ currentModule='daily'; }
+  if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posReset'){ currentModule='pos'; }
   fCat='全部'; fStatus='全部'; fKw='';
   closeAppSidebar();
   render();

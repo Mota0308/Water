@@ -142,7 +142,7 @@ function readPackageVersion() {
 /** Deploy fingerprint: package version + app.js/index.html mtime (changes on each code deploy). */
 function getAppVersionInfo() {
   const pkgVersion = readPackageVersion();
-  const candidates = [path.join(webRoot, 'app.js'), path.join(webRoot, 'index.html')];
+  const candidates = [path.join(webRoot, 'app.js'), path.join(webRoot, 'pos.js'), path.join(webRoot, 'index.html')];
   let buildId = '0';
   let builtAt = null;
   let latestMs = 0;
@@ -731,7 +731,7 @@ app.use(
   express.static(webRoot, {
     setHeaders(res, filePath) {
       const p = String(filePath).replace(/\\/g, '/');
-      if (p.endsWith('index.html') || p.endsWith('/app.js') || p.endsWith('app.js')) {
+      if (p.endsWith('index.html') || p.endsWith('/app.js') || p.endsWith('app.js') || p.endsWith('/pos.js') || p.endsWith('pos.js')) {
         res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       } else {
         res.setHeader('Cache-Control', 'no-cache');
