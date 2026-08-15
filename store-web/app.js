@@ -269,6 +269,10 @@ let mailboxDetailTab = 'inbox'; // which tab opened the detail
 let pushDraftFiles = []; // {name, dataUrl} draft attachments for compose
 
 let currentUser = null, currentModule = 'production', currentView = 'home', currentProject = null, currentTab = 'overview', commentFilter = '全部';
+/** 三層側欄展開狀態（空字串＝依目前模組自動展開） */
+var sidebarOpenL1 = '';
+var sidebarOpenL2 = '';
+var sidebarNavManual = false;
 let listType = 'dev', fCat='全部', fStatus='全部', fKw='';
 
 /* ═══════════ Cloud API（MongoDB via Node） ═══════════ */
@@ -3596,6 +3600,9 @@ function setModule(m){
     m='daily';
   }
   currentModule = m; currentProject=null;
+  sidebarNavManual = false;
+  sidebarOpenL1 = sidebarL1ForModule(m);
+  sidebarOpenL2 = m;
   closeMailbox();
   if(m==='daily'){ currentView='dailyToday'; ensureDailySeed(); generateRecurringForToday(); }
   else if(m==='production'){
@@ -3615,16 +3622,80 @@ function setModule(m){
   closeAppSidebar();
   render();
 }
-/** 側欄可見模組（分組標題） */
-function getSidebarModules(){
-  const modules = [['daily','📅 每日工作流程'],['pos','🛒 POS 收銀']];
-  if(!isPersonal()) modules.push(['production','📐 開發及生產']);
-  modules.push(['replenishment','🔄 補貨'],['transfer','📦 貨品調動'],['push','📢 推送通知']);
-  if(canCreateEmployee()) modules.push(['createStaff','👤 創建員工']);
-  modules.push(['settings','⚙️ 個人設置']);
-  return modules;
+/** 側欄第一層 → 第二層模組 */
+function getSidebarTree(){
+  const features = [
+    { mod:'daily', label:'今日工作' },
+    { mod:'transfer', label:'貨品調動' },
+    { mod:'push', label:'推送通知' }
+  ];
+  if(canCreateEmployee()) features.push({ mod:'createStaff', label:'創建員工' });
+  features.push({ mod:'settings', label:'個人設置' });
+  const products = [];
+  if(!isPersonal()) products.push({ mod:'production', label:'開發及生產' });
+  products.push({ mod:'replenishment', label:'補貨' });
+  return [
+    { id:'features', label:'功能', children: features },
+    { id:'pos', label:'POS', children: [{ mod:'pos', label:'POS 收銀' }] },
+    { id:'products', label:'產品', children: products }
+  ];
 }
-/** 某模組下的子頁（供分組側欄一次列出） */
+/** @deprecated 保留給舊呼叫；改走 getSidebarTree */
+function getSidebarModules(){
+  const out = [];
+  getSidebarTree().forEach(function(l1){
+    (l1.children||[]).forEach(function(c){ out.push([c.mod, c.label]); });
+  });
+  return out;
+}
+function sidebarL1ForModule(mod){
+  const tree = getSidebarTree();
+  for(var i=0;i<tree.length;i++){
+    var kids = tree[i].children||[];
+    for(var j=0;j<kids.length;j++){
+      if(kids[j].mod===mod) return tree[i].id;
+    }
+  }
+  return 'features';
+}
+function getDefaultViewForModule(mod){
+  var items = getSidebarItemsForModule(mod)||[];
+  return items.length ? items[0][0] : 'dailyToday';
+}
+function ensureSidebarNavOpen(){
+  if(!sidebarNavManual){
+    sidebarOpenL1 = sidebarL1ForModule(currentModule);
+    sidebarOpenL2 = currentModule||'';
+  }
+}
+function toggleSidebarL1(id){
+  sidebarNavManual = true;
+  id = String(id||'');
+  sidebarOpenL1 = (sidebarOpenL1===id) ? '' : id;
+  if(sidebarOpenL1 && sidebarOpenL2){
+    // 若展開的 L2 不屬於此 L1，清掉
+    if(sidebarL1ForModule(sidebarOpenL2)!==sidebarOpenL1) sidebarOpenL2 = '';
+  }
+  render();
+}
+function toggleSidebarL2(mod){
+  sidebarNavManual = true;
+  mod = String(mod||'');
+  sidebarOpenL1 = sidebarL1ForModule(mod);
+  if(sidebarOpenL2===mod){
+    sidebarOpenL2 = '';
+    render();
+    return;
+  }
+  sidebarOpenL2 = mod;
+  // 進入該模組預設頁（若尚未在此模組）
+  if(currentModule!==mod){
+    goInModule(mod, getDefaultViewForModule(mod));
+    return;
+  }
+  render();
+}
+/** 某模組下的第三層子頁 */
 function getSidebarItemsForModule(mod){
   if(mod==='daily'){
     const items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyHistory','歷史記錄'],['dailyRecords','我的記錄']];
@@ -3741,21 +3812,34 @@ function render(){
   }
   const sideNav = document.getElementById('side-nav');
   if(sideNav){
-    const modules = getSidebarModules();
-    sideNav.innerHTML = modules.map(function(pair){
-      const mod = pair[0], label = pair[1];
-      const items = getSidebarItemsForModule(mod);
-      const links = items.map(function(it){
-        const k = it[0], l = it[1];
-        const active = isSidebarItemActive(mod, k);
-        // 共用 view（home/myTasks…）需先切模組再導頁
-        const needsMod = (k==='home'||k==='myTasks'||k==='sysLogs'||k==='addProject');
-        if(needsMod){
-          return '<button type="button" class="side-link'+(active?' active':'')+'" data-call="goInModule" data-arg0="'+escHtml(String(mod))+'" data-arg1="'+escHtml(String(k))+'">'+l+'</button>';
-        }
-        return '<button type="button" class="side-link'+(active?' active':'')+'" data-call="go" data-arg0="'+escHtml(String(k))+'">'+l+'</button>';
+    ensureSidebarNavOpen();
+    const tree = getSidebarTree();
+    sideNav.innerHTML = tree.map(function(l1){
+      const l1Open = sidebarOpenL1===l1.id;
+      const l2Html = (l1.children||[]).map(function(c){
+        const mod = c.mod;
+        const l2Open = sidebarOpenL2===mod;
+        const inMod = currentModule===mod;
+        const items = getSidebarItemsForModule(mod)||[];
+        const l3 = l2Open ? ('<div class="side-l3">'+items.map(function(it){
+          const k = it[0], l = it[1];
+          const active = isSidebarItemActive(mod, k);
+          const needsMod = (k==='home'||k==='myTasks'||k==='sysLogs'||k==='addProject');
+          if(needsMod){
+            return '<button type="button" class="side-link'+(active?' active':'')+'" data-call="goInModule" data-arg0="'+escHtml(String(mod))+'" data-arg1="'+escHtml(String(k))+'">'+l+'</button>';
+          }
+          return '<button type="button" class="side-link'+(active?' active':'')+'" data-call="go" data-arg0="'+escHtml(String(k))+'">'+l+'</button>';
+        }).join('')+'</div>') : '';
+        return '<div class="side-l2">'+
+          '<button type="button" class="side-l2-btn'+(l2Open?' open':'')+(inMod?' active-mod':'')+'" data-call="toggleSidebarL2" data-arg0="'+escHtml(String(mod))+'">'+
+          '<span>'+escHtml(c.label)+'</span><span class="side-chevron">'+(l2Open?'▾':'▸')+'</span></button>'+
+          l3+'</div>';
       }).join('');
-      return '<div class="side-group"><div class="side-group-title">'+label+'</div>'+links+'</div>';
+      return '<div class="side-l1">'+
+        '<button type="button" class="side-l1-btn'+(l1Open?' open':'')+'" data-call="toggleSidebarL1" data-arg0="'+escHtml(String(l1.id))+'">'+
+        '<span>'+escHtml(l1.label)+'</span><span class="side-chevron">'+(l1Open?'▾':'▸')+'</span></button>'+
+        (l1Open ? '<div class="side-l1-body">'+l2Html+'</div>' : '')+
+        '</div>';
     }).join('');
   }
   const views = {
@@ -3802,6 +3886,9 @@ function goInModule(mod, v){
     alert2('員工賬戶無法使用「開發及生產」。');
     return;
   }
+  sidebarNavManual = false;
+  sidebarOpenL1 = sidebarL1ForModule(mod);
+  sidebarOpenL2 = mod;
   currentModule = mod;
   if(mod==='production') listType='dev';
   if(mod==='replenishment') listType='rep';
@@ -3809,6 +3896,7 @@ function goInModule(mod, v){
 }
 function go(v){
   currentView=v; currentProject=null;
+  sidebarNavManual = false;
   if(v==='devList'){
     if(isPersonal()){ currentModule='daily'; currentView='dailyToday'; }
     else { listType='dev'; currentModule='production'; }

@@ -40,7 +40,36 @@
     z-index:92;
   }
   .app-sidebar .side-nav { padding:10px 8px 24px; }
-  .side-group { margin-bottom:12px; }
+  .side-group { margin-bottom:10px; }
+  .side-l1 {
+    margin-bottom:8px;
+    border:1px solid #cfd8dc;
+    border-radius:10px;
+    background:#e8eef1;
+    overflow:hidden;
+  }
+  .side-l1-btn, .side-l2-btn {
+    display:flex; width:100%; align-items:center; justify-content:space-between; gap:8px;
+    text-align:left; border:none; cursor:pointer; font-size:13px; line-height:1.35;
+    box-shadow:none;
+  }
+  .side-l1-btn {
+    background:#dfe7eb; color:#263238; font-weight:700;
+    padding:10px 12px;
+  }
+  .side-l1-btn:hover { background:#d5dee3; }
+  .side-l1-btn.open { background:#cfd8dc; }
+  .side-l1-body { padding:4px 6px 8px; background:#eceff1; }
+  .side-l2 { margin:4px 0; }
+  .side-l2-btn {
+    background:transparent; color:#37474f; font-weight:600;
+    padding:8px 10px; border-radius:8px;
+  }
+  .side-l2-btn:hover { background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.06); }
+  .side-l2-btn.open, .side-l2-btn.active-mod {
+    background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.08);
+  }
+  .side-l3 { padding:2px 0 4px 8px; border-left:2px solid #b0bec5; margin:0 4px 6px 10px; }
   .side-group-title {
     font-size:11px; font-weight:bold; color:#607d8b;
     padding:8px 10px 4px; letter-spacing:.02em; text-transform:none;
@@ -48,7 +77,7 @@
   .side-link {
     display:block; width:100%; text-align:left;
     border:none; background:transparent;
-    padding:8px 10px; margin:2px 0; border-radius:8px;
+    padding:7px 10px; margin:2px 0; border-radius:8px;
     cursor:pointer; font-size:13px; color:#37474f; line-height:1.35;
     box-shadow:none;
   }
@@ -58,6 +87,7 @@
     box-shadow:0 2px 8px rgba(55,71,79,.28);
   }
   .side-link.active:hover { background:#455a64; }
+  .side-chevron { font-size:11px; opacity:.7; flex-shrink:0; }
   .app-main { flex:1; min-width:0; background:#f0f2f5; }
   .sidebar-backdrop {
     display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:91;
