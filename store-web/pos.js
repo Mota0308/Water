@@ -1769,9 +1769,14 @@ function vPosSettlement() {
   var storeOpts = stores.map(function (s) {
     return '<option value="' + posEsc(s) + '"' + (posSettlement.store === s ? ' selected' : '') + '>' + posEsc(s) + '店</option>';
   }).join('');
-  var warn = d.hasActivityAfter
-    ? '<div style="background:#fff3e0;border:1px solid #ffcc80;color:#e65100;padding:10px 12px;border-radius:8px;margin:10px 0;font-size:13px">提交後尚有新交易／退貨。目前顯示的「已交快照」未更新；請主管解除鎖定後重交。</div>'
-    : '';
+  var warn = '';
+  if (d.warning) {
+    warn += '<div style="background:#fff8e1;border:1px solid #ffe082;color:#f57f17;padding:10px 12px;border-radius:8px;margin:10px 0;font-size:13px">' +
+      posEsc(d.warning) + '</div>';
+  }
+  if (d.hasActivityAfter) {
+    warn += '<div style="background:#fff3e0;border:1px solid #ffcc80;color:#e65100;padding:10px 12px;border-radius:8px;margin:10px 0;font-size:13px">提交後尚有新交易／退貨。目前顯示的「已交快照」未更新；請主管解除鎖定後重交。</div>';
+  }
   var snap = set && set.snapshot ? set.snapshot : null;
   var show = locked && snap ? snap : live;
   var reviewStatus = d.reviewStatus || (set && set.reviewStatus) || '';

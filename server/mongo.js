@@ -2539,29 +2539,95 @@ function stripPosTransaction(doc) {
   return rest;
 }
 
+async function dropPosIndexQuiet(col, nameOrSpec) {
+  try {
+    await col.dropIndex(nameOrSpec);
+  } catch (_) {
+    /* index missing is fine */
+  }
+}
+
 async function ensurePosIndexes() {
-  await posProductsCol().createIndex({ id: 1 }, { unique: true });
-  await posProductsCol().createIndex({ transferProductId: 1, size: 1 }, { unique: true });
+  const products = posProductsCol();
+  await products.createIndex({ id: 1 }, { unique: true });
+  // 舊版非 partial unique 會在 transferProductId 缺失／重複時建立失敗 → 整條 POS API 掛掉
+  const existing = await products.indexes().catch(() => []);
+  const names = new Set((existing || []).map((i) => i.name));
+  if (names.has('transferProductId_1_size_1')) {
+    await dropPosIndexQuiet(products, 'transferProductId_1_size_1');
+  }
+  const partialOk = (existing || []).some(
+    (i) => i.name === 'transferProductId_size_unique' && i.unique && i.partialFilterExpression
+  );
+  if (!partialOk) {
+    await dropPosIndexQuiet(products, 'transferProductId_size_unique');
+    await products.createIndex(
+      { transferProductId: 1, size: 1 },
+      {
+        unique: true,
+        name: 'transferProductId_size_unique',
+        partialFilterExpression: {
+          transferProductId: { $exists: true, $type: 'string' },
+          size: { $exists: true, $type: 'string' },
+        },
+      }
+    );
+  }
   await posTransactionsCol().createIndex({ id: 1 }, { unique: true });
   await posTransactionsCol().createIndex({ createdAtMs: -1 });
   await posTransactionsCol().createIndex({ store: 1, createdAtMs: -1 });
-  await posMetaCol().createIndex({ _id: 1 });
 }
+
+async function dedupePosSellablesByTransferSize() {
+  const groups = await posProductsCol()
+    .aggregate([
+      {
+        $match: {
+          transferProductId: { $type: 'string', $ne: '' },
+          size: { $type: 'string', $ne: '' },
+        },
+      },
+      {
+        $group: {
+          _id: { transferProductId: '$transferProductId', size: '$size' },
+          ids: { $push: '$_id' },
+          n: { $sum: 1 },
+        },
+      },
+      { $match: { n: { $gt: 1 } } },
+    ])
+    .toArray();
+  for (const g of groups) {
+    const drop = (g.ids || []).slice(1);
+    if (drop.length) await posProductsCol().deleteMany({ _id: { $in: drop } });
+  }
+}
+
+let posReadyPromise = null;
 
 /** 清除舊版獨立庫存種子；可售目錄改為掛靠調動貨品 */
 async function ensurePosReady() {
-  await ensurePosIndexes();
-  await ensureTransferSeed();
-  await posProductsCol().deleteMany({
-    $or: [
-      { transferProductId: { $exists: false } },
-      { transferProductId: null },
-      { transferProductId: '' },
-    ],
+  if (posReadyPromise) return posReadyPromise;
+  posReadyPromise = (async () => {
+    await ensureTransferSeed();
+    // 必須先清 orphan／重複，再建立 unique partial index
+    await posProductsCol().deleteMany({
+      $or: [
+        { transferProductId: { $exists: false } },
+        { transferProductId: null },
+        { transferProductId: '' },
+      ],
+    });
+    await dedupePosSellablesByTransferSize();
+    await ensurePosIndexes();
+    // 去掉殘留 stock 欄位
+    await posProductsCol().updateMany({ stock: { $exists: true } }, { $unset: { stock: '' } });
+    await posMetaCol().updateOne({ _id: 'main' }, { $setOnInsert: { _id: 'main', seq: 1000 } }, { upsert: true });
+  })().catch((e) => {
+    posReadyPromise = null;
+    throw e;
   });
-  // 去掉殘留 stock 欄位
-  await posProductsCol().updateMany({ stock: { $exists: true } }, { $unset: { stock: '' } });
-  await posMetaCol().updateOne({ _id: 'main' }, { $setOnInsert: { _id: 'main', seq: 1000 } }, { upsert: true });
+  return posReadyPromise;
 }
 
 async function buildTransferQtyMap() {
@@ -3769,6 +3835,26 @@ export async function exportPosSalesReportCsv(user, query = {}) {
   return { csv, filename: `pos-report-${s.from}_${s.to}.csv` };
 }
 
+function emptyPosSalesSummary(store, from, to) {
+  return {
+    store: store || '',
+    from,
+    to,
+    salesCount: 0,
+    salesAmount: 0,
+    refundCount: 0,
+    refundAmount: 0,
+    netAmount: 0,
+    byPayment: { cash: 0, credit_card: 0, octopus: 0, fps: 0 },
+    byRefundMethod: { cash: 0, credit_card: 0, octopus: 0, fps: 0 },
+    cashSales: 0,
+    cashRefunds: 0,
+    expectedCash: 0,
+    latestActivityMs: 0,
+    days: [],
+  };
+}
+
 export async function getPosSettlement(user, query = {}) {
   await connectMongo();
   await ensurePosReady();
@@ -3777,8 +3863,27 @@ export async function getPosSettlement(user, query = {}) {
   if (!me) throw new Error('未登入');
   const stores = posUserStores(me);
   const canManage = posCanManageCatalog(me);
-  const store = String(query.store || (stores[0] || '')).trim();
+  const storeList = canManage ? POS_STORES.slice() : stores;
   const date = String(query.date || hkTodayYmd());
+  const store = String(query.store || (storeList[0] || stores[0] || '')).trim();
+  if (!store) {
+    return {
+      store: '',
+      date,
+      live: emptyPosSalesSummary('', date, date),
+      settlement: null,
+      locked: false,
+      reviewStatus: '',
+      hasActivityAfter: false,
+      stores: storeList,
+      canManage,
+      canSubmit: false,
+      canUnlock: false,
+      canApprove: false,
+      canReject: false,
+      warning: '此帳號未綁定 POS 店舖，請先在個人設置加入觀塘／荔枝角／灣仔／屯門',
+    };
+  }
   if (!POS_STORES.includes(store)) throw new Error('店舖無效');
   if (!posCanAccessStore(me, store)) throw new Error('無權查看此店舖日結');
   const live = await buildPosSalesSummary({ store, from: date, to: date });
@@ -3796,7 +3901,7 @@ export async function getPosSettlement(user, query = {}) {
     locked,
     reviewStatus,
     hasActivityAfter,
-    stores: canManage ? POS_STORES.slice() : stores,
+    stores: storeList,
     canManage,
     canSubmit: posCanAccessStore(me, store) && !locked,
     canUnlock: canManage && locked,
