@@ -42,6 +42,60 @@ var posAdjustProductId = '';
 var posShowAddPanel = false;
 var posCatalogOptions = [];
 var posAddForm = { key: '', price: '', sku: '' };
+var posReport = {
+  loaded: false,
+  loading: false,
+  error: '',
+  store: '',
+  from: '',
+  to: '',
+  summary: null,
+  stores: [],
+  canExport: false,
+  canManage: false
+};
+var posSettlement = {
+  loaded: false,
+  loading: false,
+  error: '',
+  store: '',
+  date: '',
+  data: null
+};
+
+function posHkToday() {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Hong_Kong',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date());
+  } catch (e) {
+    var d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+}
+function posPayName(id) {
+  var m = { cash: '現金', credit_card: '信用卡', octopus: '八達通', fps: 'FPS' };
+  return m[id] || id;
+}
+async function posReloadDailyAfterSettlement() {
+  if (typeof apiEnabled === 'undefined' || !apiEnabled || !authToken) return;
+  try {
+    var dirty = false;
+    try { dirty = localStorage.getItem(typeof DAILY_DIRTY_KEY !== 'undefined' ? DAILY_DIRTY_KEY : 'store-web-daily-dirty') === '1'; } catch (e) {}
+    if (dirty) return;
+    var daily = await apiFetch('/api/daily');
+    if (typeof dailyNormalizeState === 'function' && typeof dailyStateCache !== 'undefined') {
+      dailyStateCache = dailyNormalizeState(daily);
+      try {
+        if (typeof DAILY_KEY !== 'undefined') localStorage.setItem(DAILY_KEY, JSON.stringify(dailyStateCache));
+        if (typeof DAILY_DIRTY_KEY !== 'undefined') localStorage.setItem(DAILY_DIRTY_KEY, '0');
+      } catch (e) {}
+    }
+  } catch (e) {}
+}
 
 function posDiscardLocalDemo() {
   try { localStorage.removeItem(POS_LS_KEY); } catch (e) {}
@@ -889,6 +943,282 @@ function vPosReset() {
     '<div class="actions" style="margin-top:14px">' +
     '<button type="button" class="btn red" data-call="posResetDemoData">確認重置雲端 POS</button>' +
     '<button type="button" class="btn gray sm" data-call="go" data-arg0="posCashier">返回收銀</button></div></div>';
+}
+
+function posKickReportLoad() {
+  if (!posReport.from) posReport.from = posHkToday();
+  if (!posReport.to) posReport.to = posReport.from;
+  if (!posReport.loaded && !posReport.loading) posRefreshReport(false);
+}
+async function posRefreshReport(force) {
+  if (!apiEnabled || !authToken) {
+    posReport.error = '需要連接雲端並登入。';
+    posReport.loaded = true;
+    return;
+  }
+  if (posReport.loading) return;
+  if (posReport.loaded && !force) return;
+  posReport.loading = true;
+  posReport.error = '';
+  try {
+    var q = [];
+    if (posReport.store) q.push('store=' + encodeURIComponent(posReport.store));
+    if (posReport.from) q.push('from=' + encodeURIComponent(posReport.from));
+    if (posReport.to) q.push('to=' + encodeURIComponent(posReport.to));
+    var res = await apiFetch('/api/pos/report' + (q.length ? '?' + q.join('&') : ''));
+    posReport.summary = res.summary || null;
+    posReport.stores = res.stores || [];
+    posReport.canExport = !!res.canExport;
+    posReport.canManage = !!res.canManage;
+    if (!posReport.store && posReport.stores.length === 1) posReport.store = posReport.stores[0];
+    posReport.loaded = true;
+  } catch (e) {
+    posReport.error = String(e.message || e);
+    posReport.loaded = true;
+  }
+  posReport.loading = false;
+  if (typeof render === 'function') render();
+}
+function posSetReportStore(v) {
+  posReport.store = String(v || '');
+  posReport.loaded = false;
+  posRefreshReport(true);
+}
+function posSetReportFrom(v) {
+  posReport.from = String(v || '');
+  posReport.loaded = false;
+  posRefreshReport(true);
+}
+function posSetReportTo(v) {
+  posReport.to = String(v || '');
+  posReport.loaded = false;
+  posRefreshReport(true);
+}
+async function posExportReportCsv() {
+  if (!posReport.canExport) { alert2('只有管理員／主管可匯出 CSV。'); return; }
+  try {
+    var q = [];
+    if (posReport.store) q.push('store=' + encodeURIComponent(posReport.store));
+    if (posReport.from) q.push('from=' + encodeURIComponent(posReport.from));
+    if (posReport.to) q.push('to=' + encodeURIComponent(posReport.to));
+    var r = await apiFetch('/api/pos/report.csv' + (q.length ? '?' + q.join('&') : ''));
+    var text = typeof r.text === 'function' ? await r.text() : String(r);
+    var blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'pos-report-' + (posReport.from || '') + '_' + (posReport.to || '') + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  } catch (e) {
+    alert2('匯出失敗：' + (e.message || e));
+  }
+}
+function vPosReport() {
+  posKickReportLoad();
+  if (!posReport.loaded || posReport.loading) {
+    return '<div class="card"><h2>📊 銷售報表</h2><p style="color:#888">載入中…</p></div>';
+  }
+  if (posReport.error) {
+    return '<div class="card"><h2>📊 銷售報表</h2><p style="color:#c62828">' + posEsc(posReport.error) + '</p>' +
+      '<button type="button" class="btn sm" data-call="posRefreshReport" data-arg0="true">重試</button></div>';
+  }
+  var stores = posReport.stores || [];
+  var storeOpts = (posReport.canManage ? '<option value="">全部可看店舖</option>' : '') +
+    stores.map(function (s) {
+      return '<option value="' + posEsc(s) + '"' + (posReport.store === s ? ' selected' : '') + '>' + posEsc(s) + '店</option>';
+    }).join('');
+  var s = posReport.summary || {};
+  var pay = s.byPayment || {};
+  var dayRows = (s.days || []).map(function (d) {
+    return '<tr><td>' + posEsc(d.date) + '</td><td>' + posEsc(d.store || s.store || '') + '</td>' +
+      '<td>' + d.salesCount + '</td><td>$' + posMoney(d.salesAmount) + '</td>' +
+      '<td>' + d.refundCount + '</td><td>$' + posMoney(d.refundAmount) + '</td>' +
+      '<td>$' + posMoney(d.netAmount) + '</td><td>$' + posMoney(d.expectedCash) + '</td></tr>';
+  }).join('');
+  return '<div class="card"><h2>📊 銷售報表</h2>' +
+    '<div class="info-banner">依香港日期統計 POS 銷售與退貨。本店個人僅可看所屬門市；管理層可匯出 CSV。</div>' +
+    '<div class="filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">' +
+    '<div><label>店舖</label><select onchange="posSetReportStore(this.value)">' + storeOpts + '</select></div>' +
+    '<div><label>由</label><input type="date" value="' + posEsc(posReport.from) + '" onchange="posSetReportFrom(this.value)"></div>' +
+    '<div><label>至</label><input type="date" value="' + posEsc(posReport.to) + '" onchange="posSetReportTo(this.value)"></div>' +
+    '<button type="button" class="btn gray sm" data-call="posRefreshReport" data-arg0="true">重新整理</button>' +
+    (posReport.canExport ? '<button type="button" class="btn green sm" data-call="posExportReportCsv">匯出 CSV</button>' : '') +
+    '</div></div>' +
+    '<div class="card"><h3>彙總</h3>' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;font-size:14px">' +
+    '<div>銷售筆數<br><b>' + (s.salesCount || 0) + '</b></div>' +
+    '<div>營業額<br><b>$' + posMoney(s.salesAmount) + '</b></div>' +
+    '<div>退貨筆數<br><b>' + (s.refundCount || 0) + '</b></div>' +
+    '<div>退款額<br><b>$' + posMoney(s.refundAmount) + '</b></div>' +
+    '<div>淨額<br><b>$' + posMoney(s.netAmount) + '</b></div>' +
+    '<div>應有現金<br><b>$' + posMoney(s.expectedCash) + '</b></div></div>' +
+    '<h4 style="margin:16px 0 8px">支付拆分</h4>' +
+    '<div style="font-size:13px;line-height:1.8">' +
+    '現金 $' + posMoney(pay.cash) + '　信用卡 $' + posMoney(pay.credit_card) +
+    '　八達通 $' + posMoney(pay.octopus) + '　FPS $' + posMoney(pay.fps) + '</div></div>' +
+    '<div class="card"><h3>按日明細</h3><div class="table-wrap"><table><thead><tr>' +
+    '<th>日期</th><th>店舖</th><th>筆數</th><th>營業額</th><th>退貨</th><th>退款</th><th>淨額</th><th>應有現金</th>' +
+    '</tr></thead><tbody>' +
+    (dayRows || '<tr><td colspan="8" style="color:#888;text-align:center">此區間無交易</td></tr>') +
+    '</tbody></table></div></div>';
+}
+
+function posKickSettlementLoad() {
+  if (!posSettlement.date) posSettlement.date = posHkToday();
+  if (!posSettlement.loaded && !posSettlement.loading) posRefreshSettlement(false);
+}
+async function posRefreshSettlement(force) {
+  if (!apiEnabled || !authToken) {
+    posSettlement.error = '需要連接雲端並登入。';
+    posSettlement.loaded = true;
+    return;
+  }
+  if (posSettlement.loading) return;
+  if (posSettlement.loaded && !force) return;
+  posSettlement.loading = true;
+  posSettlement.error = '';
+  try {
+    var q = [];
+    if (posSettlement.store) q.push('store=' + encodeURIComponent(posSettlement.store));
+    if (posSettlement.date) q.push('date=' + encodeURIComponent(posSettlement.date));
+    var res = await apiFetch('/api/pos/settlement' + (q.length ? '?' + q.join('&') : ''));
+    posSettlement.data = res;
+    if (res.store) posSettlement.store = res.store;
+    if (res.date) posSettlement.date = res.date;
+    posSettlement.loaded = true;
+  } catch (e) {
+    posSettlement.error = String(e.message || e);
+    posSettlement.loaded = true;
+  }
+  posSettlement.loading = false;
+  if (typeof render === 'function') render();
+}
+function posSetSettlementStore(v) {
+  posSettlement.store = String(v || '');
+  posSettlement.loaded = false;
+  posRefreshSettlement(true);
+}
+function posSetSettlementDate(v) {
+  posSettlement.date = String(v || '');
+  posSettlement.loaded = false;
+  posRefreshSettlement(true);
+}
+async function posSubmitSettlement() {
+  var cashEl = document.getElementById('pos-set-cash');
+  var remarkEl = document.getElementById('pos-set-remark');
+  var cash = cashEl ? cashEl.value : '';
+  if (cash === '' || cash == null) { alert2('請填寫現金實點金額。'); return; }
+  if (!confirm('確定提交日結？提交後將鎖定，並把今日工作的「每日結算」標為已結算。')) return;
+  try {
+    var res = await apiFetch('/api/pos/settlement/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        store: posSettlement.store,
+        date: posSettlement.date,
+        cashCounted: Number(cash),
+        remark: remarkEl ? remarkEl.value : ''
+      })
+    });
+    posSettlement.data = res;
+    posSettlement.loaded = true;
+    await posReloadDailyAfterSettlement();
+    alert2('日結已提交。');
+    if (typeof render === 'function') render();
+  } catch (e) {
+    alert2('提交失敗：' + (e.message || e));
+  }
+}
+async function posUnlockSettlement() {
+  if (!confirm('確定解除此日結鎖定？解除後可重交，今日工作的結算會重開為待結算。')) return;
+  try {
+    var res = await apiFetch('/api/pos/settlement/unlock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ store: posSettlement.store, date: posSettlement.date })
+    });
+    posSettlement.data = res;
+    posSettlement.loaded = true;
+    await posReloadDailyAfterSettlement();
+    alert2('已解除鎖定。');
+    if (typeof render === 'function') render();
+  } catch (e) {
+    alert2('解除失敗：' + (e.message || e));
+  }
+}
+function vPosSettlement() {
+  posKickSettlementLoad();
+  if (!posSettlement.loaded || posSettlement.loading) {
+    return '<div class="card"><h2>📒 每日結算</h2><p style="color:#888">載入中…</p></div>';
+  }
+  if (posSettlement.error) {
+    return '<div class="card"><h2>📒 每日結算</h2><p style="color:#c62828">' + posEsc(posSettlement.error) + '</p>' +
+      '<button type="button" class="btn sm" data-call="posRefreshSettlement" data-arg0="true">重試</button></div>';
+  }
+  var d = posSettlement.data || {};
+  var live = d.live || {};
+  var set = d.settlement;
+  var locked = !!d.locked;
+  var stores = d.stores || [];
+  var storeOpts = stores.map(function (s) {
+    return '<option value="' + posEsc(s) + '"' + (posSettlement.store === s ? ' selected' : '') + '>' + posEsc(s) + '店</option>';
+  }).join('');
+  var warn = d.hasActivityAfter
+    ? '<div style="background:#fff3e0;border:1px solid #ffcc80;color:#e65100;padding:10px 12px;border-radius:8px;margin:10px 0;font-size:13px">提交後尚有新交易／退貨。目前顯示的「已交快照」未更新；請主管解除鎖定後重交。</div>'
+    : '';
+  var snap = set && set.snapshot ? set.snapshot : null;
+  var show = locked && snap ? snap : live;
+  var statusLine = locked
+    ? '已提交鎖定｜' + posEsc(set.submittedAt || '') + '｜' + posEsc(set.submittedByName || '')
+    : (set ? '已解除鎖定，可重交' : '尚未提交');
+  var formHtml = '';
+  if (!locked) {
+    formHtml = '<div class="card" style="border:1px solid #90caf9">' +
+      '<h3 style="margin-top:0">提交日結</h3>' +
+      '<p style="font-size:12px;color:#666;margin:0 0 10px">應有現金（系統）＝現金收款 − 現金退款＝ <b>$' + posMoney(live.expectedCash) + '</b></p>' +
+      '<label>現金實點金額＊</label><input type="number" id="pos-set-cash" step="0.01" value="' + posEsc(set && set.cashCounted != null ? String(set.cashCounted) : '') + '">' +
+      '<label>備註</label><input type="text" id="pos-set-remark" value="' + posEsc(set && set.remark ? set.remark : '') + '" placeholder="差異說明等（選填）">' +
+      '<div class="actions" style="margin-top:12px"><button type="button" class="btn green" data-call="posSubmitSettlement">確認提交日結</button></div></div>';
+  } else {
+    formHtml = '<div class="card">' +
+      '<h3 style="margin-top:0">已交資料</h3>' +
+      '<div style="font-size:14px;line-height:1.8">現金實點 <b>$' + posMoney(set.cashCounted) + '</b>　差異 <b>$' + posMoney(set.cashDiff) + '</b>' +
+      (set.remark ? '<br>備註：' + posEsc(set.remark) : '') + '</div>' +
+      (d.canUnlock ? '<div class="actions" style="margin-top:12px"><button type="button" class="btn orange sm" data-call="posUnlockSettlement">解除鎖定</button></div>' : '') +
+      '</div>';
+  }
+  var hist = (set && set.history ? set.history : []).slice().reverse().map(function (h) {
+    var act = h.action === 'unlock' ? '解除鎖定' : (h.action === 'resubmit' ? '重交' : '提交');
+    return '<div style="font-size:12px;padding:6px 0;border-bottom:1px solid #eee">' +
+      posEsc(h.at || '') + '｜' + act + '｜' + posEsc(h.byName || '') +
+      (h.cashCounted != null ? '｜實點 $' + posMoney(h.cashCounted) : '') +
+      (h.remark ? '｜' + posEsc(h.remark) : '') + '</div>';
+  }).join('');
+  return '<div class="card"><h2>📒 每日結算</h2>' +
+    '<div class="info-banner">提交後鎖定並自動完成今日工作的「每日結算」。不可在今日工作人手剔選結算。</div>' +
+    '<div class="filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">' +
+    '<div><label>店舖</label><select onchange="posSetSettlementStore(this.value)">' + storeOpts + '</select></div>' +
+    '<div><label>日期</label><input type="date" value="' + posEsc(posSettlement.date) + '" onchange="posSetSettlementDate(this.value)"></div>' +
+    '<button type="button" class="btn gray sm" data-call="posRefreshSettlement" data-arg0="true">重新整理</button></div>' +
+    '<p style="font-size:13px;color:#546e7a;margin:10px 0 0">狀態：' + statusLine + '</p>' +
+    warn + '</div>' +
+    '<div class="card"><h3>' + (locked ? '已交快照' : '當日即時彙總') + '</h3>' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;font-size:14px">' +
+    '<div>銷售筆數<br><b>' + (show.salesCount || 0) + '</b></div>' +
+    '<div>營業額<br><b>$' + posMoney(show.salesAmount) + '</b></div>' +
+    '<div>退貨／退款<br><b>' + (show.refundCount || 0) + '／$' + posMoney(show.refundAmount) + '</b></div>' +
+    '<div>淨額<br><b>$' + posMoney(show.netAmount) + '</b></div>' +
+    '<div>現金收款<br><b>$' + posMoney(show.cashSales) + '</b></div>' +
+    '<div>現金退款<br><b>$' + posMoney(show.cashRefunds) + '</b></div>' +
+    '<div>應有現金<br><b>$' + posMoney(show.expectedCash) + '</b></div></div>' +
+    '<div style="margin-top:10px;font-size:13px;line-height:1.8">支付：' +
+    '現金 $' + posMoney((show.byPayment || {}).cash) +
+    '　信用卡 $' + posMoney((show.byPayment || {}).credit_card) +
+    '　八達通 $' + posMoney((show.byPayment || {}).octopus) +
+    '　FPS $' + posMoney((show.byPayment || {}).fps) + '</div></div>' +
+    formHtml +
+    (hist ? '<div class="card"><h3>修改紀錄</h3>' + hist + '</div>' : '');
 }
 
 // Hide reset sidebar for non-admin by filtering in app.js would be better;

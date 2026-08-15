@@ -54,6 +54,11 @@ import {
   checkoutPos,
   returnPosTransaction,
   resetPosDemo,
+  getPosSalesReport,
+  exportPosSalesReportCsv,
+  getPosSettlement,
+  submitPosSettlement,
+  unlockPosSettlement,
   listPosCatalogOptions,
   addPosSellable,
   listMembers,
@@ -673,6 +678,54 @@ app.post('/api/pos/members/:id/active', requireAuth, async (req, res) => {
 app.post('/api/pos/reset', requireAuth, async (req, res) => {
   try {
     res.json(await resetPosDemo(req.user));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/pos/report', requireAuth, async (req, res) => {
+  try {
+    res.json(await getPosSalesReport(req.user, req.query || {}));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/pos/report.csv', requireAuth, async (req, res) => {
+  try {
+    const { csv, filename } = await exportPosSalesReportCsv(req.user, req.query || {});
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(csv);
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/pos/settlement', requireAuth, async (req, res) => {
+  try {
+    res.json(await getPosSettlement(req.user, req.query || {}));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/settlement/submit', requireAuth, async (req, res) => {
+  try {
+    res.json(await submitPosSettlement(req.user, req.body || {}));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/settlement/unlock', requireAuth, async (req, res) => {
+  try {
+    res.json(await unlockPosSettlement(req.user, req.body || {}));
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });

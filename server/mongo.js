@@ -181,7 +181,7 @@ function isSampleDailyWork(w) {
   if (!w) return true;
   if (SAMPLE_DAILY_TITLES.has(w.title)) return true;
   if (String(w.title || '').includes('逾期示範')) return true;
-  if (w.kind === 'settlement' && /每日結算$/.test(String(w.title || ''))) return true;
+  if (w.kind === 'settlement' && /示範每日結算|每日結算示範/.test(String(w.title || ''))) return true;
   if (SAMPLE_TPL_TITLES.has(w.title)) return true;
   return false;
 }
@@ -3069,6 +3069,463 @@ export async function returnPosTransaction(user, txId, payload = {}) {
 
   const updated = await posTransactionsCol().findOne({ id });
   return stripPosTransaction(updated);
+}
+
+function posSettlementsCol() {
+  return db.collection('pos_settlements');
+}
+
+function hkYmdFromMs(ms) {
+  const d = new Date(Number(ms) || Date.now());
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Hong_Kong',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d);
+  const y = parts.find((p) => p.type === 'year')?.value;
+  const m = parts.find((p) => p.type === 'month')?.value;
+  const day = parts.find((p) => p.type === 'day')?.value;
+  return `${y}-${m}-${day}`;
+}
+
+function hkTodayYmd() {
+  return hkYmdFromMs(Date.now());
+}
+
+function hkDayBounds(ymd) {
+  const s = String(ymd || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error('日期格式無效（YYYY-MM-DD）');
+  const start = new Date(`${s}T00:00:00+08:00`).getTime();
+  const end = new Date(`${s}T23:59:59.999+08:00`).getTime();
+  return { start, end };
+}
+
+function posRound2(n) {
+  return Math.round((Number(n) || 0) * 100) / 100;
+}
+
+function posCanAccessStore(user, store) {
+  const me = publicUser(user);
+  if (!me) return false;
+  if (!POS_STORES.includes(store)) return false;
+  if (posIsSystemAdmin(me) || posCanManageCatalog(me)) return true;
+  return posUserStores(me).includes(store);
+}
+
+function stripPosSettlement(doc) {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return rest;
+}
+
+async function buildPosSalesSummary({ store, from, to } = {}) {
+  const fromYmd = String(from || hkTodayYmd());
+  const toYmd = String(to || fromYmd);
+  const { start } = hkDayBounds(fromYmd);
+  const { end } = hkDayBounds(toYmd);
+  if (start > end) throw new Error('開始日期不可晚於結束日期');
+  const filter = { createdAtMs: { $gte: start, $lte: end } };
+  if (store) filter.store = store;
+  const txs = await posTransactionsCol().find(filter).toArray();
+  const byPayment = { cash: 0, credit_card: 0, octopus: 0, fps: 0 };
+  const byRefundMethod = { cash: 0, credit_card: 0, octopus: 0, fps: 0 };
+  let salesCount = 0;
+  let salesAmount = 0;
+  let refundCount = 0;
+  let refundAmount = 0;
+  let cashSales = 0;
+  let cashRefunds = 0;
+  let latestActivityMs = 0;
+  const days = {};
+
+  for (const tx of txs) {
+    const amt = Number(tx.orderTotal) || 0;
+    salesCount += 1;
+    salesAmount += amt;
+    const pm = tx.paymentMethod || 'cash';
+    if (byPayment[pm] != null) byPayment[pm] += amt;
+    if (pm === 'cash') cashSales += amt;
+    latestActivityMs = Math.max(latestActivityMs, Number(tx.createdAtMs) || 0);
+    const dayKey = `${tx.store || ''}__${hkYmdFromMs(tx.createdAtMs)}`;
+    if (!days[dayKey]) {
+      days[dayKey] = {
+        date: hkYmdFromMs(tx.createdAtMs),
+        store: tx.store || '',
+        salesCount: 0,
+        salesAmount: 0,
+        refundCount: 0,
+        refundAmount: 0,
+        cashSales: 0,
+        cashRefunds: 0,
+      };
+    }
+    const day = days[dayKey];
+    day.salesCount += 1;
+    day.salesAmount += amt;
+    if (pm === 'cash') day.cashSales += amt;
+
+    for (const r of Array.isArray(tx.returns) ? tx.returns : []) {
+      const ra = Number(r.refundAmount) || 0;
+      refundCount += 1;
+      refundAmount += ra;
+      const rm = r.refundMethod || 'cash';
+      if (byRefundMethod[rm] != null) byRefundMethod[rm] += ra;
+      if (rm === 'cash') cashRefunds += ra;
+      latestActivityMs = Math.max(latestActivityMs, Number(r.atMs) || 0);
+      day.refundCount += 1;
+      day.refundAmount += ra;
+      if (rm === 'cash') day.cashRefunds += ra;
+    }
+  }
+
+  const dayRows = Object.values(days)
+    .map((d) => ({
+      ...d,
+      salesAmount: posRound2(d.salesAmount),
+      refundAmount: posRound2(d.refundAmount),
+      netAmount: posRound2(d.salesAmount - d.refundAmount),
+      cashSales: posRound2(d.cashSales),
+      cashRefunds: posRound2(d.cashRefunds),
+      expectedCash: posRound2(d.cashSales - d.cashRefunds),
+    }))
+    .sort((a, b) => {
+      const dc = String(b.date).localeCompare(String(a.date));
+      if (dc) return dc;
+      return String(a.store).localeCompare(String(b.store), 'zh-Hant');
+    });
+
+  return {
+    store: store || '',
+    from: fromYmd,
+    to: toYmd,
+    salesCount,
+    salesAmount: posRound2(salesAmount),
+    refundCount,
+    refundAmount: posRound2(refundAmount),
+    netAmount: posRound2(salesAmount - refundAmount),
+    byPayment: {
+      cash: posRound2(byPayment.cash),
+      credit_card: posRound2(byPayment.credit_card),
+      octopus: posRound2(byPayment.octopus),
+      fps: posRound2(byPayment.fps),
+    },
+    byRefundMethod: {
+      cash: posRound2(byRefundMethod.cash),
+      credit_card: posRound2(byRefundMethod.credit_card),
+      octopus: posRound2(byRefundMethod.octopus),
+      fps: posRound2(byRefundMethod.fps),
+    },
+    cashSales: posRound2(cashSales),
+    cashRefunds: posRound2(cashRefunds),
+    expectedCash: posRound2(cashSales - cashRefunds),
+    latestActivityMs,
+    days: dayRows,
+  };
+}
+
+async function syncDailySettlementWork(store, dateYmd, { done, actor } = {}) {
+  const daily = await getDaily();
+  const works = Array.isArray(daily.works) ? daily.works.slice() : [];
+  let changed = false;
+  let matched = 0;
+  const nowLabel = formatHkDateTime();
+  for (const w of works) {
+    if (!w || w.kind !== 'settlement') continue;
+    if (String(w.unit) !== String(store)) continue;
+    if (w.status === 'cancelled') continue;
+    const due = String(w.dueDate || '');
+    if (due && due !== dateYmd) continue;
+    if (!due && dateYmd !== hkTodayYmd()) continue;
+    matched += 1;
+    if (done) {
+      if (w.status === 'done') continue;
+      w.status = 'done';
+      w.completedAt = nowLabel;
+      w.completedBy = String(actor?.id || '');
+      w.completedByName = actor?.name || actor?.login || '';
+      w.completedViaPosSettlement = true;
+      w.updatedAt = nowLabel;
+      changed = true;
+    } else {
+      if (w.status !== 'done') continue;
+      w.status = 'open';
+      w.completedAt = null;
+      w.completedBy = null;
+      w.completedByName = null;
+      w.completedViaPosSettlement = false;
+      w.updatedAt = nowLabel;
+      changed = true;
+    }
+  }
+  if (done && matched === 0) {
+    works.push({
+      id: `settlement_${store}_${dateYmd}`,
+      title: '每日結算',
+      content: '由 POS 日結模組自動建立／完成',
+      unit: store,
+      kind: 'settlement',
+      priority: 'normal',
+      status: 'done',
+      dueDate: dateYmd,
+      startDate: dateYmd,
+      assigneeIds: [],
+      attachments: [],
+      requireAttachment: false,
+      completedAt: nowLabel,
+      completedBy: String(actor?.id || ''),
+      completedByName: actor?.name || actor?.login || '',
+      completedViaPosSettlement: true,
+      createdAt: nowLabel,
+      updatedAt: nowLabel,
+      createdBy: String(actor?.id || ''),
+      createdByName: actor?.name || actor?.login || '',
+    });
+    changed = true;
+  }
+  if (changed) {
+    const opLogs = Array.isArray(daily.opLogs) ? daily.opLogs.slice() : [];
+    opLogs.unshift({
+      time: nowLabel,
+      user: actor?.name || actor?.login || '',
+      userId: String(actor?.id || ''),
+      userName: actor?.name || actor?.login || '',
+      action: done ? '完成結算' : '重開結算',
+      detail: `${store}｜${dateYmd}｜經 POS 日結`,
+    });
+    if (opLogs.length > 500) opLogs.length = 500;
+    await saveDaily({
+      version: daily.version || 2,
+      works,
+      recurringTemplates: daily.recurringTemplates || [],
+      opLogs,
+    });
+  }
+  return changed;
+}
+
+export async function getPosSalesReport(user, query = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  const me = publicUser(user);
+  if (!me) throw new Error('未登入');
+  const stores = posUserStores(me);
+  const canManage = posCanManageCatalog(me);
+  const store = String(query.store || '').trim();
+  const from = String(query.from || hkTodayYmd());
+  const to = String(query.to || from);
+  if (store) {
+    if (!posCanAccessStore(me, store)) throw new Error('無權查看此店舖報表');
+  } else if (!canManage && stores.length !== 1) {
+    throw new Error('請選擇店舖');
+  }
+  const effectiveStore = store || (stores.length === 1 ? stores[0] : '');
+  if (effectiveStore && !posCanAccessStore(me, effectiveStore)) {
+    throw new Error('無權查看此店舖報表');
+  }
+  // 個人非管理：僅能查本店
+  if (!canManage && effectiveStore && !stores.includes(effectiveStore)) {
+    throw new Error('無權查看此店舖報表');
+  }
+  const summary = await buildPosSalesSummary({
+    store: effectiveStore || undefined,
+    from,
+    to,
+  });
+  return {
+    summary,
+    stores: canManage ? POS_STORES.slice() : stores,
+    canExport: canManage,
+    canManage,
+  };
+}
+
+export async function exportPosSalesReportCsv(user, query = {}) {
+  const report = await getPosSalesReport(user, query);
+  if (!report.canExport) throw new Error('只有管理員／主管可匯出 CSV');
+  const s = report.summary;
+  const lines = [];
+  lines.push(['店舖', '由', '至', '銷售筆數', '營業額', '退貨筆數', '退款額', '淨額', '現金收款', '現金退款', '應有現金'].join(','));
+  lines.push(
+    [
+      s.store || '全部',
+      s.from,
+      s.to,
+      s.salesCount,
+      s.salesAmount,
+      s.refundCount,
+      s.refundAmount,
+      s.netAmount,
+      s.cashSales,
+      s.cashRefunds,
+      s.expectedCash,
+    ].join(',')
+  );
+  lines.push('');
+  lines.push(['日期', '店舖', '銷售筆數', '營業額', '退貨筆數', '退款額', '淨額', '應有現金'].join(','));
+  for (const d of s.days || []) {
+    lines.push(
+      [d.date, d.store || s.store || '', d.salesCount, d.salesAmount, d.refundCount, d.refundAmount, d.netAmount, d.expectedCash].join(',')
+    );
+  }
+  lines.push('');
+  lines.push(['支付方式', '金額'].join(','));
+  lines.push(['現金', s.byPayment.cash].join(','));
+  lines.push(['信用卡', s.byPayment.credit_card].join(','));
+  lines.push(['八達通', s.byPayment.octopus].join(','));
+  lines.push(['FPS', s.byPayment.fps].join(','));
+  const csv = '\uFEFF' + lines.join('\n');
+  return { csv, filename: `pos-report-${s.from}_${s.to}.csv` };
+}
+
+export async function getPosSettlement(user, query = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  await posSettlementsCol().createIndex({ store: 1, date: 1 }, { unique: true });
+  const me = publicUser(user);
+  if (!me) throw new Error('未登入');
+  const stores = posUserStores(me);
+  const canManage = posCanManageCatalog(me);
+  const store = String(query.store || (stores[0] || '')).trim();
+  const date = String(query.date || hkTodayYmd());
+  if (!POS_STORES.includes(store)) throw new Error('店舖無效');
+  if (!posCanAccessStore(me, store)) throw new Error('無權查看此店舖日結');
+  const live = await buildPosSalesSummary({ store, from: date, to: date });
+  const doc = await posSettlementsCol().findOne({ store, date });
+  const settlement = stripPosSettlement(doc);
+  const locked = !!(settlement && settlement.locked);
+  const snapshotActivity = Number(settlement?.snapshot?.latestActivityMs) || Number(settlement?.submittedAtMs) || 0;
+  const hasActivityAfter = locked && live.latestActivityMs > snapshotActivity;
+  return {
+    store,
+    date,
+    live,
+    settlement,
+    locked,
+    hasActivityAfter,
+    stores: canManage ? POS_STORES.slice() : stores,
+    canManage,
+    canSubmit: posCanAccessStore(me, store) && !locked,
+    canUnlock: canManage && locked,
+  };
+}
+
+export async function submitPosSettlement(user, payload = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  await posSettlementsCol().createIndex({ store: 1, date: 1 }, { unique: true });
+  const me = publicUser(user);
+  if (!me) throw new Error('未登入');
+  const store = String(payload.store || '').trim();
+  const date = String(payload.date || hkTodayYmd());
+  if (!POS_STORES.includes(store)) throw new Error('店舖無效');
+  if (!posCanAccessStore(me, store)) throw new Error('無權提交此店舖日結');
+  const cashCounted = Number(payload.cashCounted);
+  if (!isFinite(cashCounted)) throw new Error('請填寫現金實點金額');
+  const remark = String(payload.remark || '').trim();
+  const existing = await posSettlementsCol().findOne({ store, date });
+  if (existing && existing.locked) throw new Error('此日結已提交並鎖定；請主管解除後再重交');
+
+  const live = await buildPosSalesSummary({ store, from: date, to: date });
+  const cashDiff = posRound2(cashCounted - live.expectedCash);
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const snapshot = { ...live };
+  const histEntry = {
+    action: existing ? 'resubmit' : 'submit',
+    at: time,
+    atMs: now.getTime(),
+    byId: String(me.id),
+    byName: me.name || me.login || '',
+    cashCounted: posRound2(cashCounted),
+    cashDiff,
+    expectedCash: live.expectedCash,
+    remark,
+  };
+  const history = Array.isArray(existing?.history) ? existing.history.slice() : [];
+  history.push(histEntry);
+  const id = existing?.id || `set_${store}_${date}`;
+  const doc = {
+    _id: id,
+    id,
+    store,
+    date,
+    locked: true,
+    snapshot,
+    cashCounted: posRound2(cashCounted),
+    cashDiff,
+    remark,
+    submittedAt: time,
+    submittedAtMs: now.getTime(),
+    submittedById: String(me.id),
+    submittedByName: me.name || me.login || '',
+    history,
+    unlockedAt: null,
+    unlockedAtMs: null,
+    unlockedById: null,
+    unlockedByName: null,
+  };
+  await posSettlementsCol().replaceOne({ _id: id }, doc, { upsert: true });
+  await syncDailySettlementWork(store, date, { done: true, actor: me });
+  await appendModuleLog({
+    module: 'pos',
+    time,
+    action: existing ? '重交日結' : '提交日結',
+    detail: `${store}｜${date}｜應有現金 $${live.expectedCash.toFixed(2)}｜實點 $${posRound2(cashCounted).toFixed(2)}｜差 $${cashDiff.toFixed(2)}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return getPosSettlement(me, { store, date });
+}
+
+export async function unlockPosSettlement(user, payload = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  const me = publicUser(user);
+  if (!me) throw new Error('未登入');
+  if (!posCanManageCatalog(me)) throw new Error('只有管理員／主管可解除日結鎖定');
+  const store = String(payload.store || '').trim();
+  const date = String(payload.date || '');
+  if (!POS_STORES.includes(store)) throw new Error('店舖無效');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('日期無效');
+  const existing = await posSettlementsCol().findOne({ store, date });
+  if (!existing) throw new Error('找不到日結紀錄');
+  if (!existing.locked) throw new Error('此日結未鎖定');
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const history = Array.isArray(existing.history) ? existing.history.slice() : [];
+  history.push({
+    action: 'unlock',
+    at: time,
+    atMs: now.getTime(),
+    byId: String(me.id),
+    byName: me.name || me.login || '',
+  });
+  await posSettlementsCol().updateOne(
+    { _id: existing._id },
+    {
+      $set: {
+        locked: false,
+        unlockedAt: time,
+        unlockedAtMs: now.getTime(),
+        unlockedById: String(me.id),
+        unlockedByName: me.name || me.login || '',
+        history,
+      },
+    }
+  );
+  await syncDailySettlementWork(store, date, { done: false, actor: me });
+  await appendModuleLog({
+    module: 'pos',
+    time,
+    action: '解除日結鎖定',
+    detail: `${store}｜${date}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return getPosSettlement(me, { store, date });
 }
 
 export async function resetPosDemo(user) {

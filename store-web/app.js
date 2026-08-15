@@ -195,7 +195,7 @@ function isSampleDailyWork(w){
   if(!w) return true;
   if(SAMPLE_DAILY_TITLES.indexOf(w.title)>=0) return true;
   if(String(w.title||'').indexOf('逾期示範')>=0) return true;
-  if(w.kind==='settlement' && /每日結算$/.test(String(w.title||''))) return true;
+  if(w.kind==='settlement' && /示範每日結算|每日結算示範/.test(String(w.title||''))) return true;
   if(SAMPLE_TPL_TITLES.indexOf(w.title)>=0) return true;
   return false;
 }
@@ -3635,6 +3635,8 @@ function getSidebarItemsForModule(mod){
     return [
       ['posCashier','POS 收銀'],
       ['posTransactions','交易記錄'],
+      ['posSettlement','每日結算'],
+      ['posReport','銷售報表'],
       ['posMembers','會員管理'],
       ['posReset','重置示範資料']
     ];
@@ -3786,6 +3788,8 @@ function render(){
     posTransactions: typeof vPosTransactions==='function' ? vPosTransactions : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
     posReceipt: typeof vPosReceipt==='function' ? vPosReceipt : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
     posMembers: typeof vPosMembers==='function' ? vPosMembers : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
+    posSettlement: typeof vPosSettlement==='function' ? vPosSettlement : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
+    posReport: typeof vPosReport==='function' ? vPosReport : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
     posReset: typeof vPosReset==='function' ? vPosReset : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; }
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
@@ -3815,7 +3819,7 @@ function go(v){
   if(v==='settings'){ currentModule='settings'; }
   if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProducts' || v==='transferProductLog'){ currentModule='transfer'; }
   if(v==='dailyToday' || v==='dailyProgress' || v==='dailyUnit' || v==='dailyHistory' || v==='dailyRecords' || v==='dailyNew' || v==='dailyRecurring' || v==='dailyOpLogs'){ currentModule='daily'; }
-  if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posReset'){ currentModule='pos'; }
+  if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posSettlement' || v==='posReport' || v==='posReset'){ currentModule='pos'; }
   fCat='全部'; fStatus='全部'; fKw='';
   closeAppSidebar();
   render();
@@ -5259,6 +5263,8 @@ function ensureDailySeed(){
 }
 function canTickWork(w,user){
   if(!w||!user||w.status==='cancelled') return false;
+  // 每日結算只能經 POS 日結模組完成／重開
+  if(w.kind==='settlement') return false;
   if(dailyCanManage(user)) return true;
   var ids=workAssigneeIds(w);
   if(ids.length) return ids.indexOf(String(user.id))>=0;
@@ -5271,6 +5277,7 @@ function completeDailyWork(id,user,checked,opts){
   var s=loadDailyState();
   var w=s.works.find(function(x){ return x.id===id; });
   if(!w||w.status==='cancelled') return false;
+  if(w.kind==='settlement') return false;
   if(!Array.isArray(w.attachments)) w.attachments=[];
   if(checked){
     if(!canTickWork(w,user)) return false;
@@ -5631,6 +5638,11 @@ function dailyToggle(id,el){
   var s=loadDailyState();
   var w=s.works.find(function(x){ return x.id===id; });
   if(!w){ el.checked=!el.checked; return; }
+  if(w.kind==='settlement'){
+    el.checked=w.status==='done';
+    alert2('每日結算請到 POS「每日結算」提交或解除鎖定，不可在此剔選。');
+    return;
+  }
   if(el.checked){
     // 先還原未勾，確認完成／延期後再變更
     el.checked=false;
@@ -5778,6 +5790,10 @@ function dailyReopen(id){
   if(!dailyCanManage(currentUser)){ alert2('只有管理層可以重新開啟工作。'); return; }
   var w=loadDailyState().works.find(function(x){ return x.id===id; });
   if(!w) return;
+  if(w.kind==='settlement'){
+    alert2('每日結算請到 POS「每日結算」解除鎖定後重交，不可在此重開。');
+    return;
+  }
   showModal(
     '<h3>重新開啟工作？</h3>'+
     '<p style="font-size:14px">將重開「'+dailyEsc(w.title)+'」，並<strong>刪除該工作上的全部附件</strong>。</p>'+
@@ -6255,9 +6271,14 @@ function dailyWorkRows(list,user,opts){
   var body=sorted.map(function(w){
       var can=canTickWork(w,user);
       var isAdhoc=w.kind==='adhoc';
+      var isSettlement=w.kind==='settlement';
       var tick='';
       if(!readonly){
-        if(w.status==='done'){
+        if(isSettlement){
+          tick=w.status==='done'
+            ?'<input type="checkbox" checked disabled title="請經 POS「每日結算」解除鎖定">'
+            :'<input type="checkbox" disabled title="請經 POS「每日結算」提交">';
+        }else if(w.status==='done'){
           tick=can
             ?'<input type="checkbox" checked onchange="dailyToggle(\''+w.id+'\',this)" title="再點一下可取消完成">'
             :'<input type="checkbox" checked disabled title="已完成（不可操作其他單位）">';
@@ -6273,7 +6294,8 @@ function dailyWorkRows(list,user,opts){
       var admin='';
       if(showAdmin){
         admin='<button class="btn gray sm" data-call="dailyEditWork" data-arg0="'+escHtml(String(w.id))+'">編輯</button> ';
-        if(w.status==='done') admin+='<button class="btn warn sm" data-call="dailyReopen" data-arg0="'+escHtml(String(w.id))+'">重開</button> ';
+        if(w.status==='done' && !isSettlement) admin+='<button class="btn warn sm" data-call="dailyReopen" data-arg0="'+escHtml(String(w.id))+'">重開</button> ';
+        if(isSettlement) admin+='<button class="btn sm" data-call="go" data-arg0="posSettlement">去日結</button> ';
         if(w.kind!=='settlement'&&w.status!=='cancelled') admin+='<button class="btn red sm" data-call="dailyCancelWork" data-arg0="'+escHtml(String(w.id))+'">取消</button>';
       }
       var subColor=isAdhoc?'#e53935':'#777';
