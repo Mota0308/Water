@@ -47,6 +47,12 @@ import {
   listTransferProductChanges,
   TRANSFER_STORES,
   TRANSFER_CATEGORIES,
+  listPosProducts,
+  listPosTransactions,
+  getPosTransaction,
+  adjustPosProduct,
+  checkoutPos,
+  resetPosDemo,
 } from './mongo.js';
 import { driveConfigured, exportUsersToDrive, getDriveExportStatus } from './drive.js';
 
@@ -537,6 +543,62 @@ app.get('/api/daily', requireAuth, async (_req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/pos/products', requireAuth, async (req, res) => {
+  try {
+    res.json(await listPosProducts(req.user));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/pos/transactions', requireAuth, async (req, res) => {
+  try {
+    res.json(await listPosTransactions(req.user));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/pos/transactions/:id', requireAuth, async (req, res) => {
+  try {
+    res.json({ transaction: await getPosTransaction(req.user, req.params.id) });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/checkout', requireAuth, async (req, res) => {
+  try {
+    const transaction = await checkoutPos(req.user, req.body || {});
+    res.json({ transaction });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/products/:id/adjust', requireAuth, async (req, res) => {
+  try {
+    const product = await adjustPosProduct(req.user, req.params.id, req.body || {});
+    res.json({ product });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/reset', requireAuth, async (req, res) => {
+  try {
+    res.json(await resetPosDemo(req.user));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
   }
 });
 

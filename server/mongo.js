@@ -2484,6 +2484,321 @@ export async function getTransferOrder(id) {
   return stripTransferOrder(doc);
 }
 
+/* ═══════════ POS（與調動庫存分離） ═══════════ */
+const POS_STORES = ['觀塘', '荔枝角', '灣仔', '屯門'];
+
+function posProductsCol() {
+  return db.collection('pos_products');
+}
+function posTransactionsCol() {
+  return db.collection('pos_transactions');
+}
+function posMetaCol() {
+  return db.collection('pos_meta');
+}
+
+function posIsSystemAdmin(user) {
+  const me = publicUser(user);
+  return !!(me && (me.role === 'system_admin' || isAdminAccount(me)));
+}
+function posCanManageCatalog(user) {
+  const me = publicUser(user);
+  if (!me) return false;
+  if (posIsSystemAdmin(me)) return true;
+  return me.role === 'manager' || me.position === '經理' || me.position === '主管';
+}
+function posUserStores(user) {
+  const me = publicUser(user);
+  let units = Array.isArray(me?.units) ? me.units.filter(Boolean) : [];
+  if (!units.length && me?.unit) units = [me.unit];
+  const list = units.filter((u) => POS_STORES.includes(u));
+  if (!list.length && posCanManageCatalog(me)) return POS_STORES.slice();
+  return list;
+}
+function posSeedStock(n) {
+  const o = {};
+  for (const s of POS_STORES) o[s] = n;
+  return o;
+}
+function posSeedProducts() {
+  const now = formatHkDateTime();
+  return [
+    { id: 'p1', name: 'Speedo 小童印花 Muscleback 連身泳衣 - 粉紅', sku: '80832418374', size: '28', price: 305, stock: posSeedStock(8), updatedAt: now },
+    { id: 'p2', name: '訓練蛙掌-藍', sku: 'AR1129BU', size: 'S', price: 117, stock: posSeedStock(12), updatedAt: now },
+    { id: 'p3', name: '女童純色雙層X背帶連身泳衣-黑', sku: 'WS-434BK', size: '10', price: 228, stock: posSeedStock(10), updatedAt: now },
+    { id: 'p4', name: '訓練短蹼鞋 - 藍', sku: 'WS-961BU', size: 'XS', price: 238, stock: posSeedStock(9), updatedAt: now },
+    { id: 'p5', name: '成人泳鏡-透明', sku: 'WS-MG01', size: '均碼', price: 88, stock: posSeedStock(20), updatedAt: now },
+    { id: 'p6', name: '矽膠泳帽-黑', sku: 'WS-CAP-BK', size: '均碼', price: 45, stock: posSeedStock(25), updatedAt: now },
+    { id: 'p7', name: '防曬乳液 SPF50 100ml', sku: 'SUN-50-100', size: '100ml', price: 128, stock: posSeedStock(15), updatedAt: now },
+    { id: 'p8', name: '成人競賽泳衣-深藍', sku: 'SPD-RACE-NV', size: '32', price: 420, stock: posSeedStock(6), updatedAt: now },
+    { id: 'p9', name: '浮板-黃', sku: 'WS-KB-YL', size: '均碼', price: 65, stock: posSeedStock(18), updatedAt: now },
+    { id: 'p10', name: '鼻夾耳塞套裝', sku: 'WS-NE-01', size: '均碼', price: 38, stock: posSeedStock(30), updatedAt: now },
+    { id: 'p11', name: '兒童防曬衣-白', sku: 'WS-UV-WH', size: '120', price: 198, stock: posSeedStock(11), updatedAt: now },
+    { id: 'p12', name: '防水袋 5L-橙', sku: 'DRY-5L-OR', size: '5L', price: 78, stock: posSeedStock(14), updatedAt: now },
+  ];
+}
+function stripPosProduct(doc) {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return rest;
+}
+function stripPosTransaction(doc) {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return rest;
+}
+
+async function ensurePosIndexes() {
+  await posProductsCol().createIndex({ id: 1 }, { unique: true });
+  await posTransactionsCol().createIndex({ id: 1 }, { unique: true });
+  await posTransactionsCol().createIndex({ createdAtMs: -1 });
+  await posTransactionsCol().createIndex({ store: 1, createdAtMs: -1 });
+  await posMetaCol().createIndex({ _id: 1 });
+}
+
+async function ensurePosSeeded() {
+  await ensurePosIndexes();
+  const count = await posProductsCol().countDocuments();
+  if (count > 0) return;
+  const products = posSeedProducts();
+  await posProductsCol().insertMany(products.map((p) => ({ ...p, _id: p.id })));
+  await posMetaCol().updateOne({ _id: 'main' }, { $setOnInsert: { _id: 'main', seq: 1000 } }, { upsert: true });
+}
+
+export async function listPosProducts(user) {
+  await connectMongo();
+  await ensurePosSeeded();
+  const docs = await posProductsCol().find({}).sort({ sku: 1 }).toArray();
+  return {
+    products: docs.map(stripPosProduct),
+    stores: posUserStores(user),
+    canManage: posCanManageCatalog(user),
+    canReset: posIsSystemAdmin(user),
+  };
+}
+
+export async function listPosTransactions(user) {
+  await connectMongo();
+  await ensurePosSeeded();
+  const me = publicUser(user);
+  const isAdmin = posIsSystemAdmin(me);
+  const stores = posUserStores(me);
+  const filter = isAdmin || !stores.length ? {} : { store: { $in: stores } };
+  const docs = await posTransactionsCol().find(filter).sort({ createdAtMs: -1 }).limit(500).toArray();
+  return { transactions: docs.map(stripPosTransaction), stores, canManage: posCanManageCatalog(me), canReset: isAdmin };
+}
+
+export async function getPosTransaction(user, id) {
+  await connectMongo();
+  const doc = await posTransactionsCol().findOne({ id: String(id || '') });
+  if (!doc) throw new Error('找不到交易');
+  const me = publicUser(user);
+  if (!posIsSystemAdmin(me)) {
+    const stores = posUserStores(me);
+    if (stores.length && !stores.includes(doc.store)) throw new Error('無權查看此交易');
+  }
+  return stripPosTransaction(doc);
+}
+
+export async function adjustPosProduct(user, productId, patch = {}) {
+  await connectMongo();
+  await ensurePosSeeded();
+  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可調整商品');
+  const id = String(productId || '');
+  const existing = await posProductsCol().findOne({ id });
+  if (!existing) throw new Error('找不到商品');
+  const $set = { updatedAt: formatHkDateTime() };
+  if (patch.price != null && patch.price !== '') {
+    const price = Number(patch.price);
+    if (!isFinite(price) || price < 0) throw new Error('售價無效');
+    $set.price = Math.round(price * 100) / 100;
+  }
+  if (patch.stock && typeof patch.stock === 'object') {
+    for (const store of POS_STORES) {
+      if (patch.stock[store] == null || patch.stock[store] === '') continue;
+      const n = Number(patch.stock[store]);
+      if (!Number.isInteger(n) || n < 0) throw new Error(`庫存無效：${store}`);
+      $set[`stock.${store}`] = n;
+    }
+  }
+  const updated = await posProductsCol().findOneAndUpdate(
+    { id },
+    { $set },
+    { returnDocument: 'after' }
+  );
+  const doc = updated?.value || updated;
+  const me = publicUser(user);
+  await appendModuleLog({
+    module: 'pos',
+    time: formatHkDateTime(),
+    action: '調整 POS 商品',
+    detail: `${id}｜${existing.name}`,
+    userId: me?.id,
+    userName: me?.name || me?.login,
+    user: me?.name || me?.login,
+  });
+  return stripPosProduct(doc);
+}
+
+export async function checkoutPos(user, payload = {}) {
+  await connectMongo();
+  await ensurePosSeeded();
+  const me = publicUser(user);
+  if (!me) throw new Error('未登入');
+  const store = String(payload.store || '');
+  const allowed = posUserStores(me);
+  if (!POS_STORES.includes(store)) throw new Error('店舖無效');
+  if (allowed.length && !allowed.includes(store) && !posIsSystemAdmin(me)) {
+    throw new Error('不可在非所屬單位收銀');
+  }
+  const itemsIn = Array.isArray(payload.items) ? payload.items : [];
+  if (!itemsIn.length) throw new Error('購物車是空的');
+  const paymentMethod = String(payload.paymentMethod || 'cash');
+  const paymentNames = { cash: '現金', credit_card: '信用卡', octopus: '八達通', fps: 'FPS' };
+  if (!paymentNames[paymentMethod]) throw new Error('支付方式無效');
+  const accountBalance = Number(payload.accountBalance || 0);
+  if (!isFinite(accountBalance)) throw new Error('賬戶餘額無效');
+
+  const normalized = [];
+  for (const raw of itemsIn) {
+    const productId = String(raw.productId || '');
+    const qty = Number(raw.qty);
+    if (!productId || !Number.isInteger(qty) || qty <= 0) throw new Error('商品數量無效');
+    normalized.push({ productId, qty });
+  }
+
+  const deducted = [];
+  try {
+    for (const line of normalized) {
+      const res = await posProductsCol().findOneAndUpdate(
+        { id: line.productId, [`stock.${store}`]: { $gte: line.qty } },
+        {
+          $inc: { [`stock.${store}`]: -line.qty },
+          $set: { updatedAt: formatHkDateTime() },
+        },
+        { returnDocument: 'after' }
+      );
+      const doc = res?.value || res;
+      if (!doc || !doc.id) {
+        throw new Error(`庫存不足或找不到商品：${line.productId}`);
+      }
+      deducted.push({ productId: line.productId, qty: line.qty, product: doc });
+    }
+  } catch (e) {
+    for (const d of deducted) {
+      try {
+        await posProductsCol().updateOne({ id: d.productId }, { $inc: { [`stock.${store}`]: d.qty } });
+      } catch (_) {}
+    }
+    throw e;
+  }
+
+  let subtotal = 0;
+  const items = deducted.map((d) => {
+    const unitPrice = Number(d.product.price) || 0;
+    const lineTotal = Math.round(unitPrice * d.qty * 100) / 100;
+    subtotal += lineTotal;
+    return {
+      qty: d.qty,
+      name: d.product.name,
+      sku: d.product.sku,
+      size: d.product.size,
+      unitPrice,
+      lineTotal,
+      productId: d.productId,
+    };
+  });
+  subtotal = Math.round(subtotal * 100) / 100;
+  const orderTotal = Math.round((subtotal + accountBalance) * 100) / 100;
+  if (orderTotal < 0) {
+    for (const d of deducted) {
+      await posProductsCol().updateOne({ id: d.productId }, { $inc: { [`stock.${store}`]: d.qty } });
+    }
+    throw new Error('訂單總計不可為負');
+  }
+
+  const meta = await posMetaCol().findOneAndUpdate(
+    { _id: 'main' },
+    { $inc: { seq: 1 }, $setOnInsert: { _id: 'main' } },
+    { upsert: true, returnDocument: 'after' }
+  );
+  const seq = (meta?.value || meta)?.seq || Date.now() % 100000;
+  const orderNo = String(3000000 + seq);
+  const orderNoAlt = String(50000 + (seq % 10000));
+  const year = new Date().getFullYear();
+  const invoiceNo = `INV-${year}-${String(seq).padStart(8, '0')}`;
+  const id = `tx_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  const time = formatHkDateTime();
+  const stamp = (() => {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  })();
+  const tx = {
+    _id: id,
+    id,
+    receiptNo: `R${Date.now().toString(36).toUpperCase()}`,
+    orderNo,
+    orderNoAlt,
+    invoiceNo,
+    store,
+    staffId: String(me.id),
+    staffName: me.name || me.login || '',
+    memberId: String(payload.memberId || ''),
+    memberName: String(payload.memberName || ''),
+    memberPhone: String(payload.memberPhone || ''),
+    remark: String(payload.remark || '').trim(),
+    paymentMethod,
+    paymentMethodName: paymentNames[paymentMethod],
+    paymentStatus: '已付款',
+    orderStatus: `訂單已完成（${store}店）`,
+    items,
+    subtotal,
+    collected: 0,
+    accountBalance,
+    orderTotal,
+    paid: orderTotal,
+    createdAt: stamp,
+    createdAtMs: Date.now(),
+    createdAtLabel: time,
+  };
+  await posTransactionsCol().insertOne(tx);
+  await appendModuleLog({
+    module: 'pos',
+    time,
+    action: '完成收銀',
+    detail: `${store}｜${orderNo}｜$${orderTotal.toFixed(2)}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return stripPosTransaction(tx);
+}
+
+export async function resetPosDemo(user) {
+  await connectMongo();
+  if (!posIsSystemAdmin(user)) throw new Error('只有系統管理員可重置 POS');
+  await ensurePosIndexes();
+  await posProductsCol().deleteMany({});
+  await posTransactionsCol().deleteMany({});
+  const products = posSeedProducts();
+  await posProductsCol().insertMany(products.map((p) => ({ ...p, _id: p.id })));
+  await posMetaCol().replaceOne({ _id: 'main' }, { _id: 'main', seq: 1000 }, { upsert: true });
+  const me = publicUser(user);
+  await appendModuleLog({
+    module: 'pos',
+    time: formatHkDateTime(),
+    action: '重置雲端 POS',
+    detail: '種子商品＋清空交易',
+    userId: me?.id,
+    userName: me?.name || me?.login,
+    user: me?.name || me?.login,
+  });
+  return { ok: true };
+}
+
+export { POS_STORES };
+
 export async function closeMongo() {
   if (client) {
     await client.close();

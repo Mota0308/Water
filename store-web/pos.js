@@ -1,12 +1,13 @@
-/* ═══════════ POS 示範模組（本機 localStorage，不上雲） ═══════════ */
-var POS_LS_KEY = 'store-web-pos-demo-v1';
-var POS_STORES = ['觀塘', '荔枝角', '灣仔', '屯門'];
+/* ═══════════ POS 雲端模組（Mongo；會員示範仍本機） ═══════════ */
+var POS_LS_KEY = 'store-web-pos-demo-v1'; // 舊本機 key，載入時清除
 var POS_PAYMENTS = [
   { id: 'cash', name: '現金' },
   { id: 'credit_card', name: '信用卡' },
   { id: 'octopus', name: '八達通' },
   { id: 'fps', name: 'FPS' }
 ];
+var POS_STORES_FALLBACK = ['觀塘', '荔枝角', '灣仔', '屯門'];
+
 var posCart = [];
 var posSelectedStore = '';
 var posSearchKw = '';
@@ -16,100 +17,27 @@ var posAccountBalance = 0;
 var posPaymentMethod = 'cash';
 var posReceiptFocusId = '';
 var posTxKw = '';
+var posCloud = {
+  products: [],
+  transactions: [],
+  stores: [],
+  canManage: false,
+  canReset: false,
+  loaded: false,
+  loading: false,
+  error: ''
+};
+var posMembersLocal = [
+  { id: 'm1', name: '梁先生', phone: '56140870', level: '一般會員' },
+  { id: 'm2', name: '陳小姐', phone: '91234567', level: 'VIP 會員' },
+  { id: 'm3', name: '王先生', phone: '61239876', level: '一般會員' },
+  { id: 'm4', name: '李小姐', phone: '98881234', level: 'VIP 會員' },
+  { id: 'm5', name: '測試客人', phone: '60000000', level: '一般會員' }
+];
+var posAdjustProductId = '';
 
-function posSeedProducts() {
-  function stock(n) {
-    var o = {};
-    POS_STORES.forEach(function (s) { o[s] = n; });
-    return o;
-  }
-  return [
-    { id: 'p1', name: 'Speedo 小童印花 Muscleback 連身泳衣 - 粉紅', sku: '80832418374', size: '28', price: 305, stock: stock(8) },
-    { id: 'p2', name: '訓練蛙掌-藍', sku: 'AR1129BU', size: 'S', price: 117, stock: stock(12) },
-    { id: 'p3', name: '女童純色雙層X背帶連身泳衣-黑', sku: 'WS-434BK', size: '10', price: 228, stock: stock(10) },
-    { id: 'p4', name: '訓練短蹼鞋 - 藍', sku: 'WS-961BU', size: 'XS', price: 238, stock: stock(9) },
-    { id: 'p5', name: '成人泳鏡-透明', sku: 'WS-MG01', size: '均碼', price: 88, stock: stock(20) },
-    { id: 'p6', name: '矽膠泳帽-黑', sku: 'WS-CAP-BK', size: '均碼', price: 45, stock: stock(25) },
-    { id: 'p7', name: '防曬乳液 SPF50 100ml', sku: 'SUN-50-100', size: '100ml', price: 128, stock: stock(15) },
-    { id: 'p8', name: '成人競賽泳衣-深藍', sku: 'SPD-RACE-NV', size: '32', price: 420, stock: stock(6) },
-    { id: 'p9', name: '浮板-黃', sku: 'WS-KB-YL', size: '均碼', price: 65, stock: stock(18) },
-    { id: 'p10', name: '鼻夾耳塞套裝', sku: 'WS-NE-01', size: '均碼', price: 38, stock: stock(30) },
-    { id: 'p11', name: '兒童防曬衣-白', sku: 'WS-UV-WH', size: '120', price: 198, stock: stock(11) },
-    { id: 'p12', name: '防水袋 5L-橙', sku: 'DRY-5L-OR', size: '5L', price: 78, stock: stock(14) }
-  ];
-}
-function posSeedMembers() {
-  return [
-    { id: 'm1', name: '梁先生', phone: '56140870', level: '一般會員' },
-    { id: 'm2', name: '陳小姐', phone: '91234567', level: 'VIP 會員' },
-    { id: 'm3', name: '王先生', phone: '61239876', level: '一般會員' },
-    { id: 'm4', name: '李小姐', phone: '98881234', level: 'VIP 會員' },
-    { id: 'm5', name: '測試客人', phone: '60000000', level: '一般會員' }
-  ];
-}
-function posEmptyState() {
-  return {
-    version: 1,
-    products: posSeedProducts(),
-    members: posSeedMembers(),
-    transactions: [],
-    seq: 1000
-  };
-}
-function posLoadState() {
-  try {
-    var raw = localStorage.getItem(POS_LS_KEY);
-    if (!raw) return posEmptyState();
-    var s = JSON.parse(raw);
-    if (!s || !Array.isArray(s.products) || !Array.isArray(s.transactions)) return posEmptyState();
-    if (!Array.isArray(s.members)) s.members = posSeedMembers();
-    if (typeof s.seq !== 'number') s.seq = 1000;
-    return s;
-  } catch (e) {
-    return posEmptyState();
-  }
-}
-function posSaveState(s) {
-  try {
-    localStorage.setItem(POS_LS_KEY, JSON.stringify(s));
-  } catch (e) {
-    if (typeof alert2 === 'function') alert2('無法儲存本機 POS 資料（可能儲存空間已滿）。');
-  }
-}
-function posResetDemoData() {
-  if (!confirm('確定重置本機示範 POS 資料？\n交易記錄將清空，商品庫存與會員將還原為種子資料。')) return;
-  posSaveState(posEmptyState());
-  posCart = [];
-  posMemberId = '';
-  posRemark = '';
-  posAccountBalance = 0;
-  posPaymentMethod = 'cash';
-  posReceiptFocusId = '';
-  if (typeof addModuleLog === 'function') addModuleLog('pos', '重置示範 POS', '本機 localStorage');
-  if (typeof alert2 === 'function') alert2('已重置示範 POS 資料。');
-  if (typeof go === 'function') go('posCashier');
-  else if (typeof render === 'function') render();
-}
-function posUserStores(user) {
-  user = user || (typeof currentUser !== 'undefined' ? currentUser : null);
-  var units = [];
-  if (typeof dailyUserUnits === 'function') units = dailyUserUnits(user) || [];
-  else if (user && Array.isArray(user.units)) units = user.units.slice();
-  else if (user && user.unit) units = [user.unit];
-  var list = units.filter(function (u) { return POS_STORES.indexOf(u) >= 0; });
-  if (!list.length && user && (user.role === 'system_admin' || user.role === 'manager')) {
-    return POS_STORES.slice();
-  }
-  return list;
-}
-function posEnsureStore() {
-  var stores = posUserStores();
-  if (!stores.length) {
-    posSelectedStore = '';
-    return '';
-  }
-  if (stores.indexOf(posSelectedStore) < 0) posSelectedStore = stores[0];
-  return posSelectedStore;
+function posDiscardLocalDemo() {
+  try { localStorage.removeItem(POS_LS_KEY); } catch (e) {}
 }
 function posMoney(n) {
   var x = Number(n);
@@ -123,22 +51,71 @@ function posEsc(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
-function posNowStr() {
-  if (typeof dailyNowStr === 'function') return dailyNowStr();
-  if (typeof nowStr === 'function') return nowStr();
-  return new Date().toLocaleString('zh-HK');
+function posUserStoresLocal() {
+  if (posCloud.stores && posCloud.stores.length) return posCloud.stores.slice();
+  var user = typeof currentUser !== 'undefined' ? currentUser : null;
+  var units = [];
+  if (typeof dailyUserUnits === 'function') units = dailyUserUnits(user) || [];
+  else if (user && Array.isArray(user.units)) units = user.units.slice();
+  var list = units.filter(function (u) { return POS_STORES_FALLBACK.indexOf(u) >= 0; });
+  if (!list.length && user && (user.role === 'system_admin' || user.role === 'manager')) {
+    return POS_STORES_FALLBACK.slice();
+  }
+  return list;
 }
-function posNowStamp() {
-  var d = new Date();
-  var p = function (n) { return String(n).padStart(2, '0'); };
-  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
-    p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+function posEnsureStore() {
+  var stores = posUserStoresLocal();
+  if (!stores.length) {
+    posSelectedStore = '';
+    return '';
+  }
+  if (stores.indexOf(posSelectedStore) < 0) posSelectedStore = stores[0];
+  return posSelectedStore;
 }
-function posFindProduct(state, id) {
-  return (state.products || []).find(function (p) { return p.id === id; }) || null;
+function posInvalidateCloud() {
+  posCloud.loaded = false;
+  posCloud.error = '';
 }
-function posFindMember(state, id) {
-  return (state.members || []).find(function (m) { return m.id === id; }) || null;
+async function posRefreshCloud(force) {
+  if (!apiEnabled || !authToken) {
+    posCloud.error = '需要連接雲端並登入後才能使用 POS。';
+    posCloud.loaded = true;
+    return posCloud;
+  }
+  if (posCloud.loading) return;
+  if (posCloud.loaded && !force) return posCloud;
+  posCloud.loading = true;
+  posCloud.error = '';
+  posDiscardLocalDemo();
+  try {
+    var prods = await apiFetch('/api/pos/products');
+    var txs = await apiFetch('/api/pos/transactions');
+    posCloud.products = (prods && prods.products) || [];
+    posCloud.transactions = (txs && txs.transactions) || [];
+    posCloud.stores = (prods && prods.stores) || (txs && txs.stores) || [];
+    posCloud.canManage = !!(prods && prods.canManage) || !!(txs && txs.canManage);
+    posCloud.canReset = !!(prods && prods.canReset) || !!(txs && txs.canReset);
+    posCloud.loaded = true;
+  } catch (e) {
+    posCloud.error = (e && e.message) || String(e);
+    posCloud.loaded = true;
+  } finally {
+    posCloud.loading = false;
+  }
+  return posCloud;
+}
+function posKickLoad() {
+  if (posCloud.loading) return;
+  if (posCloud.loaded) return;
+  posRefreshCloud(false).then(function () {
+    if (typeof render === 'function') render();
+  });
+}
+function posFindProduct(id) {
+  return (posCloud.products || []).find(function (p) { return p.id === id; }) || null;
+}
+function posFindMember(id) {
+  return posMembersLocal.find(function (m) { return m.id === id; }) || null;
 }
 function posCartSubtotal() {
   return posCart.reduce(function (sum, line) {
@@ -146,7 +123,7 @@ function posCartSubtotal() {
   }, 0);
 }
 function posSetStore(store) {
-  var stores = posUserStores();
+  var stores = posUserStoresLocal();
   if (stores.indexOf(store) < 0) return;
   posSelectedStore = store;
   if (typeof render === 'function') render();
@@ -159,9 +136,7 @@ function posSetMember(id) {
   posMemberId = String(id || '');
   if (typeof render === 'function') render();
 }
-function posSetRemark(v) {
-  posRemark = String(v || '');
-}
+function posSetRemark(v) { posRemark = String(v || ''); }
 function posSetAccountBalance(v) {
   var n = parseFloat(v);
   posAccountBalance = isFinite(n) ? n : 0;
@@ -171,51 +146,38 @@ function posSetPayment(method) {
   posPaymentMethod = method || 'cash';
   if (typeof render === 'function') render();
 }
+function posSetTxKw(v) {
+  posTxKw = String(v || '');
+  if (typeof render === 'function') render();
+}
 function posAddToCart(productId) {
   var store = posEnsureStore();
-  if (!store) {
-    alert2('你的賬戶沒有可收銀的港店單位，無法使用 POS。');
-    return;
-  }
-  var state = posLoadState();
-  var p = posFindProduct(state, productId);
+  if (!store) { alert2('你的賬戶沒有可收銀的港店單位。'); return; }
+  var p = posFindProduct(productId);
   if (!p) { alert2('找不到商品。'); return; }
   var avail = Number((p.stock && p.stock[store]) || 0);
   var existing = posCart.find(function (x) { return x.productId === productId; });
   var nextQty = (existing ? existing.qty : 0) + 1;
-  if (nextQty > avail) {
-    alert2('庫存不足（' + store + ' 剩餘 ' + avail + '）。');
-    return;
-  }
+  if (nextQty > avail) { alert2('庫存不足（' + store + ' 剩餘 ' + avail + '）。'); return; }
   if (existing) existing.qty = nextQty;
   else {
     posCart.push({
-      productId: p.id,
-      name: p.name,
-      sku: p.sku,
-      size: p.size,
-      unitPrice: Number(p.price) || 0,
-      qty: 1
+      productId: p.id, name: p.name, sku: p.sku, size: p.size,
+      unitPrice: Number(p.price) || 0, qty: 1
     });
   }
   if (typeof render === 'function') render();
 }
 function posCartQty(productId, delta) {
   var store = posEnsureStore();
-  var state = posLoadState();
-  var p = posFindProduct(state, productId);
+  var p = posFindProduct(productId);
   var line = posCart.find(function (x) { return x.productId === productId; });
   if (!line) return;
   var avail = p && p.stock ? Number(p.stock[store] || 0) : 9999;
-  var next = (Number(line.qty) || 0) + delta;
-  if (next <= 0) {
-    posCart = posCart.filter(function (x) { return x.productId !== productId; });
-  } else if (next > avail) {
-    alert2('庫存不足（' + store + ' 剩餘 ' + avail + '）。');
-    return;
-  } else {
-    line.qty = next;
-  }
+  var next = (Number(line.qty) || 0) + Number(delta);
+  if (next <= 0) posCart = posCart.filter(function (x) { return x.productId !== productId; });
+  else if (next > avail) { alert2('庫存不足（' + store + ' 剩餘 ' + avail + '）。'); return; }
+  else line.qty = next;
   if (typeof render === 'function') render();
 }
 function posRemoveCartLine(productId) {
@@ -226,114 +188,122 @@ function posClearCart() {
   posCart = [];
   if (typeof render === 'function') render();
 }
-function posCheckout() {
+async function posCheckout() {
   var store = posEnsureStore();
-  if (!store) {
-    alert2('你的賬戶沒有可收銀的港店單位。');
-    return;
+  if (!store) { alert2('你的賬戶沒有可收銀的港店單位。'); return; }
+  if (!posCart.length) { alert2('購物車是空的。'); return; }
+  var member = posFindMember(posMemberId);
+  try {
+    var res = await apiFetch('/api/pos/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        store: store,
+        paymentMethod: posPaymentMethod,
+        accountBalance: posAccountBalance,
+        remark: posRemark,
+        memberId: member ? member.id : '',
+        memberName: member ? member.name : '',
+        memberPhone: member ? member.phone : '',
+        items: posCart.map(function (l) { return { productId: l.productId, qty: l.qty }; })
+      })
+    });
+    var tx = res && res.transaction;
+    posCart = [];
+    posRemark = '';
+    posAccountBalance = 0;
+    posMemberId = '';
+    posReceiptFocusId = tx ? tx.id : '';
+    posInvalidateCloud();
+    await posRefreshCloud(true);
+    if (typeof go === 'function') go('posReceipt');
+    else if (typeof render === 'function') render();
+  } catch (e) {
+    alert2('結帳失敗：' + (e.message || e));
+    posInvalidateCloud();
+    await posRefreshCloud(true);
+    if (typeof render === 'function') render();
   }
-  if (!posCart.length) {
-    alert2('購物車是空的。');
-    return;
-  }
-  var state = posLoadState();
-  for (var i = 0; i < posCart.length; i++) {
-    var line = posCart[i];
-    var p = posFindProduct(state, line.productId);
-    if (!p) { alert2('商品已不存在：' + line.name); return; }
-    var avail = Number((p.stock && p.stock[store]) || 0);
-    if (line.qty > avail) {
-      alert2('庫存不足：' + p.name + '（剩餘 ' + avail + '）');
-      return;
-    }
-  }
-  var subtotal = posCartSubtotal();
-  var balance = Number(posAccountBalance) || 0;
-  var orderTotal = Math.round((subtotal + balance) * 100) / 100;
-  if (orderTotal < 0) {
-    alert2('訂單總計不可為負，請調整賬戶抵扣。');
-    return;
-  }
-  var pay = POS_PAYMENTS.find(function (x) { return x.id === posPaymentMethod; });
-  var member = posFindMember(state, posMemberId);
-  state.seq = (state.seq || 1000) + 1;
-  var orderNo = String(3000000 + state.seq);
-  var orderNoAlt = String(50000 + (state.seq % 10000));
-  var invoiceNo = 'INV-' + new Date().getFullYear() + '-' + String(state.seq).padStart(8, '0');
-  var receiptNo = 'R' + Date.now().toString(36).toUpperCase();
-  var user = typeof currentUser !== 'undefined' ? currentUser : null;
-  var tx = {
-    id: 'tx_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
-    receiptNo: receiptNo,
-    orderNo: orderNo,
-    orderNoAlt: orderNoAlt,
-    invoiceNo: invoiceNo,
-    store: store,
-    staffId: user ? String(user.id) : '',
-    staffName: user ? (user.name || user.login || '') : '',
-    memberId: member ? member.id : '',
-    memberName: member ? member.name : '',
-    memberPhone: member ? member.phone : '',
-    remark: String(posRemark || '').trim(),
-    paymentMethod: pay ? pay.id : 'cash',
-    paymentMethodName: pay ? pay.name : '現金',
-    paymentStatus: '已付款',
-    orderStatus: '訂單已完成（' + store + '店）',
-    items: posCart.map(function (line) {
-      return {
-        qty: line.qty,
-        name: line.name,
-        sku: line.sku,
-        size: line.size,
-        unitPrice: line.unitPrice,
-        lineTotal: Math.round(line.unitPrice * line.qty * 100) / 100
-      };
-    }),
-    subtotal: Math.round(subtotal * 100) / 100,
-    collected: 0,
-    accountBalance: balance,
-    orderTotal: orderTotal,
-    paid: orderTotal,
-    createdAt: posNowStamp(),
-    createdAtMs: Date.now()
-  };
-  posCart.forEach(function (line) {
-    var p = posFindProduct(state, line.productId);
-    if (p && p.stock) {
-      p.stock[store] = Math.max(0, Number(p.stock[store] || 0) - line.qty);
-    }
-  });
-  state.transactions.unshift(tx);
-  posSaveState(state);
-  posCart = [];
-  posRemark = '';
-  posAccountBalance = 0;
-  posMemberId = '';
-  posReceiptFocusId = tx.id;
-  if (typeof addModuleLog === 'function') {
-    addModuleLog('pos', '完成收銀', store + '｜' + tx.orderNo + '｜$' + posMoney(tx.orderTotal));
-  }
-  if (typeof go === 'function') go('posReceipt');
-  else if (typeof render === 'function') render();
 }
 function posOpenReceipt(id) {
   posReceiptFocusId = String(id || '');
   if (typeof go === 'function') go('posReceipt');
 }
-function posSetTxKw(v) {
-  posTxKw = String(v || '');
+async function posResetDemoData() {
+  if (!posCloud.canReset && !(typeof isAdmin === 'function' && isAdmin())) {
+    alert2('只有系統管理員可重置雲端 POS。');
+    return;
+  }
+  if (!confirm('確定重置雲端 POS？\n將清空所有雲端交易，並還原種子商品庫存。\n此操作影響所有裝置。')) return;
+  try {
+    await apiFetch('/api/pos/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    posCart = [];
+    posReceiptFocusId = '';
+    posDiscardLocalDemo();
+    posInvalidateCloud();
+    await posRefreshCloud(true);
+    alert2('已重置雲端 POS 資料。');
+    if (typeof go === 'function') go('posCashier');
+    else if (typeof render === 'function') render();
+  } catch (e) {
+    alert2('重置失敗：' + (e.message || e));
+  }
+}
+function posOpenAdjust(productId) {
+  posAdjustProductId = String(productId || '');
   if (typeof render === 'function') render();
 }
+function posCloseAdjust() {
+  posAdjustProductId = '';
+  if (typeof render === 'function') render();
+}
+async function posSubmitAdjust(productId) {
+  var priceEl = document.getElementById('pos-adj-price');
+  var stock = {};
+  POS_STORES_FALLBACK.forEach(function (s) {
+    var el = document.getElementById('pos-adj-stock-' + s);
+    if (el) stock[s] = el.value;
+  });
+  try {
+    await apiFetch('/api/pos/products/' + encodeURIComponent(productId) + '/adjust', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ price: priceEl ? priceEl.value : undefined, stock: stock })
+    });
+    posAdjustProductId = '';
+    posInvalidateCloud();
+    await posRefreshCloud(true);
+    alert2('已更新商品。');
+    if (typeof render === 'function') render();
+  } catch (e) {
+    alert2('調整失敗：' + (e.message || e));
+  }
+}
+function posLoadingCard(title) {
+  if (posCloud.error) {
+    return '<div class="card"><h2>' + posEsc(title) + '</h2>' +
+      '<p style="color:#c62828">' + posEsc(posCloud.error) + '</p>' +
+      '<button type="button" class="btn sm" data-call="posForceReload">重新載入</button></div>';
+  }
+  return '<div class="card"><h2>' + posEsc(title) + '</h2><p style="color:#888">載入雲端 POS 資料中…</p></div>';
+}
+function posForceReload() {
+  posInvalidateCloud();
+  posRefreshCloud(true).then(function () { if (typeof render === 'function') render(); });
+}
+
 function vPosCashier() {
-  var stores = posUserStores();
+  posKickLoad();
+  if (!posCloud.loaded || posCloud.loading) return posLoadingCard('🛒 POS 收銀');
+  if (posCloud.error) return posLoadingCard('🛒 POS 收銀');
+  var stores = posUserStoresLocal();
   var store = posEnsureStore();
   if (!stores.length) {
     return '<div class="card"><h2>🛒 POS 收銀</h2>' +
-      '<p style="color:#c62828;font-size:14px">你的賬戶沒有港店所屬單位（觀塘／荔枝角／灣仔／屯門），無法使用示範 POS。</p></div>';
+      '<p style="color:#c62828;font-size:14px">你的賬戶沒有港店所屬單位，無法使用 POS。</p></div>';
   }
-  var state = posLoadState();
   var kw = String(posSearchKw || '').trim().toLowerCase();
-  var products = (state.products || []).filter(function (p) {
+  var products = (posCloud.products || []).filter(function (p) {
     if (!kw) return true;
     return String(p.name).toLowerCase().indexOf(kw) >= 0 ||
       String(p.sku).toLowerCase().indexOf(kw) >= 0 ||
@@ -342,7 +312,7 @@ function vPosCashier() {
   var storeOpts = stores.map(function (s) {
     return '<option value="' + posEsc(s) + '"' + (s === store ? ' selected' : '') + '>' + posEsc(s) + '店</option>';
   }).join('');
-  var memberOpts = '<option value="">（不選擇會員）</option>' + (state.members || []).map(function (m) {
+  var memberOpts = '<option value="">（不選擇會員）</option>' + posMembersLocal.map(function (m) {
     return '<option value="' + posEsc(m.id) + '"' + (posMemberId === m.id ? ' selected' : '') + '>' +
       posEsc(m.name + '｜' + m.phone + '｜' + m.level) + '</option>';
   }).join('');
@@ -354,14 +324,16 @@ function vPosCashier() {
   var productRows = products.map(function (p) {
     var avail = Number((p.stock && p.stock[store]) || 0);
     var low = avail <= 2 ? ' style="color:#c62828;font-weight:bold"' : '';
+    var adj = posCloud.canManage
+      ? ' <button type="button" class="btn gray sm" data-call="posOpenAdjust" data-arg0="' + posEsc(p.id) + '">調整</button>'
+      : '';
     return '<tr>' +
       '<td>' + posEsc(p.sku) + '</td>' +
       '<td>' + posEsc(p.name) + '<div style="font-size:12px;color:#78909c">尺寸 ' + posEsc(p.size) + '</div></td>' +
       '<td>$' + posMoney(p.price) + '</td>' +
       '<td' + low + '>' + avail + '</td>' +
       '<td><button type="button" class="btn green sm" data-call="posAddToCart" data-arg0="' + posEsc(p.id) + '"' +
-      (avail <= 0 ? ' disabled' : '') + '>加入</button></td>' +
-      '</tr>';
+      (avail <= 0 ? ' disabled' : '') + '>加入</button>' + adj + '</td></tr>';
   }).join('');
   var cartRows = posCart.length ? posCart.map(function (line) {
     return '<tr>' +
@@ -369,22 +341,39 @@ function vPosCashier() {
       '<td style="white-space:nowrap">' +
       '<button type="button" class="btn gray sm" data-call="posCartQty" data-arg0="' + posEsc(line.productId) + '" data-arg1="-1">−</button> ' +
       '<b>' + line.qty + '</b> ' +
-      '<button type="button" class="btn gray sm" data-call="posCartQty" data-arg0="' + posEsc(line.productId) + '" data-arg1="1">＋</button>' +
-      '</td>' +
+      '<button type="button" class="btn gray sm" data-call="posCartQty" data-arg0="' + posEsc(line.productId) + '" data-arg1="1">＋</button></td>' +
       '<td>$' + posMoney(line.unitPrice * line.qty) + '</td>' +
-      '<td><button type="button" class="btn red sm" data-call="posRemoveCartLine" data-arg0="' + posEsc(line.productId) + '">移除</button></td>' +
-      '</tr>';
+      '<td><button type="button" class="btn red sm" data-call="posRemoveCartLine" data-arg0="' + posEsc(line.productId) + '">移除</button></td></tr>';
   }).join('') : '<tr><td colspan="4" style="color:#888;text-align:center">購物車是空的</td></tr>';
   var subtotal = posCartSubtotal();
   var balance = Number(posAccountBalance) || 0;
   var total = Math.round((subtotal + balance) * 100) / 100;
+  var adjustPanel = '';
+  if (posAdjustProductId && posCloud.canManage) {
+    var ap = posFindProduct(posAdjustProductId);
+    if (ap) {
+      var stockInputs = POS_STORES_FALLBACK.map(function (s) {
+        return '<div><label>' + posEsc(s) + '庫存</label>' +
+          '<input type="number" id="pos-adj-stock-' + posEsc(s) + '" min="0" step="1" value="' +
+          posEsc(String((ap.stock && ap.stock[s]) || 0)) + '"></div>';
+      }).join('');
+      adjustPanel = '<div class="card" style="border:1px solid #90caf9">' +
+        '<h3>調整商品｜' + posEsc(ap.name) + '</h3>' +
+        '<label>售價</label><input type="number" id="pos-adj-price" step="0.01" min="0" value="' + posEsc(String(ap.price)) + '">' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-top:8px">' + stockInputs + '</div>' +
+        '<div class="actions" style="margin-top:12px;display:flex;gap:8px">' +
+        '<button type="button" class="btn green sm" data-call="posSubmitAdjust" data-arg0="' + posEsc(ap.id) + '">儲存</button>' +
+        '<button type="button" class="btn gray sm" data-call="posCloseAdjust">取消</button></div></div>';
+    }
+  }
   return '<div class="card"><h2>🛒 POS 收銀</h2>' +
-    '<div class="info-banner">示範模式：資料只存在本機瀏覽器。目前店舖鎖定你的所屬單位。</div>' +
+    '<div class="info-banner">雲端模式：交易與庫存同步至 Mongo（與貨品調動庫存分開）。會員下拉仍為本機示範。</div>' +
     '<div class="filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">' +
     '<div><label>收銀店舖</label><select onchange="posSetStore(this.value)">' + storeOpts + '</select></div>' +
     '<div style="flex:1;min-width:180px"><label>搜尋商品</label>' +
     '<input type="text" value="' + posEsc(posSearchKw) + '" placeholder="品名／SKU／尺寸" oninput="posSetSearch(this.value)"></div>' +
-    '</div></div>' +
+    '<button type="button" class="btn gray sm" data-call="posForceReload">重新整理</button></div></div>' +
+    adjustPanel +
     '<div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(280px,0.9fr);gap:14px" class="pos-cashier-grid">' +
     '<div class="card"><h3>商品</h3><div class="table-wrap"><table><thead><tr>' +
     '<th>SKU</th><th>商品</th><th>售價</th><th>庫存</th><th></th></tr></thead><tbody>' +
@@ -393,7 +382,7 @@ function vPosCashier() {
     '<div class="card"><h3>購物車</h3><div class="table-wrap"><table><thead><tr>' +
     '<th>商品</th><th>數量</th><th>小計</th><th></th></tr></thead><tbody>' + cartRows +
     '</tbody></table></div>' +
-    '<label>示範會員</label><select onchange="posSetMember(this.value)">' + memberOpts + '</select>' +
+    '<label>示範會員（本機）</label><select onchange="posSetMember(this.value)">' + memberOpts + '</select>' +
     '<label>備註</label><input type="text" value="' + posEsc(posRemark) + '" placeholder="例如客人姓名" onchange="posSetRemark(this.value)" oninput="posRemark=this.value">' +
     '<label>賬戶餘額／抵扣（可負數）</label>' +
     '<input type="number" step="0.01" value="' + posEsc(String(balance)) + '" onchange="posSetAccountBalance(this.value)">' +
@@ -401,8 +390,7 @@ function vPosCashier() {
     '<div style="margin-top:12px;border-top:1px dashed #cfd8dc;padding-top:10px;font-size:14px;line-height:1.7">' +
     '<div style="display:flex;justify-content:space-between"><span>商品小計</span><b>$' + posMoney(subtotal) + '</b></div>' +
     '<div style="display:flex;justify-content:space-between"><span>賬戶餘額</span><b>$' + posMoney(balance) + '</b></div>' +
-    '<div style="display:flex;justify-content:space-between;font-size:16px"><span>訂單總計</span><b>$' + posMoney(total) + '</b></div>' +
-    '</div>' +
+    '<div style="display:flex;justify-content:space-between;font-size:16px"><span>訂單總計</span><b>$' + posMoney(total) + '</b></div></div>' +
     '<div class="actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">' +
     '<button type="button" class="btn gray sm" data-call="posClearCart">清空購物車</button>' +
     '<button type="button" class="btn green" data-call="posCheckout"' + (!posCart.length ? ' disabled' : '') + '>確認收款</button>' +
@@ -410,13 +398,11 @@ function vPosCashier() {
     '<style>@media (max-width:900px){.pos-cashier-grid{grid-template-columns:1fr !important}}</style>';
 }
 function vPosTransactions() {
-  var state = posLoadState();
-  var stores = posUserStores();
+  posKickLoad();
+  if (!posCloud.loaded || posCloud.loading) return posLoadingCard('🧾 交易記錄');
+  if (posCloud.error) return posLoadingCard('🧾 交易記錄');
   var kw = String(posTxKw || '').trim().toLowerCase();
-  var list = (state.transactions || []).filter(function (tx) {
-    if (stores.length && stores.indexOf(tx.store) < 0 && !(typeof isAdmin === 'function' && isAdmin()) && !(typeof isManager === 'function' && isManager())) {
-      return false;
-    }
+  var list = (posCloud.transactions || []).filter(function (tx) {
     if (!kw) return true;
     var blob = [tx.orderNo, tx.receiptNo, tx.invoiceNo, tx.store, tx.staffName, tx.memberName, tx.remark, tx.paymentMethodName].join(' ').toLowerCase();
     return blob.indexOf(kw) >= 0;
@@ -429,15 +415,14 @@ function vPosTransactions() {
       '<td>' + posEsc(tx.paymentMethodName || '') + '</td>' +
       '<td>$' + posMoney(tx.orderTotal) + '</td>' +
       '<td>' + posEsc(tx.staffName || '—') + '</td>' +
-      '<td><button type="button" class="btn sm" data-call="posOpenReceipt" data-arg0="' + posEsc(tx.id) + '">收據</button></td>' +
-      '</tr>';
+      '<td><button type="button" class="btn sm" data-call="posOpenReceipt" data-arg0="' + posEsc(tx.id) + '">收據</button></td></tr>';
   }).join('');
   return '<div class="card"><h2>🧾 交易記錄</h2>' +
     '<div class="filters" style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">' +
     '<div style="flex:1;min-width:200px"><label>搜尋</label>' +
     '<input type="text" value="' + posEsc(posTxKw) + '" placeholder="單號／店舖／員工／備註" oninput="posSetTxKw(this.value)"></div>' +
-    '<button type="button" class="btn green sm" data-call="go" data-arg0="posCashier">＋ 新收銀</button>' +
-    '</div>' +
+    '<button type="button" class="btn gray sm" data-call="posForceReload">重新整理</button>' +
+    '<button type="button" class="btn green sm" data-call="go" data-arg0="posCashier">＋ 新收銀</button></div>' +
     '<div class="table-wrap" style="margin-top:12px"><table><thead><tr>' +
     '<th>時間</th><th>訂單編號</th><th>店舖</th><th>支付</th><th>總計</th><th>員工</th><th></th>' +
     '</tr></thead><tbody>' +
@@ -450,8 +435,7 @@ function posReceiptHtml(tx) {
     return '<tr>' +
       '<td style="text-align:center">' + posEsc(String(it.qty)) + '</td>' +
       '<td>' + posEsc(it.name) + ' (' + posEsc(it.sku) + ')<div style="font-size:12px;color:#666">- 尺寸: ' + posEsc(it.size) + '</div></td>' +
-      '<td style="text-align:right">' + posMoney(it.lineTotal) + '</td>' +
-      '</tr>';
+      '<td style="text-align:right">' + posMoney(it.lineTotal) + '</td></tr>';
   }).join('');
   function metaRow(label, value) {
     return '<div style="display:flex;justify-content:space-between;gap:12px;padding:3px 0;font-size:13px">' +
@@ -468,8 +452,7 @@ function posReceiptHtml(tx) {
     '<div style="font-size:14px;font-weight:bold;margin-top:2px">SHAREmall</div>' +
     '<div style="font-size:12px;color:#666;margin-top:6px">灣仔｜荔枝角｜屯門｜觀塘</div>' +
     '<div style="font-size:12px;color:#666">生活用品專賣店</div>' +
-    '<div style="font-size:11px;color:#888;margin-top:6px;line-height:1.5">WhatsApp: 61231104<br>watersports0227@gmail.com<br>https://www.sharemall.hk</div>' +
-    '</div>' +
+    '<div style="font-size:11px;color:#888;margin-top:6px;line-height:1.5">WhatsApp: 61231104<br>watersports0227@gmail.com<br>https://www.sharemall.hk</div></div>' +
     '<div style="border-top:1px dashed #bbb;border-bottom:1px dashed #bbb;padding:10px 0;margin-bottom:10px">' +
     metaRow('訂單日期', tx.createdAt || '') +
     metaRow('訂單編號', tx.orderNo + (tx.orderNoAlt ? ' (' + tx.orderNoAlt + ')' : '')) +
@@ -482,11 +465,7 @@ function posReceiptHtml(tx) {
     (tx.memberName ? metaRow('會員', tx.memberName + (tx.memberPhone ? '｜' + tx.memberPhone : '')) : '') +
     '</div>' +
     '<div style="font-size:11px;color:#777;line-height:1.55;margin-bottom:10px;padding-bottom:10px;border-bottom:1px dashed #bbb">' +
-    '• 此單為示範電子收據（對齊門市熱感單格式）<br>' +
-    '• 顯示價格為折後價<br>' +
-    '• 一般貨品 7 日換貨；特價品不設換貨<br>' +
-    '• 不設退款' +
-    '</div>' +
+    '• 此單為雲端電子收據（對齊門市熱感單格式）<br>• 顯示價格為折後價<br>• 一般貨品 7 日換貨；特價品不設換貨<br>• 不設退款</div>' +
     '<table style="width:100%;font-size:13px;margin-bottom:10px"><thead><tr>' +
     '<th style="width:48px;text-align:center">Qty</th><th>商品名稱</th><th style="text-align:right;width:80px">總計(HKD)</th>' +
     '</tr></thead><tbody>' + items + '</tbody></table>' +
@@ -499,25 +478,46 @@ function posReceiptHtml(tx) {
     '</div>' +
     '<div class="actions" style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' +
     '<button type="button" class="btn gray sm" data-call="go" data-arg0="posTransactions">← 交易記錄</button>' +
-    '<button type="button" class="btn green sm" data-call="go" data-arg0="posCashier">繼續收銀</button>' +
-    '</div></div>';
+    '<button type="button" class="btn green sm" data-call="go" data-arg0="posCashier">繼續收銀</button></div></div>';
 }
 function vPosReceipt() {
-  var state = posLoadState();
-  var tx = (state.transactions || []).find(function (t) { return t.id === posReceiptFocusId; });
-  if (!tx && state.transactions && state.transactions[0]) tx = state.transactions[0];
+  posKickLoad();
+  if (!posCloud.loaded || posCloud.loading) return posLoadingCard('收據');
+  if (posCloud.error) return posLoadingCard('收據');
+  var tx = (posCloud.transactions || []).find(function (t) { return t.id === posReceiptFocusId; });
+  if (!tx && posCloud.transactions && posCloud.transactions[0]) tx = posCloud.transactions[0];
   return posReceiptHtml(tx);
 }
 function vPosReset() {
-  return '<div class="card"><h2>♻️ 重置示範 POS 資料</h2>' +
-    '<p style="font-size:14px;line-height:1.6;color:#455a64">會清除本機瀏覽器內的示範交易，並把商品庫存、會員名單還原為種子資料。' +
-    '<br><b>不影響</b>雲端 Mongo 的每日工作、推送、調動等資料。</p>' +
+  posKickLoad();
+  var can = posCloud.canReset || (typeof isAdmin === 'function' && isAdmin());
+  if (!can) {
+    return '<div class="card"><h2>♻️ 重置雲端 POS</h2>' +
+      '<p style="color:#c62828">只有系統管理員可重置雲端 POS 資料。</p>' +
+      '<button type="button" class="btn gray sm" data-call="go" data-arg0="posCashier">返回收銀</button></div>';
+  }
+  return '<div class="card"><h2>♻️ 重置雲端 POS 資料</h2>' +
+    '<p style="font-size:14px;line-height:1.6;color:#455a64">會清空<strong>所有裝置</strong>可見的雲端交易，並還原種子商品庫存。' +
+    '<br>不影響貨品調動、每日工作、推送等其他模組。</p>' +
     '<div class="actions" style="margin-top:14px">' +
-    '<button type="button" class="btn red" data-call="posResetDemoData">確認重置</button>' +
-    '<button type="button" class="btn gray sm" data-call="go" data-arg0="posCashier">返回收銀</button>' +
-    '</div></div>';
+    '<button type="button" class="btn red" data-call="posResetDemoData">確認重置雲端 POS</button>' +
+    '<button type="button" class="btn gray sm" data-call="go" data-arg0="posCashier">返回收銀</button></div></div>';
 }
-// 若 app.js 已先完成登入渲染，補載入後刷新一次
+
+// Hide reset sidebar for non-admin by filtering in app.js would be better;
+// here we still show page with denial. Optionally patch getSidebarItems after load.
+(function posPatchSidebarResetVisibility() {
+  if (typeof getSidebarItemsForModule !== 'function') return;
+  var _orig = getSidebarItemsForModule;
+  getSidebarItemsForModule = function (mod) {
+    var items = _orig(mod);
+    if (mod !== 'pos') return items;
+    var can = (posCloud && posCloud.canReset) || (typeof isAdmin === 'function' && isAdmin());
+    if (can) return items;
+    return (items || []).filter(function (it) { return it[0] !== 'posReset'; });
+  };
+})();
+
 if (typeof currentUser !== 'undefined' && currentUser && typeof render === 'function') {
   try { render(); } catch (e) {}
 }
