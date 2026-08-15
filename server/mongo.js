@@ -2866,8 +2866,39 @@ export async function checkoutPos(user, payload = {}) {
     createdAt: stamp,
     createdAtMs: now.getTime(),
     createdAtLabel: time,
+    pointsEarned: 0,
+    pointsBalanceAfter: null,
   };
   await posTransactionsCol().insertOne(tx);
+
+  // 會員積分：商品小計每 $1＝1 分（取整捨去）
+  const memberKey = String(payload.memberId || payload.memberPhone || '').trim();
+  if (memberKey) {
+    const earn = pointsFromAmount(subtotal);
+    if (earn > 0) {
+      try {
+        await ensureMembersReady();
+        const pts = await applyMemberPoints({
+          memberId: memberKey,
+          delta: earn,
+          type: 'earn',
+          reason: `消費累積｜${orderNo}`,
+          actor: me,
+          posTransactionId: id,
+          posOrderNo: orderNo,
+          amountBase: subtotal,
+        });
+        tx.pointsEarned = pts.actualDelta;
+        tx.pointsBalanceAfter = pts.entry.balanceAfter;
+        await posTransactionsCol().updateOne(
+          { id },
+          { $set: { pointsEarned: tx.pointsEarned, pointsBalanceAfter: tx.pointsBalanceAfter } }
+        );
+      } catch (e) {
+        console.warn('POS points earn skipped:', e.message || e);
+      }
+    }
+  }
 
   // 調動側：每項寫一筆 POS 銷售異動
   const actorName = me.name || me.login || me.id;
@@ -3005,7 +3036,36 @@ export async function returnPosTransaction(user, txId, payload = {}) {
       unitPrice: rl.line.unitPrice,
       lineRefund: Math.round((Number(rl.line.unitPrice) || 0) * rl.qty * 100) / 100,
     })),
+    pointsDeducted: 0,
+    pointsClamped: false,
   };
+
+  // 會員積分：按退貨金額取整扣回（不足扣至 0）
+  const memberKey = String(tx.memberId || tx.memberPhone || '').trim();
+  if (memberKey) {
+    const deduct = pointsFromAmount(refundAmount);
+    if (deduct > 0) {
+      try {
+        await ensureMembersReady();
+        const pts = await applyMemberPoints({
+          memberId: memberKey,
+          delta: -deduct,
+          type: 'return',
+          reason: `退貨扣回｜${tx.orderNo}｜${reason}`,
+          actor: me,
+          posTransactionId: id,
+          posOrderNo: tx.orderNo,
+          returnId: returnRec.id,
+          amountBase: refundAmount,
+        });
+        returnRec.pointsDeducted = Math.abs(pts.actualDelta);
+        returnRec.pointsClamped = !!pts.clamped;
+        returnRec.pointsBalanceAfter = pts.entry.balanceAfter;
+      } catch (e) {
+        console.warn('POS points return skipped:', e.message || e);
+      }
+    }
+  }
 
   const returns = Array.isArray(tx.returns) ? tx.returns.slice() : [];
   returns.push(returnRec);
@@ -3548,24 +3608,113 @@ export async function resetPosDemo(user) {
   return { ok: true };
 }
 
-/* ═══════════ 雲端會員（暫無積分） ═══════════ */
+/* ═══════════ 雲端會員＋積分 ═══════════ */
 function membersCol() {
   return db.collection('pos_members');
+}
+function memberPointsCol() {
+  return db.collection('pos_member_points');
 }
 async function ensureMembersReady() {
   await membersCol().createIndex({ phone: 1 }, { unique: true });
   await membersCol().createIndex({ name: 1 });
   await membersCol().createIndex({ active: 1, updatedAtMs: -1 });
+  await memberPointsCol().createIndex({ memberId: 1, createdAtMs: -1 });
+  await memberPointsCol().createIndex({ id: 1 }, { unique: true });
+  await membersCol().updateMany({ points: { $exists: false } }, { $set: { points: 0 } });
 }
 function stripMember(doc) {
   if (!doc) return null;
   const { _id, ...rest } = doc;
+  if (rest.points == null) rest.points = 0;
   return rest;
 }
 function normalizeMemberLevel(raw) {
   const s = String(raw || '').trim();
   if (s === 'VIP' || s === 'VIP 會員' || s === 'vip') return 'VIP 會員';
   return '一般會員';
+}
+function pointsFromAmount(amount) {
+  const n = Number(amount);
+  if (!isFinite(n) || n <= 0) return 0;
+  return Math.floor(n);
+}
+async function findMemberDoc(idOrPhone) {
+  const phoneKey = normalizePhone(idOrPhone) || String(idOrPhone || '').trim();
+  if (!phoneKey) return null;
+  return membersCol().findOne({ $or: [{ id: phoneKey }, { phone: phoneKey }, { _id: phoneKey }] });
+}
+function stripPointLedger(doc) {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return rest;
+}
+
+/** delta>0 加分；delta<0 扣分（不足則扣至 0） */
+async function applyMemberPoints({
+  memberId,
+  delta,
+  type,
+  reason,
+  actor,
+  posTransactionId,
+  posOrderNo,
+  returnId,
+  amountBase,
+} = {}) {
+  const member = await findMemberDoc(memberId);
+  if (!member) throw new Error('找不到會員');
+  const want = Number(delta) || 0;
+  if (!Number.isInteger(want) || want === 0) throw new Error('積分變動無效');
+  const before = Math.max(0, Number(member.points) || 0);
+  let actual = want;
+  let clamped = false;
+  if (want < 0 && before + want < 0) {
+    actual = -before;
+    clamped = true;
+  }
+  if (actual === 0 && want < 0) {
+    // 已是 0，仍記一筆扣至零（若想扣但無分）
+    clamped = true;
+  }
+  const after = before + actual;
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  await membersCol().updateOne(
+    { _id: member._id },
+    {
+      $set: {
+        points: after,
+        updatedAt: time,
+        updatedAtMs: now.getTime(),
+      },
+    }
+  );
+  const lid = `pt_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
+  const entry = {
+    _id: lid,
+    id: lid,
+    memberId: String(member.id || member.phone),
+    memberPhone: member.phone,
+    memberName: member.name || '',
+    delta: actual,
+    requestedDelta: want,
+    balanceBefore: before,
+    balanceAfter: after,
+    clamped,
+    type,
+    reason: String(reason || '').trim(),
+    amountBase: amountBase != null ? Number(amountBase) : null,
+    posTransactionId: posTransactionId || '',
+    posOrderNo: posOrderNo || '',
+    returnId: returnId || '',
+    createdAt: time,
+    createdAtMs: now.getTime(),
+    createdBy: String(actor?.id || ''),
+    createdByName: actor?.name || actor?.login || '',
+  };
+  await memberPointsCol().insertOne(entry);
+  return { member: stripMember({ ...member, points: after }), entry: stripPointLedger(entry), clamped, actualDelta: actual };
 }
 
 export async function listMembers(user, { q, includeInactive } = {}) {
@@ -3589,6 +3738,54 @@ export async function listMembers(user, { q, includeInactive } = {}) {
   };
 }
 
+export async function listMemberPoints(user, id) {
+  await connectMongo();
+  await ensureMembersReady();
+  const me = publicUser(user);
+  if (!me?.id) throw new Error('未登入');
+  const member = await findMemberDoc(id);
+  if (!member) throw new Error('找不到會員');
+  const memberId = String(member.id || member.phone);
+  const docs = await memberPointsCol()
+    .find({ memberId })
+    .sort({ createdAtMs: -1 })
+    .limit(200)
+    .toArray();
+  return {
+    member: stripMember(member),
+    ledger: docs.map(stripPointLedger),
+    canEdit: posCanManageCatalog(user),
+  };
+}
+
+export async function adjustMemberPoints(user, id, input = {}) {
+  await connectMongo();
+  await ensureMembersReady();
+  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可手動調分');
+  const me = publicUser(user);
+  const delta = Number(input.delta);
+  if (!Number.isInteger(delta) || delta === 0) throw new Error('請輸入非零整數積分（可正可負）');
+  const reason = String(input.reason || '').trim();
+  if (!reason) throw new Error('請填寫調分原因');
+  const result = await applyMemberPoints({
+    memberId: id,
+    delta,
+    type: 'adjust',
+    reason,
+    actor: me,
+  });
+  await appendModuleLog({
+    module: 'pos',
+    time: result.entry.createdAt,
+    action: '手動調分',
+    detail: `${result.member.name}｜${result.member.phone}｜${delta > 0 ? '+' : ''}${delta}｜${reason}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return result;
+}
+
 export async function createMember(user, input = {}) {
   await connectMongo();
   await ensureMembersReady();
@@ -3609,6 +3806,7 @@ export async function createMember(user, input = {}) {
     name,
     level: normalizeMemberLevel(input.level),
     remark: String(input.remark || '').trim(),
+    points: 0,
     active: true,
     createdAt: time,
     createdAtMs: now.getTime(),
@@ -3635,8 +3833,7 @@ export async function updateMember(user, id, input = {}) {
   await ensureMembersReady();
   if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可編輯會員');
   const me = publicUser(user);
-  const phoneKey = normalizePhone(id) || String(id || '').trim();
-  const existing = await membersCol().findOne({ $or: [{ id: phoneKey }, { phone: phoneKey }, { _id: phoneKey }] });
+  const existing = await findMemberDoc(id);
   if (!existing) throw new Error('找不到會員');
   const $set = {
     updatedAt: formatHkDateTime(),
@@ -3656,7 +3853,6 @@ export async function updateMember(user, id, input = {}) {
     if (newPhone !== existing.phone) {
       const clash = await membersCol().findOne({ phone: newPhone });
       if (clash) throw new Error('新電話已被其他會員使用');
-      // 電話是主鍵：複製新文件、刪舊
       const now = new Date();
       const time = formatHkDateTime(now);
       const next = {
@@ -3667,14 +3863,18 @@ export async function updateMember(user, id, input = {}) {
         name: $set.name || existing.name,
         level: $set.level || existing.level,
         remark: $set.remark != null ? $set.remark : existing.remark,
+        points: Number(existing.points) || 0,
         updatedAt: time,
         updatedAtMs: now.getTime(),
         updatedBy: String(me.id),
       };
-      delete next.active; // keep from existing
       next.active = existing.active !== false;
       await membersCol().insertOne(next);
       await membersCol().deleteOne({ _id: existing._id });
+      await memberPointsCol().updateMany(
+        { memberId: String(existing.id || existing.phone) },
+        { $set: { memberId: newPhone, memberPhone: newPhone, memberName: next.name } }
+      );
       await appendModuleLog({
         module: 'pos',
         time,
@@ -3706,8 +3906,7 @@ export async function setMemberActive(user, id, active) {
   await ensureMembersReady();
   if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可停用／啟用會員');
   const me = publicUser(user);
-  const phoneKey = normalizePhone(id) || String(id || '').trim();
-  const existing = await membersCol().findOne({ $or: [{ id: phoneKey }, { phone: phoneKey }, { _id: phoneKey }] });
+  const existing = await findMemberDoc(id);
   if (!existing) throw new Error('找不到會員');
   const time = formatHkDateTime();
   await membersCol().updateOne(

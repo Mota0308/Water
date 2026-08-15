@@ -65,6 +65,8 @@ import {
   createMember,
   updateMember,
   setMemberActive,
+  listMemberPoints,
+  adjustMemberPoints,
 } from './mongo.js';
 import { driveConfigured, exportUsersToDrive, getDriveExportStatus } from './drive.js';
 
@@ -669,6 +671,24 @@ app.post('/api/pos/members/:id/active', requireAuth, async (req, res) => {
   try {
     const active = req.body?.active !== false && req.body?.active !== 'false' && req.body?.active !== 0;
     res.json({ member: await setMemberActive(req.user, req.params.id, active) });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/pos/members/:id/points', requireAuth, async (req, res) => {
+  try {
+    res.json(await listMemberPoints(req.user, req.params.id));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/members/:id/points', requireAuth, async (req, res) => {
+  try {
+    res.json(await adjustMemberPoints(req.user, req.params.id, req.body || {}));
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });

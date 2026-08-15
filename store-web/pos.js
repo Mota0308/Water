@@ -38,6 +38,8 @@ var posMembersCloud = {
   includeInactive: false
 };
 var posMemberEditId = '';
+var posMemberPointsId = '';
+var posMemberPoints = { loaded: false, loading: false, error: '', ledger: [], member: null };
 var posAdjustProductId = '';
 var posShowAddPanel = false;
 var posCatalogOptions = [];
@@ -295,6 +297,56 @@ async function posSetMemberActive(id, active) {
     alert2('操作失敗：' + (e.message || e));
   }
 }
+async function posOpenMemberPoints(id) {
+  posMemberPointsId = String(id || '');
+  posMemberPoints = { loaded: false, loading: false, error: '', ledger: [], member: null };
+  if (typeof render === 'function') render();
+  await posRefreshMemberPoints(true);
+}
+function posCloseMemberPoints() {
+  posMemberPointsId = '';
+  posMemberPoints = { loaded: false, loading: false, error: '', ledger: [], member: null };
+  if (typeof render === 'function') render();
+}
+async function posRefreshMemberPoints(force) {
+  if (!posMemberPointsId) return;
+  if (posMemberPoints.loading) return;
+  if (posMemberPoints.loaded && !force) return;
+  posMemberPoints.loading = true;
+  posMemberPoints.error = '';
+  try {
+    var res = await apiFetch('/api/pos/members/' + encodeURIComponent(posMemberPointsId) + '/points');
+    posMemberPoints.member = res.member || null;
+    posMemberPoints.ledger = res.ledger || [];
+    posMemberPoints.loaded = true;
+  } catch (e) {
+    posMemberPoints.error = String(e.message || e);
+    posMemberPoints.loaded = true;
+  }
+  posMemberPoints.loading = false;
+  if (typeof render === 'function') render();
+}
+async function posSubmitAdjustPoints(id) {
+  var deltaEl = document.getElementById('pos-pts-delta');
+  var reasonEl = document.getElementById('pos-pts-reason');
+  var delta = deltaEl ? parseInt(deltaEl.value, 10) : 0;
+  var reason = reasonEl ? String(reasonEl.value || '').trim() : '';
+  if (!delta) { alert2('請輸入非零整數積分。'); return; }
+  if (!reason) { alert2('請填寫調分原因。'); return; }
+  try {
+    await apiFetch('/api/pos/members/' + encodeURIComponent(id) + '/points', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delta: delta, reason: reason })
+    });
+    posInvalidateMembers();
+    await posRefreshMembers(true);
+    await posRefreshMemberPoints(true);
+    alert2('已調分。');
+  } catch (e) {
+    alert2('調分失敗：' + (e.message || e));
+  }
+}
 function posCartSubtotal() {
   return posCart.reduce(function (sum, line) {
     return sum + (Number(line.unitPrice) || 0) * (Number(line.qty) || 0);
@@ -394,6 +446,8 @@ async function posCheckout() {
     posReceiptFocusId = tx ? tx.id : '';
     posInvalidateCloud();
     await posRefreshCloud(true);
+    posInvalidateMembers();
+    await posRefreshMembers(true);
     if (typeof go === 'function') go('posReceipt');
     else if (typeof render === 'function') render();
   } catch (e) {
@@ -465,6 +519,8 @@ async function posSubmitReturn(txId) {
     posReturnMode = false;
     posInvalidateCloud();
     await posRefreshCloud(true);
+    posInvalidateMembers();
+    await posRefreshMembers(true);
     alert2('退貨完成。已回補調動庫存。');
     if (typeof render === 'function') render();
   } catch (e) {
@@ -609,9 +665,14 @@ function vPosCashier() {
   var memberOpts = '<option value="">（不選擇會員）</option>' + (posMembersCloud.list || []).filter(function (m) {
     return m.active !== false;
   }).map(function (m) {
+    var pts = Number(m.points) || 0;
     return '<option value="' + posEsc(m.id || m.phone) + '"' + (posMemberId === (m.id || m.phone) ? ' selected' : '') + '>' +
-      posEsc(m.name + '｜' + m.phone + '｜' + (m.level || '一般會員')) + '</option>';
+      posEsc(m.name + '｜' + m.phone + '｜' + (m.level || '一般會員') + '｜' + pts + '分') + '</option>';
   }).join('');
+  var selectedMember = posFindMember(posMemberId);
+  var memberPtsHint = selectedMember
+    ? '<div style="font-size:12px;color:#546e7a;margin:4px 0 8px">目前積分：<b>' + (Number(selectedMember.points) || 0) + '</b>　（結帳按商品小計每 $1＝1 分；暫不兌換）</div>'
+    : '<div style="font-size:12px;color:#78909c;margin:4px 0 8px">沒有名單？到側欄「會員管理」新增。選會員後結帳可累積積分。</div>';
   var payOpts = POS_PAYMENTS.map(function (p) {
     return '<label style="display:inline-flex;align-items:center;gap:6px;margin:0 12px 8px 0;font-size:13px;cursor:pointer">' +
       '<input type="radio" name="pos-pay" value="' + p.id + '"' + (posPaymentMethod === p.id ? ' checked' : '') +
@@ -701,7 +762,7 @@ function vPosCashier() {
     '<th>商品</th><th>數量</th><th>小計</th><th></th></tr></thead><tbody>' + cartRows +
     '</tbody></table></div>' +
     '<label>會員（雲端）</label><select onchange="posSetMember(this.value)">' + memberOpts + '</select>' +
-    '<div style="font-size:12px;color:#78909c;margin:4px 0 8px">沒有名單？到側欄「會員管理」新增。</div>' +
+    memberPtsHint +
     '<label>備註</label><input type="text" value="' + posEsc(posRemark) + '" placeholder="例如客人姓名" onchange="posSetRemark(this.value)" oninput="posRemark=this.value">' +
     '<label>賬戶餘額／抵扣（可負數）</label>' +
     '<input type="number" step="0.01" value="' + posEsc(String(balance)) + '" onchange="posSetAccountBalance(this.value)">' +
@@ -784,7 +845,12 @@ function posReceiptHtml(tx) {
           '<div>' + posEsc(r.at || '') + '｜' + posEsc(r.byName || '') + '</div>' +
           '<div>退款 $' + posMoney(r.refundAmount) + '（' + posEsc(r.refundMethodName || '') + '）</div>' +
           '<div>原因：' + posEsc(r.reason || '') + '</div>' +
-          '<div>' + lines + '</div></div>';
+          '<div>' + lines + '</div>' +
+          (r.pointsDeducted
+            ? '<div style="color:#c62828">扣積分 −' + r.pointsDeducted + (r.pointsClamped ? '（扣至零）' : '') +
+              (r.pointsBalanceAfter != null ? '｜餘額 ' + r.pointsBalanceAfter : '') + '</div>'
+            : '') +
+          '</div>';
       }).join('') + '</div>';
   }
   var returnPanel = '';
@@ -836,6 +902,7 @@ function posReceiptHtml(tx) {
     metaRow('員工', tx.staffName || '—') +
     metaRow('備註', tx.remark || (tx.memberName || '—')) +
     (tx.memberName ? metaRow('會員', tx.memberName + (tx.memberPhone ? '｜' + tx.memberPhone : '')) : '') +
+    (tx.pointsEarned ? metaRow('本單積分', '+' + tx.pointsEarned + (tx.pointsBalanceAfter != null ? '（餘額 ' + tx.pointsBalanceAfter + '）' : '')) : '') +
     '</div>' +
     '<div style="font-size:11px;color:#777;line-height:1.55;margin-bottom:10px;padding-bottom:10px;border-bottom:1px dashed #bbb">' +
     '• 此單為雲端電子收據（對齊門市熱感單格式）<br>• 顯示價格為折後價<br>• 一般貨品 7 日換貨；特價品不設換貨<br>• 門市政策以店規為準；系統退貨由主管操作</div>' +
@@ -876,9 +943,9 @@ function vPosMembers() {
   var canEdit = posMembersCloud.canEdit || (typeof isAdmin === 'function' && isAdmin()) || (typeof isManager === 'function' && isManager());
   var rows = (posMembersCloud.list || []).map(function (m) {
     var inactive = m.active === false;
-    var actions = '';
+    var actions = '<button type="button" class="btn sm" data-call="posOpenMemberPoints" data-arg0="' + posEsc(m.id || m.phone) + '">積分</button> ';
     if (canEdit) {
-      actions = '<button type="button" class="btn gray sm" data-call="posOpenMemberEdit" data-arg0="' + posEsc(m.id || m.phone) + '">編輯</button> ' +
+      actions += '<button type="button" class="btn gray sm" data-call="posOpenMemberEdit" data-arg0="' + posEsc(m.id || m.phone) + '">編輯</button> ' +
         (inactive
           ? '<button type="button" class="btn green sm" data-call="posSetMemberActive" data-arg0="' + posEsc(m.id || m.phone) + '" data-arg1="true">啟用</button>'
           : '<button type="button" class="btn red sm" data-call="posSetMemberActive" data-arg0="' + posEsc(m.id || m.phone) + '" data-arg1="false">停用</button>');
@@ -887,6 +954,7 @@ function vPosMembers() {
       '<td>' + posEsc(m.name) + '</td>' +
       '<td>' + posEsc(m.phone) + '</td>' +
       '<td>' + posEsc(m.level || '一般會員') + '</td>' +
+      '<td><b>' + (Number(m.points) || 0) + '</b></td>' +
       '<td>' + posEsc(m.remark || '—') + '</td>' +
       '<td>' + (inactive ? '停用' : '正常') + '</td>' +
       '<td>' + actions + '</td></tr>';
@@ -908,8 +976,38 @@ function vPosMembers() {
         '<button type="button" class="btn gray sm" data-call="posCloseMemberEdit">取消</button></div></div>';
     }
   }
+  var pointsPanel = '';
+  if (posMemberPointsId) {
+    var pm = posMemberPoints.member || posFindMember(posMemberPointsId);
+    var typeLabel = { earn: '消費累積', return: '退貨扣回', adjust: '手動調分' };
+    var ledgerRows = (posMemberPoints.ledger || []).map(function (e) {
+      var sign = e.delta > 0 ? '+' : '';
+      return '<tr><td>' + posEsc(e.createdAt || '') + '</td>' +
+        '<td>' + posEsc(typeLabel[e.type] || e.type || '') + (e.clamped ? '（扣至零）' : '') + '</td>' +
+        '<td>' + sign + e.delta + '</td>' +
+        '<td>' + e.balanceAfter + '</td>' +
+        '<td>' + posEsc(e.reason || '') + '</td>' +
+        '<td>' + posEsc(e.createdByName || '—') + '</td></tr>';
+    }).join('');
+    pointsPanel = '<div class="card" style="border:1px solid #ffe0b2">' +
+      '<h3 style="margin-top:0">積分｜' + posEsc(pm ? pm.name : posMemberPointsId) +
+      '（餘額 <b>' + (pm ? (Number(pm.points) || 0) : '—') + '</b>）</h3>' +
+      (posMemberPoints.loading ? '<p style="color:#888">載入流水中…</p>' : '') +
+      (posMemberPoints.error ? '<p style="color:#c62828">' + posEsc(posMemberPoints.error) + '</p>' : '') +
+      (canEdit
+        ? '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:12px">' +
+          '<div><label>加減分數＊</label><input type="number" id="pos-pts-delta" step="1" placeholder="例如 10 或 -5"></div>' +
+          '<div><label>原因＊</label><input type="text" id="pos-pts-reason" placeholder="補分／糾錯說明"></div></div>' +
+          '<div class="actions" style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap">' +
+          '<button type="button" class="btn green sm" data-call="posSubmitAdjustPoints" data-arg0="' + posEsc(posMemberPointsId) + '">確認調分</button></div>'
+        : '') +
+      '<div class="table-wrap"><table><thead><tr><th>時間</th><th>類型</th><th>變動</th><th>餘額</th><th>原因</th><th>操作者</th></tr></thead><tbody>' +
+      (ledgerRows || '<tr><td colspan="6" style="color:#888;text-align:center">尚無流水</td></tr>') +
+      '</tbody></table></div>' +
+      '<div class="actions" style="margin-top:12px"><button type="button" class="btn gray sm" data-call="posCloseMemberPoints">關閉</button></div></div>';
+  }
   return '<div class="card"><h2>👤 會員管理</h2>' +
-    '<div class="info-banner">雲端會員主檔（暫無積分）。全員可新增；編輯／停用僅管理員／主管。</div>' +
+    '<div class="info-banner">雲端會員＋積分：結帳按商品小計每 $1＝1 分；退貨按退款額扣回；暫不兌換。全員可看餘額／流水；調分僅管理員／主管。</div>' +
     '<div class="filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">' +
     '<div style="flex:1;min-width:180px"><label>搜尋</label>' +
     '<input type="text" value="' + posEsc(posMembersCloud.kw) + '" placeholder="姓名／電話／備註" onchange="posSetMembersKw(this.value)"></div>' +
@@ -923,10 +1021,11 @@ function vPosMembers() {
     '<div><label>備註</label><input type="text" id="pos-mem-remark" placeholder="選填"></div></div>' +
     '<div class="actions" style="margin-top:12px"><button type="button" class="btn green sm" data-call="posCreateMember">新增</button></div></div>' +
     editPanel +
+    pointsPanel +
     '<div class="card"><h3>會員列表（' + (posMembersCloud.list || []).length + '）</h3>' +
     '<div class="table-wrap"><table><thead><tr>' +
-    '<th>姓名</th><th>電話</th><th>等級</th><th>備註</th><th>狀態</th><th></th></tr></thead><tbody>' +
-    (rows || '<tr><td colspan="6" style="color:#888;text-align:center">尚無會員</td></tr>') +
+    '<th>姓名</th><th>電話</th><th>等級</th><th>積分</th><th>備註</th><th>狀態</th><th></th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="7" style="color:#888;text-align:center">尚無會員</td></tr>') +
     '</tbody></table></div></div>';
 }
 function vPosReset() {
