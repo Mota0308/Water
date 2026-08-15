@@ -2484,7 +2484,7 @@ export async function getTransferOrder(id) {
   return stripTransferOrder(doc);
 }
 
-/* ═══════════ POS（與調動庫存分離） ═══════════ */
+/* ═══════════ POS（庫存以調動 transfer_inventory 為準） ═══════════ */
 const POS_STORES = ['觀塘', '荔枝角', '灣仔', '屯門'];
 
 function posProductsCol() {
@@ -2515,31 +2515,9 @@ function posUserStores(user) {
   if (!list.length && posCanManageCatalog(me)) return POS_STORES.slice();
   return list;
 }
-function posSeedStock(n) {
-  const o = {};
-  for (const s of POS_STORES) o[s] = n;
-  return o;
-}
-function posSeedProducts() {
-  const now = formatHkDateTime();
-  return [
-    { id: 'p1', name: 'Speedo 小童印花 Muscleback 連身泳衣 - 粉紅', sku: '80832418374', size: '28', price: 305, stock: posSeedStock(8), updatedAt: now },
-    { id: 'p2', name: '訓練蛙掌-藍', sku: 'AR1129BU', size: 'S', price: 117, stock: posSeedStock(12), updatedAt: now },
-    { id: 'p3', name: '女童純色雙層X背帶連身泳衣-黑', sku: 'WS-434BK', size: '10', price: 228, stock: posSeedStock(10), updatedAt: now },
-    { id: 'p4', name: '訓練短蹼鞋 - 藍', sku: 'WS-961BU', size: 'XS', price: 238, stock: posSeedStock(9), updatedAt: now },
-    { id: 'p5', name: '成人泳鏡-透明', sku: 'WS-MG01', size: '均碼', price: 88, stock: posSeedStock(20), updatedAt: now },
-    { id: 'p6', name: '矽膠泳帽-黑', sku: 'WS-CAP-BK', size: '均碼', price: 45, stock: posSeedStock(25), updatedAt: now },
-    { id: 'p7', name: '防曬乳液 SPF50 100ml', sku: 'SUN-50-100', size: '100ml', price: 128, stock: posSeedStock(15), updatedAt: now },
-    { id: 'p8', name: '成人競賽泳衣-深藍', sku: 'SPD-RACE-NV', size: '32', price: 420, stock: posSeedStock(6), updatedAt: now },
-    { id: 'p9', name: '浮板-黃', sku: 'WS-KB-YL', size: '均碼', price: 65, stock: posSeedStock(18), updatedAt: now },
-    { id: 'p10', name: '鼻夾耳塞套裝', sku: 'WS-NE-01', size: '均碼', price: 38, stock: posSeedStock(30), updatedAt: now },
-    { id: 'p11', name: '兒童防曬衣-白', sku: 'WS-UV-WH', size: '120', price: 198, stock: posSeedStock(11), updatedAt: now },
-    { id: 'p12', name: '防水袋 5L-橙', sku: 'DRY-5L-OR', size: '5L', price: 78, stock: posSeedStock(14), updatedAt: now },
-  ];
-}
 function stripPosProduct(doc) {
   if (!doc) return null;
-  const { _id, ...rest } = doc;
+  const { _id, stock: _legacyStock, ...rest } = doc;
   return rest;
 }
 function stripPosTransaction(doc) {
@@ -2550,36 +2528,149 @@ function stripPosTransaction(doc) {
 
 async function ensurePosIndexes() {
   await posProductsCol().createIndex({ id: 1 }, { unique: true });
+  await posProductsCol().createIndex({ transferProductId: 1, size: 1 }, { unique: true });
   await posTransactionsCol().createIndex({ id: 1 }, { unique: true });
   await posTransactionsCol().createIndex({ createdAtMs: -1 });
   await posTransactionsCol().createIndex({ store: 1, createdAtMs: -1 });
   await posMetaCol().createIndex({ _id: 1 });
 }
 
-async function ensurePosSeeded() {
+/** 清除舊版獨立庫存種子；可售目錄改為掛靠調動貨品 */
+async function ensurePosReady() {
   await ensurePosIndexes();
-  const count = await posProductsCol().countDocuments();
-  if (count > 0) return;
-  const products = posSeedProducts();
-  await posProductsCol().insertMany(products.map((p) => ({ ...p, _id: p.id })));
+  await ensureTransferSeed();
+  await posProductsCol().deleteMany({
+    $or: [
+      { transferProductId: { $exists: false } },
+      { transferProductId: null },
+      { transferProductId: '' },
+    ],
+  });
+  // 去掉殘留 stock 欄位
+  await posProductsCol().updateMany({ stock: { $exists: true } }, { $unset: { stock: '' } });
   await posMetaCol().updateOne({ _id: 'main' }, { $setOnInsert: { _id: 'main', seq: 1000 } }, { upsert: true });
+}
+
+async function buildTransferQtyMap() {
+  const invDocs = await transferInventoryCol().find({}).toArray();
+  const qtyMap = new Map();
+  for (const d of invDocs) {
+    qtyMap.set(`${d.productId}__${d.size}__${d.store}`, Number(d.quantity) || 0);
+  }
+  return qtyMap;
+}
+
+function stockFromMap(qtyMap, transferProductId, size) {
+  const stock = {};
+  for (const store of POS_STORES) {
+    stock[store] = qtyMap.get(`${transferProductId}__${size}__${store}`) || 0;
+  }
+  return stock;
 }
 
 export async function listPosProducts(user) {
   await connectMongo();
-  await ensurePosSeeded();
-  const docs = await posProductsCol().find({}).sort({ sku: 1 }).toArray();
+  await ensurePosReady();
+  const docs = await posProductsCol().find({ active: { $ne: false } }).sort({ sku: 1, name: 1 }).toArray();
+  const qtyMap = await buildTransferQtyMap();
+  const products = docs.map((d) => {
+    const base = stripPosProduct(d);
+    return {
+      ...base,
+      stock: stockFromMap(qtyMap, d.transferProductId, d.size),
+    };
+  });
   return {
-    products: docs.map(stripPosProduct),
+    products,
     stores: posUserStores(user),
     canManage: posCanManageCatalog(user),
     canReset: posIsSystemAdmin(user),
+    inventorySource: 'transfer',
   };
+}
+
+/** 可加入 POS 的調動貨品×尺碼（尚未掛靠） */
+export async function listPosCatalogOptions(user) {
+  await connectMongo();
+  await ensurePosReady();
+  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可管理可售目錄');
+  const products = await transferProductsCol().find({ active: { $ne: false } }).sort({ id: 1 }).toArray();
+  const linked = await posProductsCol().find({}).project({ transferProductId: 1, size: 1 }).toArray();
+  const linkedSet = new Set(linked.map((x) => `${x.transferProductId}__${x.size}`));
+  const options = [];
+  for (const p of products) {
+    const sizes = Array.isArray(p.sizes) && p.sizes.length ? p.sizes : ['均碼'];
+    for (const size of sizes) {
+      const key = `${p.id}__${size}`;
+      if (linkedSet.has(key)) continue;
+      options.push({
+        transferProductId: p.id,
+        name: p.name || '',
+        category: p.category || '',
+        color: p.color || '',
+        size,
+        suggestedSku: `${p.id}-${size}`,
+      });
+    }
+  }
+  return { options };
+}
+
+export async function addPosSellable(user, input = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可加入可售商品');
+  const transferProductId = normalizeProductId(input.transferProductId || input.productId);
+  const size = String(input.size || '').trim();
+  if (!transferProductId || !size) throw new Error('請選擇調動貨品與尺碼');
+  const tp = await transferProductsCol().findOne({
+    $or: [{ _id: transferProductId }, { id: transferProductId }],
+    active: { $ne: false },
+  });
+  if (!tp) throw new Error('找不到調動貨品');
+  const sizes = Array.isArray(tp.sizes) && tp.sizes.length ? tp.sizes : ['均碼'];
+  if (!sizes.includes(size)) throw new Error('此貨品沒有該尺碼');
+  const dup = await posProductsCol().findOne({ transferProductId, size });
+  if (dup) throw new Error('此貨品尺碼已在可售目錄');
+  const price = Number(input.price);
+  if (!isFinite(price) || price < 0) throw new Error('請填寫有效售價');
+  const sku = String(input.sku || `${transferProductId}-${size}`).trim();
+  if (!sku) throw new Error('請填寫條碼／SKU');
+  const id = `sell_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const now = formatHkDateTime();
+  const name = String(input.name || tp.name || '').trim() || tp.name;
+  const doc = {
+    _id: id,
+    id,
+    transferProductId,
+    size,
+    name,
+    sku,
+    price: Math.round(price * 100) / 100,
+    active: true,
+    category: tp.category || '',
+    color: tp.color || '',
+    updatedAt: now,
+    createdAt: now,
+  };
+  await posProductsCol().insertOne(doc);
+  const me = publicUser(user);
+  await appendModuleLog({
+    module: 'pos',
+    time: now,
+    action: '加入可售商品',
+    detail: `${transferProductId}｜${size}｜$${doc.price}｜${sku}`,
+    userId: me?.id,
+    userName: me?.name || me?.login,
+    user: me?.name || me?.login,
+  });
+  const qtyMap = await buildTransferQtyMap();
+  return { product: { ...stripPosProduct(doc), stock: stockFromMap(qtyMap, transferProductId, size) } };
 }
 
 export async function listPosTransactions(user) {
   await connectMongo();
-  await ensurePosSeeded();
+  await ensurePosReady();
   const me = publicUser(user);
   const isAdmin = posIsSystemAdmin(me);
   const stores = posUserStores(me);
@@ -2602,47 +2693,67 @@ export async function getPosTransaction(user, id) {
 
 export async function adjustPosProduct(user, productId, patch = {}) {
   await connectMongo();
-  await ensurePosSeeded();
+  await ensurePosReady();
   if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可調整商品');
   const id = String(productId || '');
   const existing = await posProductsCol().findOne({ id });
-  if (!existing) throw new Error('找不到商品');
+  if (!existing) throw new Error('找不到可售商品');
+  if (patch.stock) throw new Error('庫存請在「貨品調動」校正；POS 不可改數量');
   const $set = { updatedAt: formatHkDateTime() };
   if (patch.price != null && patch.price !== '') {
     const price = Number(patch.price);
     if (!isFinite(price) || price < 0) throw new Error('售價無效');
     $set.price = Math.round(price * 100) / 100;
   }
-  if (patch.stock && typeof patch.stock === 'object') {
-    for (const store of POS_STORES) {
-      if (patch.stock[store] == null || patch.stock[store] === '') continue;
-      const n = Number(patch.stock[store]);
-      if (!Number.isInteger(n) || n < 0) throw new Error(`庫存無效：${store}`);
-      $set[`stock.${store}`] = n;
-    }
+  if (patch.sku != null) {
+    const sku = String(patch.sku).trim();
+    if (!sku) throw new Error('SKU／條碼不可空白');
+    $set.sku = sku;
   }
-  const updated = await posProductsCol().findOneAndUpdate(
-    { id },
-    { $set },
-    { returnDocument: 'after' }
-  );
+  if (patch.active != null) $set.active = !!patch.active;
+  if (patch.name != null && String(patch.name).trim()) $set.name = String(patch.name).trim();
+  const updated = await posProductsCol().findOneAndUpdate({ id }, { $set }, { returnDocument: 'after' });
   const doc = updated?.value || updated;
   const me = publicUser(user);
   await appendModuleLog({
     module: 'pos',
     time: formatHkDateTime(),
-    action: '調整 POS 商品',
-    detail: `${id}｜${existing.name}`,
+    action: '調整可售商品',
+    detail: `${id}｜${existing.transferProductId}｜${existing.size}`,
     userId: me?.id,
     userName: me?.name || me?.login,
     user: me?.name || me?.login,
   });
-  return stripPosProduct(doc);
+  const qtyMap = await buildTransferQtyMap();
+  return {
+    ...stripPosProduct(doc),
+    stock: stockFromMap(qtyMap, doc.transferProductId, doc.size),
+  };
+}
+
+async function deductTransferStock(transferProductId, size, store, qty) {
+  const _id = `${transferProductId}__${size}__${store}`;
+  const before = await getInventoryQty(transferProductId, size, store);
+  const res = await transferInventoryCol().findOneAndUpdate(
+    { _id, quantity: { $gte: qty } },
+    {
+      $inc: { quantity: -qty },
+      $set: { productId: transferProductId, size, store, updatedAt: new Date() },
+    },
+    { returnDocument: 'after' }
+  );
+  const doc = res?.value || res;
+  if (!doc) {
+    // 列不存在或不足
+    if (before < qty) throw new Error(`庫存不足：${transferProductId} ${size}＠${store}（剩餘 ${before}）`);
+    throw new Error(`找不到庫存列：${transferProductId} ${size}＠${store}`);
+  }
+  return { before, after: Number(doc.quantity) || 0 };
 }
 
 export async function checkoutPos(user, payload = {}) {
   await connectMongo();
-  await ensurePosSeeded();
+  await ensurePosReady();
   const me = publicUser(user);
   if (!me) throw new Error('未登入');
   const store = String(payload.store || '');
@@ -2659,35 +2770,26 @@ export async function checkoutPos(user, payload = {}) {
   const accountBalance = Number(payload.accountBalance || 0);
   if (!isFinite(accountBalance)) throw new Error('賬戶餘額無效');
 
-  const normalized = [];
+  const lines = [];
   for (const raw of itemsIn) {
-    const productId = String(raw.productId || '');
+    const sellableId = String(raw.productId || '');
     const qty = Number(raw.qty);
-    if (!productId || !Number.isInteger(qty) || qty <= 0) throw new Error('商品數量無效');
-    normalized.push({ productId, qty });
+    if (!sellableId || !Number.isInteger(qty) || qty <= 0) throw new Error('商品數量無效');
+    const sellable = await posProductsCol().findOne({ id: sellableId, active: { $ne: false } });
+    if (!sellable || !sellable.transferProductId) throw new Error(`找不到可售商品：${sellableId}`);
+    lines.push({ sellable, qty });
   }
 
   const deducted = [];
   try {
-    for (const line of normalized) {
-      const res = await posProductsCol().findOneAndUpdate(
-        { id: line.productId, [`stock.${store}`]: { $gte: line.qty } },
-        {
-          $inc: { [`stock.${store}`]: -line.qty },
-          $set: { updatedAt: formatHkDateTime() },
-        },
-        { returnDocument: 'after' }
-      );
-      const doc = res?.value || res;
-      if (!doc || !doc.id) {
-        throw new Error(`庫存不足或找不到商品：${line.productId}`);
-      }
-      deducted.push({ productId: line.productId, qty: line.qty, product: doc });
+    for (const line of lines) {
+      const d = await deductTransferStock(line.sellable.transferProductId, line.sellable.size, store, line.qty);
+      deducted.push({ ...line, ...d });
     }
   } catch (e) {
     for (const d of deducted) {
       try {
-        await posProductsCol().updateOne({ id: d.productId }, { $inc: { [`stock.${store}`]: d.qty } });
+        await adjustInventoryQty(d.sellable.transferProductId, d.sellable.size, store, d.qty);
       } catch (_) {}
     }
     throw e;
@@ -2695,24 +2797,25 @@ export async function checkoutPos(user, payload = {}) {
 
   let subtotal = 0;
   const items = deducted.map((d) => {
-    const unitPrice = Number(d.product.price) || 0;
+    const unitPrice = Number(d.sellable.price) || 0;
     const lineTotal = Math.round(unitPrice * d.qty * 100) / 100;
     subtotal += lineTotal;
     return {
       qty: d.qty,
-      name: d.product.name,
-      sku: d.product.sku,
-      size: d.product.size,
+      name: d.sellable.name,
+      sku: d.sellable.sku,
+      size: d.sellable.size,
       unitPrice,
       lineTotal,
-      productId: d.productId,
+      productId: d.sellable.id,
+      transferProductId: d.sellable.transferProductId,
     };
   });
   subtotal = Math.round(subtotal * 100) / 100;
   const orderTotal = Math.round((subtotal + accountBalance) * 100) / 100;
   if (orderTotal < 0) {
     for (const d of deducted) {
-      await posProductsCol().updateOne({ id: d.productId }, { $inc: { [`stock.${store}`]: d.qty } });
+      await adjustInventoryQty(d.sellable.transferProductId, d.sellable.size, store, d.qty);
     }
     throw new Error('訂單總計不可為負');
   }
@@ -2728,11 +2831,11 @@ export async function checkoutPos(user, payload = {}) {
   const year = new Date().getFullYear();
   const invoiceNo = `INV-${year}-${String(seq).padStart(8, '0')}`;
   const id = `tx_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-  const time = formatHkDateTime();
+  const now = new Date();
+  const time = formatHkDateTime(now);
   const stamp = (() => {
-    const d = new Date();
     const p = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
   })();
   const tx = {
     _id: id,
@@ -2759,15 +2862,48 @@ export async function checkoutPos(user, payload = {}) {
     orderTotal,
     paid: orderTotal,
     createdAt: stamp,
-    createdAtMs: Date.now(),
+    createdAtMs: now.getTime(),
     createdAtLabel: time,
   };
   await posTransactionsCol().insertOne(tx);
+
+  // 調動側：每項寫一筆 POS 銷售異動
+  const actorName = me.name || me.login || me.id;
+  for (const d of deducted) {
+    const before = {};
+    const after = {};
+    for (const s of TRANSFER_STORES) {
+      const q = await getInventoryQty(d.sellable.transferProductId, d.sellable.size, s);
+      after[s] = q;
+      before[s] = s === store ? d.before : q;
+    }
+    const adjId = 'AD' + String(Date.now()) + '-' + crypto.randomBytes(2).toString('hex');
+    await transferStockAdjustmentsCol().insertOne({
+      _id: adjId,
+      id: adjId,
+      type: 'pos_sale',
+      reason: 'POS 銷售',
+      productId: d.sellable.transferProductId,
+      productName: d.sellable.name || '',
+      size: d.sellable.size,
+      before,
+      after,
+      store,
+      qtySold: d.qty,
+      posTransactionId: id,
+      posOrderNo: orderNo,
+      createdAt: time,
+      createdAtMs: Date.now(),
+      createdBy: String(me.id),
+      createdByName: actorName,
+    });
+  }
+
   await appendModuleLog({
     module: 'pos',
     time,
     action: '完成收銀',
-    detail: `${store}｜${orderNo}｜$${orderTotal.toFixed(2)}`,
+    detail: `${store}｜${orderNo}｜$${orderTotal.toFixed(2)}｜扣調動庫存`,
     userId: me.id,
     userName: me.name || me.login,
     user: me.name || me.login,
@@ -2781,15 +2917,13 @@ export async function resetPosDemo(user) {
   await ensurePosIndexes();
   await posProductsCol().deleteMany({});
   await posTransactionsCol().deleteMany({});
-  const products = posSeedProducts();
-  await posProductsCol().insertMany(products.map((p) => ({ ...p, _id: p.id })));
   await posMetaCol().replaceOne({ _id: 'main' }, { _id: 'main', seq: 1000 }, { upsert: true });
   const me = publicUser(user);
   await appendModuleLog({
     module: 'pos',
     time: formatHkDateTime(),
     action: '重置雲端 POS',
-    detail: '種子商品＋清空交易',
+    detail: '清空可售目錄與交易（不改調動庫存）',
     userId: me?.id,
     userName: me?.name || me?.login,
     user: me?.name || me?.login,

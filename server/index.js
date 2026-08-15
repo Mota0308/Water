@@ -53,6 +53,8 @@ import {
   adjustPosProduct,
   checkoutPos,
   resetPosDemo,
+  listPosCatalogOptions,
+  addPosSellable,
 } from './mongo.js';
 import { driveConfigured, exportUsersToDrive, getDriveExportStatus } from './drive.js';
 
@@ -587,6 +589,24 @@ app.post('/api/pos/products/:id/adjust', requireAuth, async (req, res) => {
   try {
     const product = await adjustPosProduct(req.user, req.params.id, req.body || {});
     res.json({ product });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/pos/catalog-options', requireAuth, async (req, res) => {
+  try {
+    res.json(await listPosCatalogOptions(req.user));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/sellables', requireAuth, async (req, res) => {
+  try {
+    res.json(await addPosSellable(req.user, req.body || {}));
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });

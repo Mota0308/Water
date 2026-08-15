@@ -2856,9 +2856,9 @@ function vTransferStockLog(){
     return '<div class="card"><h2>📝 庫存校正記錄</h2><p style="color:#888">正在載入…</p></div>';
   }
   const rows = transferAdjCache || [];
-  const head = '<tr><th>時間</th><th>操作人</th><th>商品</th><th>尺碼</th><th>變更明細</th></tr>';
+  const head = '<tr><th>時間</th><th>類型</th><th>操作人</th><th>商品</th><th>尺碼</th><th>變更明細</th></tr>';
   const body = !rows.length
-    ? '<tr><td colspan="5" style="color:#888;text-align:center">尚無庫存校正記錄。</td></tr>'
+    ? '<tr><td colspan="6" style="color:#888;text-align:center">尚無庫存校正記錄。</td></tr>'
     : rows.map(function(a){
       const detail = TRANSFER_STORES_FE.map(function(s){
         const b = a.before && a.before[s]!=null ? a.before[s] : '—';
@@ -2866,8 +2866,11 @@ function vTransferStockLog(){
         if(String(b)===String(n)) return '<span style="color:#90a4ae">'+escHtml(s)+' '+escHtml(String(b))+'</span>';
         return '<b>'+escHtml(s)+' '+escHtml(String(b))+'→'+escHtml(String(n))+'</b>';
       }).join(' ｜ ');
+      const typ = a.reason || a.type || '庫存校正';
+      const typExtra = a.posOrderNo ? ('｜'+a.posOrderNo) : '';
       return '<tr>'
         +'<td style="white-space:nowrap;font-size:12px">'+escHtml(a.createdAt||'')+'</td>'
+        +'<td style="font-size:12px">'+escHtml(typ+typExtra)+'</td>'
         +'<td>'+escHtml(a.createdByName||a.createdBy||'')+'</td>'
         +'<td><b>'+escHtml(a.productId||'')+'</b> '+escHtml(a.productName||'')+'</td>'
         +'<td>'+escHtml(a.size||'')+'</td>'
@@ -2876,7 +2879,7 @@ function vTransferStockLog(){
     }).join('');
   return '<div class="card">'
     +'<h2>📝 庫存校正記錄</h2>'
-    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">手改庫存（盤點／到貨校正）的完整痕跡：誰、何時、各店舊→新。所有已登入可查看。</p>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">手改庫存與 <b>POS 銷售</b> 出庫痕跡：誰、何時、各店舊→新。所有已登入可查看。</p>'
     +'<div class="filters"><button type="button" class="btn gray sm" data-call="refreshTransferAdjustments">重新整理</button></div>'
     +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 筆</p>'
     +'</div>'

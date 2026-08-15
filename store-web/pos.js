@@ -35,6 +35,9 @@ var posMembersLocal = [
   { id: 'm5', name: '測試客人', phone: '60000000', level: '一般會員' }
 ];
 var posAdjustProductId = '';
+var posShowAddPanel = false;
+var posCatalogOptions = [];
+var posAddForm = { key: '', price: '', sku: '' };
 
 function posDiscardLocalDemo() {
   try { localStorage.removeItem(POS_LS_KEY); } catch (e) {}
@@ -242,7 +245,7 @@ async function posResetDemoData() {
     posDiscardLocalDemo();
     posInvalidateCloud();
     await posRefreshCloud(true);
-    alert2('已重置雲端 POS 資料。');
+    alert2('已重置雲端 POS（可售目錄＋交易）。調動庫存未改動。');
     if (typeof go === 'function') go('posCashier');
     else if (typeof render === 'function') render();
   } catch (e) {
@@ -251,6 +254,7 @@ async function posResetDemoData() {
 }
 function posOpenAdjust(productId) {
   posAdjustProductId = String(productId || '');
+  posShowAddPanel = false;
   if (typeof render === 'function') render();
 }
 function posCloseAdjust() {
@@ -259,24 +263,71 @@ function posCloseAdjust() {
 }
 async function posSubmitAdjust(productId) {
   var priceEl = document.getElementById('pos-adj-price');
-  var stock = {};
-  POS_STORES_FALLBACK.forEach(function (s) {
-    var el = document.getElementById('pos-adj-stock-' + s);
-    if (el) stock[s] = el.value;
-  });
+  var skuEl = document.getElementById('pos-adj-sku');
+  var activeEl = document.getElementById('pos-adj-active');
   try {
     await apiFetch('/api/pos/products/' + encodeURIComponent(productId) + '/adjust', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ price: priceEl ? priceEl.value : undefined, stock: stock })
+      body: JSON.stringify({
+        price: priceEl ? priceEl.value : undefined,
+        sku: skuEl ? skuEl.value : undefined,
+        active: activeEl ? !!activeEl.checked : true
+      })
     });
     posAdjustProductId = '';
     posInvalidateCloud();
     await posRefreshCloud(true);
-    alert2('已更新商品。');
+    alert2('已更新可售商品（售價／條碼）。庫存請在貨品調動修改。');
     if (typeof render === 'function') render();
   } catch (e) {
     alert2('調整失敗：' + (e.message || e));
+  }
+}
+async function posToggleAddPanel() {
+  posShowAddPanel = !posShowAddPanel;
+  posAdjustProductId = '';
+  if (posShowAddPanel) {
+    try {
+      var res = await apiFetch('/api/pos/catalog-options');
+      posCatalogOptions = (res && res.options) || [];
+      posAddForm = { key: '', price: '', sku: '' };
+    } catch (e) {
+      alert2('載入調動貨品失敗：' + (e.message || e));
+      posShowAddPanel = false;
+    }
+  }
+  if (typeof render === 'function') render();
+}
+function posSetAddKey(v) {
+  posAddForm.key = String(v || '');
+  var opt = posCatalogOptions.find(function (o) { return (o.transferProductId + '|' + o.size) === posAddForm.key; });
+  if (opt) posAddForm.sku = opt.suggestedSku || '';
+  if (typeof render === 'function') render();
+}
+async function posSubmitAddSellable() {
+  var parts = String(posAddForm.key || '').split('|');
+  if (parts.length < 2) { alert2('請選擇調動貨品與尺碼。'); return; }
+  var priceEl = document.getElementById('pos-add-price');
+  var skuEl = document.getElementById('pos-add-sku');
+  try {
+    await apiFetch('/api/pos/sellables', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        transferProductId: parts[0],
+        size: parts.slice(1).join('|'),
+        price: priceEl ? priceEl.value : posAddForm.price,
+        sku: skuEl ? skuEl.value : posAddForm.sku
+      })
+    });
+    posShowAddPanel = false;
+    posInvalidateCloud();
+    await posRefreshCloud(true);
+    alert2('已加入可售目錄。');
+    if (typeof render === 'function') render();
+  } catch (e) {
+    alert2('加入失敗：' + (e.message || e));
   }
 }
 function posLoadingCard(title) {
@@ -325,10 +376,10 @@ function vPosCashier() {
     var avail = Number((p.stock && p.stock[store]) || 0);
     var low = avail <= 2 ? ' style="color:#c62828;font-weight:bold"' : '';
     var adj = posCloud.canManage
-      ? ' <button type="button" class="btn gray sm" data-call="posOpenAdjust" data-arg0="' + posEsc(p.id) + '">調整</button>'
+      ? ' <button type="button" class="btn gray sm" data-call="posOpenAdjust" data-arg0="' + posEsc(p.id) + '">售價</button>'
       : '';
     return '<tr>' +
-      '<td>' + posEsc(p.sku) + '</td>' +
+      '<td>' + posEsc(p.sku) + '<div style="font-size:11px;color:#90a4ae">' + posEsc(p.transferProductId || '') + '</div></td>' +
       '<td>' + posEsc(p.name) + '<div style="font-size:12px;color:#78909c">尺寸 ' + posEsc(p.size) + '</div></td>' +
       '<td>$' + posMoney(p.price) + '</td>' +
       '<td' + low + '>' + avail + '</td>' +
@@ -352,30 +403,52 @@ function vPosCashier() {
   if (posAdjustProductId && posCloud.canManage) {
     var ap = posFindProduct(posAdjustProductId);
     if (ap) {
-      var stockInputs = POS_STORES_FALLBACK.map(function (s) {
-        return '<div><label>' + posEsc(s) + '庫存</label>' +
-          '<input type="number" id="pos-adj-stock-' + posEsc(s) + '" min="0" step="1" value="' +
-          posEsc(String((ap.stock && ap.stock[s]) || 0)) + '"></div>';
-      }).join('');
       adjustPanel = '<div class="card" style="border:1px solid #90caf9">' +
-        '<h3>調整商品｜' + posEsc(ap.name) + '</h3>' +
+        '<h3>調整可售｜' + posEsc(ap.name) + '（' + posEsc(ap.transferProductId) + ' / ' + posEsc(ap.size) + '）</h3>' +
+        '<p style="font-size:12px;color:#78909c;margin:0 0 8px">不可改庫存數量；請到「貨品調動 → 庫存查詢」校正。</p>' +
         '<label>售價</label><input type="number" id="pos-adj-price" step="0.01" min="0" value="' + posEsc(String(ap.price)) + '">' +
-        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-top:8px">' + stockInputs + '</div>' +
+        '<label>SKU／條碼</label><input type="text" id="pos-adj-sku" value="' + posEsc(ap.sku || '') + '">' +
+        '<label style="display:flex;align-items:center;gap:8px;margin-top:10px"><input type="checkbox" id="pos-adj-active"' + (ap.active === false ? '' : ' checked') + '> 上架可售</label>' +
         '<div class="actions" style="margin-top:12px;display:flex;gap:8px">' +
         '<button type="button" class="btn green sm" data-call="posSubmitAdjust" data-arg0="' + posEsc(ap.id) + '">儲存</button>' +
         '<button type="button" class="btn gray sm" data-call="posCloseAdjust">取消</button></div></div>';
     }
   }
+  var addPanel = '';
+  if (posShowAddPanel && posCloud.canManage) {
+    var optHtml = '<option value="">— 選擇貨品×尺碼 —</option>' + posCatalogOptions.map(function (o) {
+      var k = o.transferProductId + '|' + o.size;
+      return '<option value="' + posEsc(k) + '"' + (posAddForm.key === k ? ' selected' : '') + '>' +
+        posEsc(o.transferProductId + '｜' + o.name + (o.color ? '｜' + o.color : '') + '｜' + o.size) + '</option>';
+    }).join('');
+    addPanel = '<div class="card" style="border:1px solid #a5d6a7">' +
+      '<h3>從調動貨品加入可售</h3>' +
+      (posCatalogOptions.length
+        ? '<label>調動貨品 × 尺碼</label><select onchange="posSetAddKey(this.value)">' + optHtml + '</select>' +
+          '<label>售價</label><input type="number" id="pos-add-price" step="0.01" min="0" value="' + posEsc(String(posAddForm.price || '')) + '">' +
+          '<label>SKU／條碼</label><input type="text" id="pos-add-sku" value="' + posEsc(posAddForm.sku || '') + '">' +
+          '<div class="actions" style="margin-top:12px;display:flex;gap:8px">' +
+          '<button type="button" class="btn green sm" data-call="posSubmitAddSellable">加入可售目錄</button>' +
+          '<button type="button" class="btn gray sm" data-call="posToggleAddPanel">取消</button></div>'
+        : '<p style="color:#888">所有調動貨品尺碼都已加入，或尚無調動貨品。請先到「貨品調動 → 貨品」新增。</p>' +
+          '<button type="button" class="btn gray sm" data-call="posToggleAddPanel">關閉</button>') +
+      '</div>';
+  }
   return '<div class="card"><h2>🛒 POS 收銀</h2>' +
-    '<div class="info-banner">雲端模式：交易與庫存同步至 Mongo（與貨品調動庫存分開）。會員下拉仍為本機示範。</div>' +
+    '<div class="info-banner">庫存以<strong>貨品調動</strong>為準。可售目錄需管理員／主管從調動貨品加入並設定售價。賣出會寫入調動「庫存校正記錄」（POS 銷售）。</div>' +
     '<div class="filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:end">' +
     '<div><label>收銀店舖</label><select onchange="posSetStore(this.value)">' + storeOpts + '</select></div>' +
     '<div style="flex:1;min-width:180px"><label>搜尋商品</label>' +
     '<input type="text" value="' + posEsc(posSearchKw) + '" placeholder="品名／SKU／尺寸" oninput="posSetSearch(this.value)"></div>' +
+    (posCloud.canManage ? '<button type="button" class="btn green sm" data-call="posToggleAddPanel">' + (posShowAddPanel ? '關閉加入' : '＋ 從調動加入可售') + '</button>' : '') +
     '<button type="button" class="btn gray sm" data-call="posForceReload">重新整理</button></div></div>' +
+    addPanel +
     adjustPanel +
+    (!products.length && !kw
+      ? '<div class="card"><p style="color:#888">尚未有可售商品。' + (posCloud.canManage ? '請點「從調動加入可售」。' : '請通知主管加入可售目錄。') + '</p></div>'
+      : '') +
     '<div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(280px,0.9fr);gap:14px" class="pos-cashier-grid">' +
-    '<div class="card"><h3>商品</h3><div class="table-wrap"><table><thead><tr>' +
+    '<div class="card"><h3>商品（調動庫存）</h3><div class="table-wrap"><table><thead><tr>' +
     '<th>SKU</th><th>商品</th><th>售價</th><th>庫存</th><th></th></tr></thead><tbody>' +
     (productRows || '<tr><td colspan="5" style="color:#888;text-align:center">無符合商品</td></tr>') +
     '</tbody></table></div></div>' +
@@ -497,8 +570,8 @@ function vPosReset() {
       '<button type="button" class="btn gray sm" data-call="go" data-arg0="posCashier">返回收銀</button></div>';
   }
   return '<div class="card"><h2>♻️ 重置雲端 POS 資料</h2>' +
-    '<p style="font-size:14px;line-height:1.6;color:#455a64">會清空<strong>所有裝置</strong>可見的雲端交易，並還原種子商品庫存。' +
-    '<br>不影響貨品調動、每日工作、推送等其他模組。</p>' +
+    '<p style="font-size:14px;line-height:1.6;color:#455a64">會清空<strong>可售目錄與交易</strong>（所有裝置）。' +
+    '<br><b>不會</b>改動貨品調動的庫存數量。</p>' +
     '<div class="actions" style="margin-top:14px">' +
     '<button type="button" class="btn red" data-call="posResetDemoData">確認重置雲端 POS</button>' +
     '<button type="button" class="btn gray sm" data-call="go" data-arg0="posCashier">返回收銀</button></div></div>';
