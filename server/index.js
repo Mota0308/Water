@@ -56,6 +56,9 @@ import {
   exchangePosTransaction,
   resetPosDemo,
   seedPosSamples,
+  listPosDrafts,
+  savePosDraft,
+  deletePosDraft,
   getPosSalesReport,
   exportPosSalesReportCsv,
   getPosSettlement,
@@ -762,6 +765,33 @@ app.post('/api/pos/seed-samples', requireAuth, async (req, res) => {
   try {
     const force = !!(req.body && req.body.force);
     res.json(await seedPosSamples(req.user, { force }));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/pos/drafts', requireAuth, async (req, res) => {
+  try {
+    res.json(await listPosDrafts(req.user, req.query || {}));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/drafts', requireAuth, async (req, res) => {
+  try {
+    res.json(await savePosDraft(req.user, req.body || {}));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.delete('/api/pos/drafts/:id', requireAuth, async (req, res) => {
+  try {
+    res.json(await deletePosDraft(req.user, req.params.id));
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });

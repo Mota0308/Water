@@ -2,7 +2,9 @@
 import { useNavigate } from 'react-router-dom'
 import {
   Barcode,
+  Bookmark,
   CreditCard,
+  FileText,
   Minus,
   Plus,
   Search,
@@ -18,6 +20,32 @@ import { formatHKD } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { PosCartLine, PosMember, PosProduct, PointsSettings } from '@/lib/types'
 import { PAYMENT_METHODS } from '@/lib/types'
+
+type PosDraft = {
+  id: string
+  store: string
+  label?: string
+  remark?: string
+  paymentMethod?: string
+  pointsToRedeem?: number
+  memberId?: string
+  memberName?: string
+  memberPhone?: string
+  items: PosCartLine[]
+  subtotal?: number
+  itemCount?: number
+  createdAt?: string
+  createdById?: string
+  createdByName?: string
+  updatedAt?: string
+  updatedAtMs?: number
+}
+
+type PosDraftListResponse = {
+  drafts: PosDraft[]
+  canManage: boolean
+  me: { id: string; name: string }
+}
 
 function stockOf(p: PosProduct, store: string) {
   return Number(p.stock?.[store] || 0)
@@ -47,6 +75,14 @@ export function PosPage() {
   const [showPayDialog, setShowPayDialog] = useState(false)
   const [cashReceived, setCashReceived] = useState('')
   const [checkingOut, setCheckingOut] = useState(false)
+  const [drafts, setDrafts] = useState<PosDraft[]>([])
+  const [draftsLoading, setDraftsLoading] = useState(false)
+  const [showDraftsDialog, setShowDraftsDialog] = useState(false)
+  const [savingDraft, setSavingDraft] = useState(false)
+  const [activeDraftId, setActiveDraftId] = useState('')
+  const [draftAccess, setDraftAccess] = useState<{ canManage: boolean; me: { id: string; name: string } }>(
+    { canManage: false, me: { id: '', name: '' } },
+  )
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -75,6 +111,35 @@ export function PosPage() {
     barcodeRef.current?.focus()
   }, [load])
 
+  const loadDrafts = useCallback(async (targetStore: string) => {
+    if (!targetStore) {
+      setDrafts([])
+      setDraftAccess({ canManage: false, me: { id: '', name: '' } })
+      return
+    }
+    setDraftsLoading(true)
+    try {
+      const res = await apiJson<PosDraftListResponse>(
+        `/api/pos/drafts?store=${encodeURIComponent(targetStore)}`,
+      )
+      setDrafts(res.drafts || [])
+      setDraftAccess({
+        canManage: !!res.canManage,
+        me: res.me || { id: '', name: '' },
+      })
+    } catch (e) {
+      setDrafts([])
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDraftsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    setActiveDraftId('')
+    void loadDrafts(store)
+  }, [store, loadDrafts])
+
   const filtered = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
     return products.filter((p) => {
@@ -101,6 +166,10 @@ export function PosPage() {
   const cashRecv = Number(cashReceived)
   const change =
     paymentMethod === 'cash' && isFinite(cashRecv) ? Math.round((cashRecv - grandTotal) * 100) / 100 : 0
+  const activeDraft = useMemo(
+    () => drafts.find((draft) => draft.id === activeDraftId) || null,
+    [drafts, activeDraftId],
+  )
 
   const addProduct = (p: PosProduct, qty = 1) => {
     if (!store) {
@@ -168,6 +237,21 @@ export function PosPage() {
     )
   }
 
+  const findMember = useCallback(async (query: string) => {
+    const q = query.trim()
+    if (!q) return null
+    const res = await apiJson<{ members: PosMember[] }>(
+      `/api/pos/members?q=${encodeURIComponent(q)}&includeInactive=0`,
+    )
+    const list = res.members || []
+    return (
+      list.find((x) => x.id === q || x.phone === q) ||
+      list.find((x) => String(x.phone).includes(q)) ||
+      list[0] ||
+      null
+    )
+  }, [])
+
   const searchMember = async () => {
     const phone = memberPhone.trim()
     if (!phone) {
@@ -175,14 +259,7 @@ export function PosPage() {
       return
     }
     try {
-      const res = await apiJson<{ members: PosMember[] }>(
-        `/api/pos/members?q=${encodeURIComponent(phone)}&includeInactive=0`,
-      )
-      const list = res.members || []
-      const m =
-        list.find((x) => x.phone === phone || x.id === phone) ||
-        list.find((x) => String(x.phone).includes(phone)) ||
-        list[0]
+      const m = await findMember(phone)
       if (!m) {
         toast.error('找不到會員')
         return
@@ -230,6 +307,99 @@ export function PosPage() {
     setShowPayDialog(true)
   }
 
+  const saveDraft = async () => {
+    if (!store) {
+      toast.error('請先選擇店舖')
+      return
+    }
+    if (!cart.length) {
+      toast.error('購物車是空的，無法保存草稿')
+      return
+    }
+    const labelInput = prompt('草稿暱稱（選填）', activeDraft?.label || '')
+    if (labelInput === null) return
+    setSavingDraft(true)
+    try {
+      const res = await apiJson<{ draft: PosDraft }>('/api/pos/drafts', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: activeDraftId || undefined,
+          store,
+          label: labelInput.trim(),
+          remark,
+          paymentMethod,
+          pointsToRedeem,
+          memberId: member?.id || '',
+          memberName: member?.name || '',
+          memberPhone: member?.phone || '',
+          items: cart.map((line) => ({
+            productId: line.productId,
+            name: line.name,
+            sku: line.sku,
+            size: line.size,
+            unitPrice: line.unitPrice,
+            qty: line.qty,
+          })),
+        }),
+      })
+      setActiveDraftId(res.draft?.id || activeDraftId)
+      await loadDrafts(store)
+      toast.success(activeDraftId ? '草稿已更新' : '草稿已保存')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingDraft(false)
+    }
+  }
+
+  const restoreDraft = async (draft: PosDraft) => {
+    if (cart.length && !confirm('恢復草稿會覆蓋目前購物車，確定繼續？')) return
+    setCart(
+      (draft.items || []).map((item) => ({
+        productId: item.productId,
+        name: item.name,
+        sku: item.sku,
+        size: item.size,
+        unitPrice: Number(item.unitPrice) || 0,
+        qty: Number(item.qty) || 0,
+      })),
+    )
+    setRemark(draft.remark || '')
+    setPaymentMethod(draft.paymentMethod || 'cash')
+    setPointsToRedeem(Math.max(0, Math.floor(Number(draft.pointsToRedeem) || 0)))
+    setMemberPhone(draft.memberPhone || '')
+    if (draft.memberId || draft.memberName || draft.memberPhone) {
+      setMember({
+        id: draft.memberId || draft.memberPhone || draft.id,
+        name: draft.memberName || '會員',
+        phone: draft.memberPhone || '',
+      })
+      try {
+        const freshMember = await findMember(draft.memberId || draft.memberPhone || '')
+        if (freshMember) setMember(freshMember)
+      } catch {
+        /* keep saved member snapshot */
+      }
+    } else {
+      setMember(null)
+    }
+    setActiveDraftId(draft.id)
+    setShowDraftsDialog(false)
+    toast.success('已恢復草稿')
+  }
+
+  const deleteDraft = async (draft: PosDraft) => {
+    if (!confirm(`確定刪除草稿「${draft.label || draft.updatedAt || draft.id}」？`)) return
+    try {
+      await apiJson(`/api/pos/drafts/${encodeURIComponent(draft.id)}`, { method: 'DELETE' })
+      if (draft.id === activeDraftId) setActiveDraftId('')
+      await loadDrafts(store)
+      toast.success('草稿已刪除')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const checkout = async () => {
     if (checkingOut) return
     if (paymentMethod === 'cash' && isFinite(cashRecv) && cashRecv < grandTotal) {
@@ -248,18 +418,21 @@ export function PosPage() {
         items: cart.map((l) => ({ productId: l.productId, qty: l.qty })),
       }
       if (pointsToRedeem > 0) body.pointsToRedeem = pointsToRedeem
+      if (activeDraftId) body.draftId = activeDraftId
       const res = await apiJson<{ transaction: { id: string; orderNo?: string } }>(
         '/api/pos/checkout',
         { method: 'POST', body: JSON.stringify(body) },
       )
       const tx = res.transaction
       toast.success(`結帳成功${tx?.orderNo ? `：${tx.orderNo}` : ''}`)
+      setActiveDraftId('')
       setCart([])
       setMember(null)
       setPointsToRedeem(0)
       setRemark('')
       setShowPayDialog(false)
       await load()
+      await loadDrafts(store)
       if (tx?.id) navigate(`/receipt/${encodeURIComponent(tx.id)}`)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
@@ -397,6 +570,14 @@ export function PosPage() {
         <div className="flex items-center justify-between border-b border-slate-200 bg-white p-3">
           <h2 className="font-semibold">購物清單</h2>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowDraftsDialog(true)}
+              className="inline-flex h-8 items-center gap-1 rounded-md border border-slate-200 px-2 text-sm text-slate-600 hover:bg-slate-50"
+            >
+              <Bookmark className="size-3.5" />
+              草稿 ({drafts.length})
+            </button>
             <span className="text-sm text-slate-500">{cart.length} 項商品</span>
             {cart.length > 0 && (
               <button
@@ -506,20 +687,37 @@ export function PosPage() {
                   </span>
                 </div>
                 {pointsSettings.redeemEnabled && (Number(member.points) || 0) > 0 && (
-                  <div className="mt-2 space-y-1">
-                    <input
-                      type="range"
-                      min={0}
-                      max={maxRedeemable}
-                      step={n}
-                      value={Math.min(pointsToRedeem, maxRedeemable)}
-                      onChange={(e) => setPointsToRedeem(parseInt(e.target.value, 10) || 0)}
-                      className="w-full"
-                    />
+                  <div className="mt-2 space-y-2">
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={pointsToRedeem || ''}
+                        onChange={(e) => setPointsToRedeem(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+                        className="h-9 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 text-sm"
+                        placeholder="輸入折抵積分"
+                      />
+                      <button
+                        type="button"
+                        disabled={!maxRedeemable}
+                        onClick={() => setPointsToRedeem(maxRedeemable)}
+                        className="shrink-0 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+                      >
+                        用盡
+                      </button>
+                    </div>
+                    <div className="space-y-1 text-[11px] text-slate-500">
+                      <p>每 {n} 分＝$1，預估折抵 {formatHKD(pointsDiscount)}</p>
+                      <p>
+                        須為 {n} 倍數，最多可用 {(Number(member.points) || 0).toLocaleString()} 分，本單最多折抵{' '}
+                        {maxRedeemable.toLocaleString()} 分
+                      </p>
+                    </div>
                     <div className="flex justify-between">
-                      <span className="text-slate-500">折抵積分（每 {n} 分＝$1）</span>
+                      <span className="text-slate-500">折抵積分</span>
                       <span className="font-medium text-sky-700 tabular-nums">
-                        {pointsToRedeem} = -{formatHKD(pointsDiscount)}
+                        {pointsToRedeem.toLocaleString()} = -{formatHKD(pointsDiscount)}
                       </span>
                     </div>
                   </div>
@@ -572,6 +770,20 @@ export function PosPage() {
             <CreditCard className="size-5" />
             結帳 {formatHKD(grandTotal)}
           </button>
+          <button
+            type="button"
+            disabled={!cart.length || savingDraft}
+            onClick={() => void saveDraft()}
+            className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+          >
+            <FileText className="size-4" />
+            {savingDraft ? '保存中…' : '保存草稿'}
+          </button>
+          {activeDraft && (
+            <p className="text-[11px] text-slate-500">
+              目前草稿：{activeDraft.label || activeDraft.updatedAt || activeDraft.id}
+            </p>
+          )}
         </div>
       </div>
 
@@ -602,6 +814,80 @@ export function PosPage() {
             >
               搜尋並登入
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Drafts dialog */}
+      {showDraftsDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-3xl rounded-lg bg-white p-4 shadow-xl">
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold">POS 草稿</h3>
+                <p className="text-xs text-slate-500">{store}店草稿</p>
+              </div>
+              <button type="button" onClick={() => setShowDraftsDialog(false)}>
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="max-h-[70vh] overflow-y-auto">
+              {draftsLoading ? (
+                <div className="py-12 text-center text-sm text-slate-500">讀取草稿中…</div>
+              ) : !drafts.length ? (
+                <div className="py-12 text-center text-sm text-slate-500">此店舖暫時沒有草稿</div>
+              ) : (
+                <div className="space-y-2">
+                  {drafts.map((draft) => {
+                    const canDelete =
+                      String(draft.createdById || '') === String(draftAccess.me.id || '') ||
+                      draftAccess.canManage
+                    return (
+                      <div
+                        key={draft.id}
+                        className={cn(
+                          'rounded-lg border border-slate-200 p-3',
+                          draft.id === activeDraftId && 'border-sky-300 bg-sky-50/50',
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-semibold">
+                              {draft.label || draft.createdAt || draft.updatedAt || draft.id}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {draft.createdByName || '未知建立者'} · {draft.store}店 · {(draft.itemCount || 0).toLocaleString()} 件
+                              · {formatHKD(draft.subtotal || 0)}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-400">
+                              更新時間：{draft.updatedAt || '未提供'}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void restoreDraft(draft)}
+                              className="rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-700"
+                            >
+                              恢復
+                            </button>
+                            {canDelete && (
+                              <button
+                                type="button"
+                                onClick={() => void deleteDraft(draft)}
+                                className="rounded-md border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+                              >
+                                刪除
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

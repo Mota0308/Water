@@ -2496,6 +2496,9 @@ function posTransactionsCol() {
 function posMetaCol() {
   return db.collection('pos_meta');
 }
+function posDraftsCol() {
+  return db.collection('pos_drafts');
+}
 
 async function getPosPointsSettingsInternal() {
   await posMetaCol().updateOne(
@@ -2576,6 +2579,8 @@ async function ensurePosIndexes() {
   await posTransactionsCol().createIndex({ id: 1 }, { unique: true });
   await posTransactionsCol().createIndex({ createdAtMs: -1 });
   await posTransactionsCol().createIndex({ store: 1, createdAtMs: -1 });
+  await posDraftsCol().createIndex({ id: 1 }, { unique: true });
+  await posDraftsCol().createIndex({ store: 1, updatedAtMs: -1 });
 }
 
 async function dedupePosSellablesByTransferSize() {
@@ -3075,6 +3080,16 @@ export async function checkoutPos(user, payload = {}) {
     userName: me.name || me.login,
     user: me.name || me.login,
   });
+
+  const draftId = String(payload.draftId || '').trim();
+  if (draftId) {
+    try {
+      await posDraftsCol().deleteOne({ id: draftId, store });
+    } catch (e) {
+      console.warn('POS draft cleanup skipped:', e.message || e);
+    }
+  }
+
   return stripPosTransaction(tx);
 }
 
@@ -4247,6 +4262,7 @@ export async function resetPosDemo(user) {
   await ensureMembersReady();
   await posProductsCol().deleteMany({});
   await posTransactionsCol().deleteMany({});
+  await posDraftsCol().deleteMany({});
   await posSettlementsCol().deleteMany({ isSample: true });
   await membersCol().deleteMany({ isSample: true });
   await memberPointsCol().deleteMany({ isSample: true });
@@ -4582,6 +4598,150 @@ export async function setMemberActive(user, id, active) {
     user: me.name || me.login,
   });
   return stripMember(updated);
+}
+
+function stripPosDraft(doc) {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return rest;
+}
+
+function normalizeDraftItems(itemsIn) {
+  const items = [];
+  for (const raw of Array.isArray(itemsIn) ? itemsIn : []) {
+    const productId = String(raw.productId || '').trim();
+    const qty = Number(raw.qty);
+    if (!productId || !Number.isInteger(qty) || qty <= 0) continue;
+    items.push({
+      productId,
+      name: String(raw.name || ''),
+      sku: String(raw.sku || ''),
+      size: String(raw.size || ''),
+      unitPrice: Math.round((Number(raw.unitPrice) || 0) * 100) / 100,
+      qty,
+    });
+  }
+  return items;
+}
+
+export async function listPosDrafts(user, query = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  const me = publicUser(user);
+  if (!me) throw new Error('未登入');
+  const stores = posUserStores(me);
+  const store = String(query.store || stores[0] || '').trim();
+  if (!POS_STORES.includes(store)) throw new Error('店舖無效');
+  if (!posCanAccessStore(me, store)) throw new Error('無權查看此店舖草稿');
+  const docs = await posDraftsCol().find({ store }).sort({ updatedAtMs: -1 }).limit(100).toArray();
+  return {
+    store,
+    drafts: docs.map(stripPosDraft),
+    canManage: posCanManageCatalog(me),
+    me: { id: String(me.id), name: me.name || me.login || '' },
+  };
+}
+
+export async function savePosDraft(user, payload = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  const me = publicUser(user);
+  if (!me) throw new Error('未登入');
+  const store = String(payload.store || '').trim();
+  if (!POS_STORES.includes(store)) throw new Error('店舖無效');
+  if (!posCanAccessStore(me, store)) throw new Error('無權在此店舖保存草稿');
+  const items = normalizeDraftItems(payload.items);
+  if (!items.length) throw new Error('購物車是空的，無法保存草稿');
+  const label = String(payload.label || payload.title || '').trim();
+  const remark = String(payload.remark || '').trim();
+  const paymentMethod = String(payload.paymentMethod || 'cash');
+  const pointsToRedeem = Math.max(0, Math.floor(Number(payload.pointsToRedeem) || 0));
+  const memberId = String(payload.memberId || '').trim();
+  const memberName = String(payload.memberName || '').trim();
+  const memberPhone = String(payload.memberPhone || '').trim();
+  const subtotal = Math.round(items.reduce((s, it) => s + it.unitPrice * it.qty, 0) * 100) / 100;
+  const itemCount = items.reduce((s, it) => s + it.qty, 0);
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const existingId = String(payload.id || payload.draftId || '').trim();
+  let id = existingId;
+  let createdAt = time;
+  let createdAtMs = now.getTime();
+  let createdById = String(me.id);
+  let createdByName = me.name || me.login || '';
+
+  if (existingId) {
+    const existing = await posDraftsCol().findOne({ id: existingId });
+    if (!existing) throw new Error('找不到草稿');
+    if (existing.store !== store) throw new Error('不可改到其他店舖');
+    const isOwner = String(existing.createdById) === String(me.id);
+    if (!isOwner && !posCanManageCatalog(me)) throw new Error('只有建立者或主管可更新此草稿');
+    createdAt = existing.createdAt || time;
+    createdAtMs = Number(existing.createdAtMs) || createdAtMs;
+    createdById = existing.createdById || createdById;
+    createdByName = existing.createdByName || createdByName;
+  } else {
+    id = `draft_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
+  }
+
+  const doc = {
+    _id: id,
+    id,
+    store,
+    label,
+    remark,
+    paymentMethod,
+    pointsToRedeem,
+    memberId,
+    memberName,
+    memberPhone,
+    items,
+    subtotal,
+    itemCount,
+    createdAt,
+    createdAtMs,
+    createdById,
+    createdByName,
+    updatedAt: time,
+    updatedAtMs: now.getTime(),
+    updatedById: String(me.id),
+    updatedByName: me.name || me.login || '',
+  };
+  await posDraftsCol().replaceOne({ _id: id }, doc, { upsert: true });
+  await appendModuleLog({
+    module: 'pos',
+    time,
+    action: existingId ? '更新收銀草稿' : '保存收銀草稿',
+    detail: `${store}｜${id}｜${itemCount}件｜$${subtotal.toFixed(2)}${label ? `｜${label}` : ''}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return { draft: stripPosDraft(doc) };
+}
+
+export async function deletePosDraft(user, draftId) {
+  await connectMongo();
+  await ensurePosReady();
+  const me = publicUser(user);
+  if (!me) throw new Error('未登入');
+  const id = String(draftId || '').trim();
+  const doc = await posDraftsCol().findOne({ id });
+  if (!doc) throw new Error('找不到草稿');
+  if (!posCanAccessStore(me, doc.store)) throw new Error('無權操作此店舖草稿');
+  const isOwner = String(doc.createdById) === String(me.id);
+  if (!isOwner && !posCanManageCatalog(me)) throw new Error('只有建立者或主管可刪除此草稿');
+  await posDraftsCol().deleteOne({ id });
+  await appendModuleLog({
+    module: 'pos',
+    time: formatHkDateTime(),
+    action: '刪除收銀草稿',
+    detail: `${doc.store}｜${id}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return { ok: true };
 }
 
 /**
