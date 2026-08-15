@@ -8,18 +8,72 @@
   * { margin:0; padding:0; box-sizing:border-box; font-family:"Microsoft JhengHei","PingFang TC",sans-serif; }
   body { background:#f0f2f5; color:#333; font-size:15px; }
   .hidden { display:none !important; }
-  .container { max-width:1000px; margin:0 auto; padding:12px; }
+  .container { max-width:1100px; margin:0 auto; padding:12px; }
 
-  .app-chrome {
-    position:sticky; top:0; z-index:90;
-    background:#f0f2f5;
+  /* 主殼：精簡頂欄 + 左分組側欄 + 右內容 */
+  #app.app-shell {
+    min-height:100vh; display:flex; flex-direction:column;
+  }
+  .topbar {
+    background:#37474f; color:#fff; padding:10px 16px;
+    display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;
+    position:sticky; top:0; z-index:95;
     box-shadow:0 2px 10px rgba(0,0,0,.12);
   }
-  .topbar { background:#37474f; color:#fff; padding:10px 16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; position:relative; }
   .topbar .brand-wrap { display:flex; align-items:center; gap:10px; flex-wrap:wrap; position:relative; }
   .topbar .brand { font-weight:bold; font-size:15px; }
   .topbar .userinfo { font-size:13px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
   .topbar button { background:#fff; color:#37474f; border:none; padding:5px 12px; border-radius:6px; cursor:pointer; font-size:13px; box-shadow:0 1px 2px rgba(0,0,0,.12); }
+  .sidebar-toggle {
+    display:none; align-items:center; justify-content:center;
+    width:36px; height:36px; padding:0 !important; flex-shrink:0;
+    background:#546e7a !important; color:#fff !important; font-size:18px; line-height:1;
+  }
+  .sidebar-toggle:hover { background:#607d8b !important; }
+  .app-body { display:flex; flex:1; min-height:0; position:relative; }
+  .app-sidebar {
+    width:240px; flex-shrink:0;
+    background:#eceff1; border-right:1px solid #cfd8dc;
+    overflow-y:auto; overflow-x:hidden;
+    position:sticky; top:52px; align-self:flex-start;
+    height:calc(100vh - 52px);
+    z-index:92;
+  }
+  .app-sidebar .side-nav { padding:10px 8px 24px; }
+  .side-group { margin-bottom:12px; }
+  .side-group-title {
+    font-size:11px; font-weight:bold; color:#607d8b;
+    padding:8px 10px 4px; letter-spacing:.02em; text-transform:none;
+  }
+  .side-link {
+    display:block; width:100%; text-align:left;
+    border:none; background:transparent;
+    padding:8px 10px; margin:2px 0; border-radius:8px;
+    cursor:pointer; font-size:13px; color:#37474f; line-height:1.35;
+    box-shadow:none;
+  }
+  .side-link:hover { background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.06); }
+  .side-link.active {
+    background:#37474f; color:#fff; font-weight:600;
+    box-shadow:0 2px 8px rgba(55,71,79,.28);
+  }
+  .side-link.active:hover { background:#455a64; }
+  .app-main { flex:1; min-width:0; background:#f0f2f5; }
+  .sidebar-backdrop {
+    display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:91;
+  }
+  .sidebar-backdrop.show { display:block; }
+
+  @media (max-width:900px){
+    .sidebar-toggle { display:inline-flex; }
+    .app-sidebar {
+      position:fixed; left:0; top:0; bottom:0; height:100vh;
+      transform:translateX(-105%); transition:transform .2s ease;
+      box-shadow:4px 0 24px rgba(0,0,0,.18);
+    }
+    .app-sidebar.open { transform:translateX(0); }
+    body.sidebar-open { overflow:hidden; }
+  }
   .mailbox-btn { display:inline-flex; align-items:center; gap:6px; background:#546e7a !important; color:#fff !important; }
   .mailbox-btn:hover { background:#607d8b !important; }
   .mailbox-btn:active { background:#455a64 !important; }
@@ -150,13 +204,6 @@
     display:flex; align-items:center; gap:8px; margin:0; padding:6px 4px; font-size:13px; color:#333; cursor:pointer;
   }
   .recipient-box label.rc-item input { width:auto; }
-
-  .module-nav { display:flex; gap:6px; background:#eceff1; padding:8px 12px; overflow-x:auto; border-bottom:1px solid #ddd; }
-  .module-nav button { border:none; background:#fff; padding:8px 14px; border-radius:20px; cursor:pointer; white-space:nowrap; font-size:14px; font-weight:600; color:#37474f; box-shadow:0 1px 2px rgba(0,0,0,.06); }
-  .module-nav button.active { background:#37474f; color:#fff; box-shadow:0 2px 8px rgba(55,71,79,.28); }
-  .nav { display:flex; gap:6px; background:#fff; padding:8px 12px; overflow-x:auto; border-bottom:1px solid #ddd; }
-  .nav button { border:none; background:#eef2f7; padding:8px 14px; border-radius:20px; cursor:pointer; white-space:nowrap; font-size:14px; box-shadow:0 1px 2px rgba(0,0,0,.05); }
-  .nav button.active { background:#37474f; color:#fff; box-shadow:0 2px 8px rgba(55,71,79,.28); }
 
   .card { background:#fff; border-radius:10px; padding:16px; margin-bottom:14px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
   .card h2 { font-size:17px; margin-bottom:12px; color:#37474f; }
@@ -375,19 +422,24 @@
 </div>
 
 <!-- ═══════════ 主系統 ═══════════ -->
-<div id="app" class="hidden">
-  <div class="app-chrome">
-    <div class="topbar">
-      <div class="brand-wrap">
-        <div class="brand">🏭 店鋪員工系統</div>
-        <button type="button" class="mailbox-btn" id="mailbox-btn" >信箱通知<span id="mailbox-badge" class="mailbox-badge hidden">0</span></button>
-      </div>
-      <div class="userinfo"><span id="cloud-sync-status" style="font-size:12px;opacity:.9"></span><span id="top-user"></span><button type="button" id="btn-logout">登出</button></div>
+<div id="app" class="app-shell hidden">
+  <div class="topbar">
+    <div class="brand-wrap">
+      <button type="button" class="sidebar-toggle" id="sidebar-toggle" aria-label="開啟選單" title="選單">☰</button>
+      <div class="brand">🏭 店鋪員工系統</div>
+      <button type="button" class="mailbox-btn" id="mailbox-btn">信箱通知<span id="mailbox-badge" class="mailbox-badge hidden">0</span></button>
     </div>
-    <div class="module-nav" id="module-nav"></div>
-    <div class="nav" id="nav"></div>
+    <div class="userinfo"><span id="cloud-sync-status" style="font-size:12px;opacity:.9"></span><span id="top-user"></span><button type="button" id="btn-logout">登出</button></div>
   </div>
-  <div class="container" id="main"></div>
+  <div class="app-body">
+    <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+    <aside class="app-sidebar" id="app-sidebar" aria-label="主選單">
+      <nav class="side-nav" id="side-nav"></nav>
+    </aside>
+    <div class="app-main">
+      <div class="container" id="main"></div>
+    </div>
+  </div>
 </div>
 
 <div id="modal-bg" class="modal-bg hidden"><div class="modal" id="modal-content"></div></div>

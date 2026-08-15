@@ -3578,6 +3578,7 @@ async function logout(){
   currentUser=null;
   pushUrgentPrompted = false;
   closeMailbox();
+  closeAppSidebar();
   refreshMailboxUi();
   document.getElementById('app').classList.add('hidden');
   document.getElementById('page-login').classList.remove('hidden');
@@ -3607,40 +3608,40 @@ function setModule(m){
     listType='rep';
   }
   fCat='全部'; fStatus='全部'; fKw='';
+  closeAppSidebar();
   render();
 }
-function render(){
-  const modNav = document.getElementById('module-nav');
+/** 側欄可見模組（分組標題） */
+function getSidebarModules(){
   const modules = [['daily','📅 每日工作流程']];
   if(!isPersonal()) modules.push(['production','📐 開發及生產']);
   modules.push(['replenishment','🔄 補貨'],['transfer','📦 貨品調動'],['push','📢 推送通知']);
   if(canCreateEmployee()) modules.push(['createStaff','👤 創建員工']);
   modules.push(['settings','⚙️ 個人設置']);
-  // 若目前停在不該看的模組，導回每日
-  if(isPersonal() && currentModule==='production'){
-    currentModule='daily';
-    currentView='dailyToday';
-  }
-  modNav.innerHTML = modules.map(([k,l])=>`<button class="${currentModule===k?'active':''}" data-call="setModule" data-arg0="${escHtml(String(k))}">${l}</button>`).join('');
-  const nav = document.getElementById('nav');
-  let items = [];
-  if(currentModule==='daily'){
-    items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyHistory','歷史記錄'],['dailyRecords','我的記錄']];
+  return modules;
+}
+/** 某模組下的子頁（供分組側欄一次列出） */
+function getSidebarItemsForModule(mod){
+  if(mod==='daily'){
+    const items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyHistory','歷史記錄'],['dailyRecords','我的記錄']];
     if(isAdmin()||isManager()) items.push(['dailyNew','新增突發'],['dailyRecurring','恆常任務'],['dailyOpLogs','操作記錄']);
-  } else if(currentModule==='production'){
-    // 員工：我的工作優先；仍可看首頁與項目列表
-    items = isPersonal()
+    return items;
+  }
+  if(mod==='production'){
+    const items = isPersonal()
       ? [['myTasks','我的工作'],['devList','項目列表'],['home','首頁']]
       : [['home','首頁'],['devList','項目列表'],['myTasks','我的工作']];
     if(isAdmin()) items.push(['addProject','建立項目']);
     if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
-  } else if(currentModule==='push'){
+    return items;
+  }
+  if(mod==='push'){
     const unreadN = myUnreadAnnouncements().length;
     const readN = myActiveAnnouncements().filter(function(n){ const s=myNoticeReader(n); return s&&s.status==='read'; }).length;
     const endedN = announcementList().filter(function(n){ return n.status!=='進行中' && (isNoticeRecipient(n)||String(n.fromUserId)===String(currentUser.id)||isAdmin()||isManager()); }).length;
     const mineN = pushAllSourceList().filter(function(n){ return String(n.fromUserId)===String(currentUser.id)||isAdmin()||isManager(); }).length;
     const allN = pushAllSourceList().length;
-    items = [
+    const items = [
       ['pushAll','所有通知（'+allN+'）'],
       ['pushUnread','未回覆／未閱讀'+(unreadN?'（'+unreadN+'）':'')],
       ['pushRead','已讀取（'+readN+'）'],
@@ -3649,28 +3650,99 @@ function render(){
       ['pushCreate','＋ 新增通知']
     ];
     if(isAdmin()||isManager()) items.push(['pushLogs','操作記錄']);
-  } else if(currentModule==='createStaff'){
-    items = [];
-  } else if(currentModule==='settings'){
-    items = [['settings','更改密碼']];
-  } else if(currentModule==='transfer'){
-    items = [
+    return items;
+  }
+  if(mod==='createStaff') return [['createStaff','創建員工']];
+  if(mod==='settings') return [['settings','更改密碼']];
+  if(mod==='transfer'){
+    return [
       ['transferInventory','庫存查詢'],
       ['transferHistory','調動記錄'],
       ['transferStockLog','庫存校正記錄'],
       ['transferProducts','貨品'],
       ['transferProductLog','主檔變更記錄']
     ];
-  } else {
-    items = isPersonal()
-      ? [['myTasks','我的工作'],['repList','項目列表'],['home','首頁']]
-      : [['home','首頁'],['repList','項目列表'],['myTasks','我的工作']];
-    if(isAdmin()) items.push(['addProject','建立項目']);
-    if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
   }
-  const subActive = (k)=> currentView===k || (currentView==='project' && ((k==='devList'&&currentModule==='production')||(k==='repList'&&currentModule==='replenishment')));
-  nav.innerHTML = items.map(([k,l])=>`<button class="${subActive(k)?'active':''}" data-call="go" data-arg0="${escHtml(String(k))}">${l}</button>`).join('');
-  nav.style.display = items.length ? '' : 'none';
+  // replenishment
+  const items = isPersonal()
+    ? [['myTasks','我的工作'],['repList','項目列表'],['home','首頁']]
+    : [['home','首頁'],['repList','項目列表'],['myTasks','我的工作']];
+  if(isAdmin()) items.push(['addProject','建立項目']);
+  if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
+  return items;
+}
+function isSidebarItemActive(mod, viewKey){
+  if(currentModule!==mod) return false;
+  if(currentView===viewKey) return true;
+  if(currentView==='project'){
+    if(viewKey==='devList' && mod==='production') return true;
+    if(viewKey==='repList' && mod==='replenishment') return true;
+  }
+  if(currentView==='dailyUnit' && viewKey==='dailyProgress') return true;
+  if((currentView==='pushDetail' || currentView==='pushStats') && viewKey==='pushAll') return true;
+  if(currentView==='transferApply' && viewKey==='transferInventory') return true;
+  return false;
+}
+function closeAppSidebar(){
+  const side = document.getElementById('app-sidebar');
+  const backdrop = document.getElementById('sidebar-backdrop');
+  if(side) side.classList.remove('open');
+  if(backdrop) backdrop.classList.remove('show');
+  document.body.classList.remove('sidebar-open');
+}
+function openAppSidebar(){
+  const side = document.getElementById('app-sidebar');
+  const backdrop = document.getElementById('sidebar-backdrop');
+  if(side) side.classList.add('open');
+  if(backdrop) backdrop.classList.add('show');
+  document.body.classList.add('sidebar-open');
+}
+function toggleAppSidebar(){
+  const side = document.getElementById('app-sidebar');
+  if(side && side.classList.contains('open')) closeAppSidebar();
+  else openAppSidebar();
+}
+function bindAppSidebarChrome(){
+  const toggle = document.getElementById('sidebar-toggle');
+  const backdrop = document.getElementById('sidebar-backdrop');
+  if(toggle && toggle.dataset.bound!=='1'){
+    toggle.dataset.bound = '1';
+    toggle.addEventListener('click', function(e){
+      e.preventDefault();
+      toggleAppSidebar();
+    });
+  }
+  if(backdrop && backdrop.dataset.bound!=='1'){
+    backdrop.dataset.bound = '1';
+    backdrop.addEventListener('click', function(){ closeAppSidebar(); });
+  }
+}
+function render(){
+  bindAppSidebarChrome();
+  // 若目前停在不該看的模組，導回每日
+  if(isPersonal() && currentModule==='production'){
+    currentModule='daily';
+    currentView='dailyToday';
+  }
+  const sideNav = document.getElementById('side-nav');
+  if(sideNav){
+    const modules = getSidebarModules();
+    sideNav.innerHTML = modules.map(function(pair){
+      const mod = pair[0], label = pair[1];
+      const items = getSidebarItemsForModule(mod);
+      const links = items.map(function(it){
+        const k = it[0], l = it[1];
+        const active = isSidebarItemActive(mod, k);
+        // 共用 view（home/myTasks…）需先切模組再導頁
+        const needsMod = (k==='home'||k==='myTasks'||k==='sysLogs'||k==='addProject');
+        if(needsMod){
+          return '<button type="button" class="side-link'+(active?' active':'')+'" data-call="goInModule" data-arg0="'+escHtml(String(mod))+'" data-arg1="'+escHtml(String(k))+'">'+l+'</button>';
+        }
+        return '<button type="button" class="side-link'+(active?' active':'')+'" data-call="go" data-arg0="'+escHtml(String(k))+'">'+l+'</button>';
+      }).join('');
+      return '<div class="side-group"><div class="side-group-title">'+label+'</div>'+links+'</div>';
+    }).join('');
+  }
   const views = {
     home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : vHomeFiltered('dev'),
     devList:()=>vList('dev'), repList:()=>vList('rep'), myTasks:vMyTasks, addProject:vAddProject, sysLogs:vSysLogs, project:vProject,
@@ -3703,6 +3775,16 @@ function render(){
   refreshMailboxUi();
   refreshCloudSyncStatus();
 }
+function goInModule(mod, v){
+  if(mod==='production' && isPersonal()){
+    alert2('員工賬戶無法使用「開發及生產」。');
+    return;
+  }
+  currentModule = mod;
+  if(mod==='production') listType='dev';
+  if(mod==='replenishment') listType='rep';
+  go(v);
+}
 function go(v){
   currentView=v; currentProject=null;
   if(v==='devList'){
@@ -3714,7 +3796,9 @@ function go(v){
   if(v==='createStaff'){ currentModule='createStaff'; }
   if(v==='settings'){ currentModule='settings'; }
   if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProducts' || v==='transferProductLog'){ currentModule='transfer'; }
+  if(v==='dailyToday' || v==='dailyProgress' || v==='dailyUnit' || v==='dailyHistory' || v==='dailyRecords' || v==='dailyNew' || v==='dailyRecurring' || v==='dailyOpLogs'){ currentModule='daily'; }
   fCat='全部'; fStatus='全部'; fKw='';
+  closeAppSidebar();
   render();
 }
 function vHomeFiltered(type){
