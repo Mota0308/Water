@@ -17,6 +17,7 @@ var posAccountBalance = 0;
 var posPaymentMethod = 'cash';
 var posReceiptFocusId = '';
 var posTxKw = '';
+var posReturnMode = false;
 var posCloud = {
   products: [],
   transactions: [],
@@ -350,7 +351,74 @@ async function posCheckout() {
 }
 function posOpenReceipt(id) {
   posReceiptFocusId = String(id || '');
+  posReturnMode = false;
   if (typeof go === 'function') go('posReceipt');
+}
+function posToggleReturnMode() {
+  posReturnMode = !posReturnMode;
+  if (typeof render === 'function') render();
+}
+function posCancelReturnMode() {
+  posReturnMode = false;
+  if (typeof render === 'function') render();
+}
+function posTxStatusLabel(tx) {
+  if (!tx) return '—';
+  if (tx.status === 'full_return' || String(tx.orderStatus || '').indexOf('全部退貨') >= 0) return '全部退貨';
+  if (tx.status === 'partial_return' || String(tx.orderStatus || '').indexOf('部分退貨') >= 0) return '部分退貨';
+  return '已完成';
+}
+function posLineRemainQty(it) {
+  return Math.max(0, (Number(it.qty) || 0) - (Number(it.returnedQty) || 0));
+}
+async function posSubmitReturn(txId) {
+  if (!posCloud.canManage) {
+    alert2('只有管理員／主管可退貨。');
+    return;
+  }
+  var items = [];
+  var inputs = document.querySelectorAll('[data-pos-return-qty]');
+  for (var i = 0; i < inputs.length; i++) {
+    var el = inputs[i];
+    var qty = parseInt(el.value, 10);
+    if (!qty || qty <= 0) continue;
+    items.push({ productId: el.getAttribute('data-pos-return-qty'), qty: qty });
+  }
+  if (!items.length) {
+    alert2('請至少輸入一項退貨數量。');
+    return;
+  }
+  var methodEl = document.getElementById('pos-return-method');
+  var reasonEl = document.getElementById('pos-return-reason');
+  var reason = reasonEl ? String(reasonEl.value || '').trim() : '';
+  if (!reason) {
+    alert2('請填寫退貨原因。');
+    return;
+  }
+  if (!confirm('確定辦理退貨？將回補調動庫存並記錄退款方式（不作真實扣款）。')) return;
+  try {
+    var res = await apiFetch('/api/pos/transactions/' + encodeURIComponent(txId) + '/return', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: items,
+        refundMethod: methodEl ? methodEl.value : 'cash',
+        reason: reason
+      })
+    });
+    var tx = res && res.transaction;
+    if (tx && tx.id) posReceiptFocusId = tx.id;
+    posReturnMode = false;
+    posInvalidateCloud();
+    await posRefreshCloud(true);
+    alert2('退貨完成。已回補調動庫存。');
+    if (typeof render === 'function') render();
+  } catch (e) {
+    alert2('退貨失敗：' + (e.message || e));
+    posInvalidateCloud();
+    await posRefreshCloud(true);
+    if (typeof render === 'function') render();
+  }
 }
 async function posResetDemoData() {
   if (!posCloud.canReset && !(typeof isAdmin === 'function' && isAdmin())) {
@@ -611,6 +679,7 @@ function vPosTransactions() {
       '<td>' + posEsc(tx.store) + '店</td>' +
       '<td>' + posEsc(tx.paymentMethodName || '') + '</td>' +
       '<td>$' + posMoney(tx.orderTotal) + '</td>' +
+      '<td>' + posEsc(posTxStatusLabel(tx)) + '</td>' +
       '<td>' + posEsc(tx.staffName || '—') + '</td>' +
       '<td><button type="button" class="btn sm" data-call="posOpenReceipt" data-arg0="' + posEsc(tx.id) + '">收據</button></td></tr>';
   }).join('');
@@ -621,17 +690,23 @@ function vPosTransactions() {
     '<button type="button" class="btn gray sm" data-call="posForceReload">重新整理</button>' +
     '<button type="button" class="btn green sm" data-call="go" data-arg0="posCashier">＋ 新收銀</button></div>' +
     '<div class="table-wrap" style="margin-top:12px"><table><thead><tr>' +
-    '<th>時間</th><th>訂單編號</th><th>店舖</th><th>支付</th><th>總計</th><th>員工</th><th></th>' +
+    '<th>時間</th><th>訂單編號</th><th>店舖</th><th>支付</th><th>總計</th><th>狀態</th><th>員工</th><th></th>' +
     '</tr></thead><tbody>' +
-    (rows || '<tr><td colspan="7" style="color:#888;text-align:center">尚無交易</td></tr>') +
+    (rows || '<tr><td colspan="8" style="color:#888;text-align:center">尚無交易</td></tr>') +
     '</tbody></table></div></div>';
 }
 function posReceiptHtml(tx) {
   if (!tx) return '<div class="card"><h2>收據</h2><p style="color:#888">找不到此收據。</p></div>';
+  var canReturn = !!posCloud.canManage && posTxStatusLabel(tx) !== '全部退貨';
   var items = (tx.items || []).map(function (it) {
+    var returned = Number(it.returnedQty) || 0;
+    var remain = posLineRemainQty(it);
+    var note = returned > 0
+      ? '<div style="font-size:12px;color:#c62828">已退 ' + returned + '／原 ' + it.qty + (remain > 0 ? '（尚可退 ' + remain + '）' : '') + '</div>'
+      : '';
     return '<tr>' +
       '<td style="text-align:center">' + posEsc(String(it.qty)) + '</td>' +
-      '<td>' + posEsc(it.name) + ' (' + posEsc(it.sku) + ')<div style="font-size:12px;color:#666">- 尺寸: ' + posEsc(it.size) + '</div></td>' +
+      '<td>' + posEsc(it.name) + ' (' + posEsc(it.sku) + ')<div style="font-size:12px;color:#666">- 尺寸: ' + posEsc(it.size) + '</div>' + note + '</td>' +
       '<td style="text-align:right">' + posMoney(it.lineTotal) + '</td></tr>';
   }).join('');
   function metaRow(label, value) {
@@ -643,6 +718,53 @@ function posReceiptHtml(tx) {
     return '<div style="display:flex;justify-content:space-between;gap:12px;padding:4px 0;font-size:' + (strong ? '15px' : '13px') + ';' + (strong ? 'font-weight:bold' : '') + '">' +
       '<span>' + posEsc(label) + '</span><span>$' + posMoney(value) + '</span></div>';
   }
+  var returnsHtml = '';
+  if (tx.returns && tx.returns.length) {
+    returnsHtml = '<div style="margin-top:14px;border-top:1px dashed #bbb;padding-top:10px">' +
+      '<div style="font-size:13px;font-weight:bold;margin-bottom:6px">退貨紀錄</div>' +
+      tx.returns.map(function (r) {
+        var lines = (r.items || []).map(function (li) {
+          return posEsc(li.name) + ' ×' + li.qty + '（$' + posMoney(li.lineRefund) + '）';
+        }).join('；');
+        return '<div style="font-size:12px;line-height:1.55;margin-bottom:8px;padding:8px;background:#fafafa;border:1px solid #eee">' +
+          '<div>' + posEsc(r.at || '') + '｜' + posEsc(r.byName || '') + '</div>' +
+          '<div>退款 $' + posMoney(r.refundAmount) + '（' + posEsc(r.refundMethodName || '') + '）</div>' +
+          '<div>原因：' + posEsc(r.reason || '') + '</div>' +
+          '<div>' + lines + '</div></div>';
+      }).join('') + '</div>';
+  }
+  var returnPanel = '';
+  if (canReturn && posReturnMode) {
+    var returnRows = (tx.items || []).map(function (it) {
+      var remain = posLineRemainQty(it);
+      if (remain <= 0) {
+        return '<tr><td>' + posEsc(it.name) + '</td><td colspan="2" style="color:#888">已全部退回</td></tr>';
+      }
+      return '<tr>' +
+        '<td>' + posEsc(it.name) + '<div style="font-size:11px;color:#666">' + posEsc(it.size) + '｜$' + posMoney(it.unitPrice) + '</div></td>' +
+        '<td style="white-space:nowrap">可退 ' + remain + '</td>' +
+        '<td><input type="number" min="0" max="' + remain + '" step="1" value="0" ' +
+        'data-pos-return-qty="' + posEsc(it.productId) + '" style="width:72px"></td></tr>';
+    }).join('');
+    var payOpts = POS_PAYMENTS.map(function (p) {
+      return '<option value="' + posEsc(p.id) + '"' + (p.id === (tx.paymentMethod || 'cash') ? ' selected' : '') + '>' + posEsc(p.name) + '</option>';
+    }).join('');
+    returnPanel = '<div class="card" style="max-width:520px;margin:14px auto 0;border:1px solid #ef9a9a">' +
+      '<h3 style="margin-top:0">辦理退貨</h3>' +
+      '<p style="font-size:12px;color:#666;margin:0 0 10px">按原單價計算退款金額；庫存回補至 <b>' + posEsc(tx.store) + '</b> 店調動庫存，並寫入「POS 退貨」記錄。</p>' +
+      '<div class="table-wrap"><table><thead><tr><th>品項</th><th>剩餘</th><th>退貨數</th></tr></thead><tbody>' +
+      returnRows + '</tbody></table></div>' +
+      '<label>退款方式</label><select id="pos-return-method">' + payOpts + '</select>' +
+      '<label>退貨原因＊</label><input type="text" id="pos-return-reason" placeholder="例如：客人不滿／瑕疵">' +
+      '<div class="actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">' +
+      '<button type="button" class="btn red sm" data-call="posSubmitReturn" data-arg0="' + posEsc(tx.id) + '">確認退貨</button>' +
+      '<button type="button" class="btn gray sm" data-call="posCancelReturnMode">取消</button></div></div>';
+  }
+  var returnBtn = canReturn
+    ? (posReturnMode
+      ? ''
+      : '<button type="button" class="btn orange sm" data-call="posToggleReturnMode">辦理退貨</button>')
+    : '';
   return '<div class="card" style="max-width:520px;margin:0 auto">' +
     '<div style="text-align:center;margin-bottom:12px">' +
     '<div style="font-size:18px;font-weight:bold;letter-spacing:.04em">Water Sports S.H.</div>' +
@@ -662,7 +784,7 @@ function posReceiptHtml(tx) {
     (tx.memberName ? metaRow('會員', tx.memberName + (tx.memberPhone ? '｜' + tx.memberPhone : '')) : '') +
     '</div>' +
     '<div style="font-size:11px;color:#777;line-height:1.55;margin-bottom:10px;padding-bottom:10px;border-bottom:1px dashed #bbb">' +
-    '• 此單為雲端電子收據（對齊門市熱感單格式）<br>• 顯示價格為折後價<br>• 一般貨品 7 日換貨；特價品不設換貨<br>• 不設退款</div>' +
+    '• 此單為雲端電子收據（對齊門市熱感單格式）<br>• 顯示價格為折後價<br>• 一般貨品 7 日換貨；特價品不設換貨<br>• 門市政策以店規為準；系統退貨由主管操作</div>' +
     '<table style="width:100%;font-size:13px;margin-bottom:10px"><thead><tr>' +
     '<th style="width:48px;text-align:center">Qty</th><th>商品名稱</th><th style="text-align:right;width:80px">總計(HKD)</th>' +
     '</tr></thead><tbody>' + items + '</tbody></table>' +
@@ -673,9 +795,12 @@ function posReceiptHtml(tx) {
     sumRow('訂單總計', tx.orderTotal, true) +
     sumRow('已付金額', tx.paid, true) +
     '</div>' +
+    returnsHtml +
     '<div class="actions" style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' +
     '<button type="button" class="btn gray sm" data-call="go" data-arg0="posTransactions">← 交易記錄</button>' +
-    '<button type="button" class="btn green sm" data-call="go" data-arg0="posCashier">繼續收銀</button></div></div>';
+    returnBtn +
+    '<button type="button" class="btn green sm" data-call="go" data-arg0="posCashier">繼續收銀</button></div></div>' +
+    returnPanel;
 }
 function vPosReceipt() {
   posKickLoad();

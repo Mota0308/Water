@@ -52,6 +52,7 @@ import {
   getPosTransaction,
   adjustPosProduct,
   checkoutPos,
+  returnPosTransaction,
   resetPosDemo,
   listPosCatalogOptions,
   addPosSellable,
@@ -573,6 +574,16 @@ app.get('/api/pos/transactions', requireAuth, async (req, res) => {
 app.get('/api/pos/transactions/:id', requireAuth, async (req, res) => {
   try {
     res.json({ transaction: await getPosTransaction(req.user, req.params.id) });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/transactions/:id/return', requireAuth, async (req, res) => {
+  try {
+    const transaction = await returnPosTransaction(req.user, req.params.id, req.body || {});
+    res.json({ transaction });
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });

@@ -2855,7 +2855,9 @@ export async function checkoutPos(user, payload = {}) {
     paymentMethodName: paymentNames[paymentMethod],
     paymentStatus: '已付款',
     orderStatus: `訂單已完成（${store}店）`,
+    status: 'completed',
     items,
+    returns: [],
     subtotal,
     collected: 0,
     accountBalance,
@@ -2909,6 +2911,164 @@ export async function checkoutPos(user, payload = {}) {
     user: me.name || me.login,
   });
   return stripPosTransaction(tx);
+}
+
+export async function returnPosTransaction(user, txId, payload = {}) {
+  await connectMongo();
+  await ensurePosReady();
+  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可退貨');
+  const me = publicUser(user);
+  const id = String(txId || '');
+  const tx = await posTransactionsCol().findOne({ id });
+  if (!tx) throw new Error('找不到交易');
+  if (!posIsSystemAdmin(me)) {
+    const stores = posUserStores(me);
+    if (stores.length && !stores.includes(tx.store)) throw new Error('無權退此交易');
+  }
+  if (tx.status === 'full_return' || String(tx.orderStatus || '').indexOf('全部退貨') >= 0) {
+    throw new Error('此單已全部退貨');
+  }
+  const reason = String(payload.reason || '').trim();
+  if (!reason) throw new Error('請填寫退貨原因');
+  const refundMethod = String(payload.refundMethod || 'cash');
+  const refundNames = { cash: '現金', credit_card: '信用卡', octopus: '八達通', fps: 'FPS' };
+  if (!refundNames[refundMethod]) throw new Error('退款方式無效');
+  const reqItems = Array.isArray(payload.items) ? payload.items : [];
+  if (!reqItems.length) throw new Error('請選擇退貨品項');
+
+  const items = Array.isArray(tx.items) ? tx.items.map((it) => ({ ...it })) : [];
+  const returnLines = [];
+  for (const raw of reqItems) {
+    const productId = String(raw.productId || '');
+    const qty = Number(raw.qty);
+    if (!productId || !Number.isInteger(qty) || qty <= 0) throw new Error('退貨數量無效');
+    const line = items.find((it) => String(it.productId) === productId);
+    if (!line) throw new Error('找不到品項：' + productId);
+    const already = Number(line.returnedQty) || 0;
+    const remain = Number(line.qty) - already;
+    if (qty > remain) throw new Error(`${line.name} 可退數量僅餘 ${remain}`);
+    if (!line.transferProductId) throw new Error(`${line.name} 缺少調動貨品對應，無法回庫`);
+    returnLines.push({ line, qty, productId });
+  }
+
+  const store = tx.store;
+  const restocked = [];
+  try {
+    for (const rl of returnLines) {
+      const before = await getInventoryQty(rl.line.transferProductId, rl.line.size, store);
+      await adjustInventoryQty(rl.line.transferProductId, rl.line.size, store, rl.qty);
+      const afterQty = await getInventoryQty(rl.line.transferProductId, rl.line.size, store);
+      restocked.push({ ...rl, before, after: afterQty });
+    }
+  } catch (e) {
+    for (const r of restocked) {
+      try {
+        await adjustInventoryQty(r.line.transferProductId, r.line.size, store, -r.qty);
+      } catch (_) {}
+    }
+    throw e;
+  }
+
+  let refundAmount = 0;
+  for (const rl of returnLines) {
+    const line = items.find((it) => String(it.productId) === rl.productId);
+    line.returnedQty = (Number(line.returnedQty) || 0) + rl.qty;
+    refundAmount += (Number(line.unitPrice) || 0) * rl.qty;
+  }
+  refundAmount = Math.round(refundAmount * 100) / 100;
+
+  const allReturned = items.every((it) => (Number(it.returnedQty) || 0) >= Number(it.qty));
+  const status = allReturned ? 'full_return' : 'partial_return';
+  const orderStatus = allReturned
+    ? `全部退貨（${store}店）`
+    : `部分退貨（${store}店）`;
+
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const returnRec = {
+    id: `ret_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+    at: time,
+    atMs: now.getTime(),
+    byId: String(me.id),
+    byName: me.name || me.login || '',
+    reason,
+    refundMethod,
+    refundMethodName: refundNames[refundMethod],
+    refundAmount,
+    items: returnLines.map((rl) => ({
+      productId: rl.productId,
+      transferProductId: rl.line.transferProductId,
+      name: rl.line.name,
+      sku: rl.line.sku,
+      size: rl.line.size,
+      qty: rl.qty,
+      unitPrice: rl.line.unitPrice,
+      lineRefund: Math.round((Number(rl.line.unitPrice) || 0) * rl.qty * 100) / 100,
+    })),
+  };
+
+  const returns = Array.isArray(tx.returns) ? tx.returns.slice() : [];
+  returns.push(returnRec);
+
+  await posTransactionsCol().updateOne(
+    { id },
+    {
+      $set: {
+        items,
+        returns,
+        status,
+        orderStatus,
+        paymentStatus: allReturned ? '已退款' : '部分退款',
+        updatedAt: time,
+        updatedAtMs: now.getTime(),
+      },
+    }
+  );
+
+  const actorName = me.name || me.login || me.id;
+  for (const r of restocked) {
+    const before = {};
+    const after = {};
+    for (const s of TRANSFER_STORES) {
+      const q = await getInventoryQty(r.line.transferProductId, r.line.size, s);
+      after[s] = q;
+      before[s] = s === store ? r.before : q;
+    }
+    const adjId = 'AD' + String(Date.now()) + '-' + crypto.randomBytes(2).toString('hex');
+    await transferStockAdjustmentsCol().insertOne({
+      _id: adjId,
+      id: adjId,
+      type: 'pos_return',
+      reason: 'POS 退貨',
+      productId: r.line.transferProductId,
+      productName: r.line.name || '',
+      size: r.line.size,
+      before,
+      after,
+      store,
+      qtyReturned: r.qty,
+      posTransactionId: id,
+      posOrderNo: tx.orderNo,
+      returnId: returnRec.id,
+      createdAt: time,
+      createdAtMs: Date.now(),
+      createdBy: String(me.id),
+      createdByName: actorName,
+    });
+  }
+
+  await appendModuleLog({
+    module: 'pos',
+    time,
+    action: 'POS 退貨',
+    detail: `${tx.orderNo}｜${store}｜退 $${refundAmount.toFixed(2)}｜${reason}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+
+  const updated = await posTransactionsCol().findOne({ id });
+  return stripPosTransaction(updated);
 }
 
 export async function resetPosDemo(user) {
