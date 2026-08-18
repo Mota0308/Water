@@ -129,13 +129,24 @@ function looksLikeMongoObjectId(id) {
   return /^[a-fA-F0-9]{24}$/.test(String(id || ''));
 }
 
+function preferDriveFileStorage() {
+  return String(process.env.FILE_STORAGE || '').trim().toLowerCase() === 'google-drive';
+}
+
+function resolveFileStorageLabel() {
+  if (preferDriveFileStorage() && driveFolderConfigured()) return 'google-drive';
+  if (mongoConfigured()) return 'mongodb-gridfs';
+  if (driveFolderConfigured()) return 'google-drive';
+  return null;
+}
+
 async function uploadAppFile(opts) {
-  if (driveFolderConfigured()) {
+  // 暫時預設存 MongoDB；Railway 設 FILE_STORAGE=google-drive 才優先寫 Drive
+  if (preferDriveFileStorage() && driveFolderConfigured()) {
     try {
       const saved = await uploadFileDrive(opts);
       return { ...saved, storage: 'google-drive' };
     } catch (e) {
-      // 個人 My Drive + 新版服務帳戶無配額：回退 Mongo，避免上載完全失敗
       if (isDriveStorageQuotaError(e) && mongoConfigured()) {
         console.warn('[files] Drive storage quota blocked SA upload; falling back to Mongo GridFS:', e.message || e);
         const saved = await uploadFileMongo(opts);
@@ -148,7 +159,11 @@ async function uploadAppFile(opts) {
     const saved = await uploadFileMongo(opts);
     return { ...saved, storage: 'mongodb' };
   }
-  throw new Error('未設定檔案儲存：請設定 Google Drive（GOOGLE_DRIVE_FOLDER_ID）或 MongoDB');
+  if (driveFolderConfigured()) {
+    const saved = await uploadFileDrive(opts);
+    return { ...saved, storage: 'google-drive' };
+  }
+  throw new Error('未設定檔案儲存：請設定 MongoDB（MONGODB_URI）或 Google Drive');
 }
 
 async function downloadAppFile(fileId) {
@@ -274,7 +289,7 @@ app.get('/api/health', async (req, res) => {
     mongoConfigured: mongoConfigured(),
     driveConfigured: driveConfigured(),
     storage: mongoConfigured() ? 'mongodb' : null,
-    fileStorage: driveFolderConfigured() ? 'google-drive' : mongoConfigured() ? 'mongodb-gridfs' : null,
+    fileStorage: resolveFileStorageLabel(),
     drive: driveConfigured() ? 'google-drive' : null,
     db: process.env.MONGODB_DB || 'store_employee',
     auth: true,
@@ -1095,11 +1110,11 @@ app.post('/api/files', requireAuth, upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'file field required' });
     if (!driveFolderConfigured() && !mongoConfigured()) {
       return res.status(503).json({
-        error: '檔案儲存未設定。請在 Railway 設定 GOOGLE_SERVICE_ACCOUNT_JSON 與 GOOGLE_DRIVE_FOLDER_ID。',
+        error: '檔案儲存未設定。請在 Railway 設定 MONGODB_URI（目前預設存 MongoDB）。',
       });
     }
-    if (!driveFolderConfigured()) {
-      console.warn('[files] Drive folder not configured; falling back to Mongo GridFS');
+    if (!mongoConfigured() && driveFolderConfigured()) {
+      console.warn('[files] MongoDB not configured; using Google Drive');
     }
     const saved = await uploadAppFile({
       buffer: req.file.buffer,

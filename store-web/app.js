@@ -4625,18 +4625,51 @@ async function doUpload(pid, idx){
 }
 
 /* ── 文件分頁 ── */
+function isProjectImageFile(f){
+  if(typeof dailyIsImageFile==='function') return dailyIsImageFile(f, f&&f.name);
+  var mime=String((f&&f.mimeType)||'').toLowerCase();
+  if(mime.indexOf('image/')===0) return true;
+  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(String((f&&f.name)||''));
+}
+function previewProjectFileCached(key){
+  var f=window._projectPreviewFiles && window._projectPreviewFiles[key];
+  if(!f){ alert2('找不到此檔案。'); return; }
+  if(typeof dailyShowAttachPreview==='function') dailyShowAttachPreview(f, {});
+  else {
+    var href=fileHref(f);
+    if(href && href!=='#') window.open(href, '_blank');
+  }
+}
 function tabFiles(p){
   const all = [];
   (p.files||[]).forEach(f=>all.push({...ensureFilePayload(f), stage:'建立項目'}));
   p.stages.forEach(s=>(s.files||[]).forEach(f=>all.push({...ensureFilePayload(f), stage:s.name})));
-  return `<div class="info-banner">📁 同一份文件可有多個版本，舊版本會保留，系統標示最新版本。點擊檔名或下載可開啟／儲存。建立項目時的附件標示為「建立項目」；工作流程／今日工作上傳的附件依階段顯示。</div>
-    ${all.length? all.map(f=>`<div class="file-item">
-      <span>📎</span>${fileLinkHtml(f, f.name)}
-      <span class="tag s-pending">${f.stage}</span><span class="tag dept">${f.ver||''}</span>
-      ${f.latest?'<span class="latest-badge">最新版本</span>':''}
-      <span class="fmeta">上載人：${userName(f.by)}｜${f.time}</span>
-      <a class="btn gray sm" style="display:inline-block;text-decoration:none;color:#fff" href="${fileHref(f)}" download="${(f.name||'file').replace(/"/g,'')}" target="_blank" rel="noopener">下載</a>
-    </div>`).join('') : '<p style="color:#888">此項目暫無文件。</p>'}`;
+  if(!window._projectPreviewFiles) window._projectPreviewFiles={};
+  return `<div class="info-banner">📁 同一份文件可有多個版本，舊版本會保留，系統標示最新版本。點擊檔名或縮圖可開啟／預覽。建立項目時的附件標示為「建立項目」；工作流程／今日工作上傳的附件依階段顯示。</div>
+    ${all.length? all.map((f, idx)=>{
+      const href = fileHref(f);
+      const isImg = isProjectImageFile(f);
+      const safeName = String(f.name||'file').replace(/"/g,'');
+      let thumbHtml = '<span class="file-icon" aria-hidden="true">📎</span>';
+      if(isImg && href && href!=='#'){
+        const key='pf_'+String(f.driveFileId||f.name||'x')+'_'+idx;
+        window._projectPreviewFiles[key]=f;
+        const safeSrc = String(href).replace(/"/g,'&quot;');
+        thumbHtml = `<a class="file-thumb-wrap" href="#" data-call="previewProjectFileCached" data-arg0="${escHtml(key)}" title="預覽圖片"><img class="file-thumb" src="${safeSrc}" alt="${escHtml(f.name||'圖片')}" loading="lazy"></a>`;
+      }
+      return `<div class="file-item${isImg?' is-image':''}">
+      ${thumbHtml}
+      <div class="file-item-main">
+        ${fileLinkHtml(f, f.name)}
+        <div class="file-item-tags">
+          <span class="tag s-pending">${f.stage}</span><span class="tag dept">${f.ver||''}</span>
+          ${f.latest?'<span class="latest-badge">最新版本</span>':''}
+        </div>
+        <span class="fmeta">上載人：${userName(f.by)}｜${f.time}</span>
+      </div>
+      <a class="btn gray sm" style="display:inline-block;text-decoration:none;color:#fff" href="${href}" download="${safeName}" target="_blank" rel="noopener">下載</a>
+    </div>`;
+    }).join('') : '<p style="color:#888">此項目暫無文件。</p>'}`;
 }
 
 /* ── 留言板分頁 ── */
