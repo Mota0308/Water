@@ -20,8 +20,8 @@ import {
   endNotification,
   toggleNotificationPin,
   filterNotificationForViewerWithRole,
-  uploadFile,
-  downloadFile,
+  uploadFile as uploadFileMongo,
+  downloadFile as downloadFileMongo,
   loginWithPassword,
   changeOwnPassword,
   getSessionUser,
@@ -79,7 +79,13 @@ import {
   listMemberPoints,
   adjustMemberPoints,
 } from './mongo.js';
-import { driveConfigured, exportUsersToDrive, getDriveExportStatus } from './drive.js';
+import {
+  driveConfigured,
+  exportUsersToDrive,
+  getDriveExportStatus,
+  uploadFile as uploadFileDrive,
+  downloadFile as downloadFileDrive,
+} from './drive.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -111,6 +117,56 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: Number(process.env.MAX_UPLOAD_MB || 15) * 1024 * 1024 },
 });
+
+function driveFolderConfigured() {
+  return !!(
+    driveConfigured() && String(process.env.GOOGLE_DRIVE_FOLDER_ID || '').trim()
+  );
+}
+
+function looksLikeMongoObjectId(id) {
+  return /^[a-fA-F0-9]{24}$/.test(String(id || ''));
+}
+
+async function uploadAppFile(opts) {
+  if (driveFolderConfigured()) {
+    return uploadFileDrive(opts);
+  }
+  if (mongoConfigured()) {
+    return uploadFileMongo(opts);
+  }
+  throw new Error('未設定檔案儲存：請設定 Google Drive（GOOGLE_DRIVE_FOLDER_ID）或 MongoDB');
+}
+
+async function downloadAppFile(fileId) {
+  const id = String(fileId || '').trim();
+  if (!id) throw new Error('File not found');
+
+  // 舊附件：Mongo GridFS ObjectId
+  if (looksLikeMongoObjectId(id) && mongoConfigured()) {
+    try {
+      return await downloadFileMongo(id);
+    } catch (_) {
+      /* fall through to Drive */
+    }
+  }
+
+  if (driveConfigured()) {
+    try {
+      return await downloadFileDrive(id);
+    } catch (e) {
+      if (looksLikeMongoObjectId(id) && mongoConfigured()) {
+        return downloadFileMongo(id);
+      }
+      throw e;
+    }
+  }
+
+  if (mongoConfigured()) {
+    return downloadFileMongo(id);
+  }
+  throw new Error('File not found');
+}
 
 const app = express();
 app.use(
@@ -205,6 +261,7 @@ app.get('/api/health', async (req, res) => {
     mongoConfigured: mongoConfigured(),
     driveConfigured: driveConfigured(),
     storage: mongoConfigured() ? 'mongodb' : null,
+    fileStorage: driveFolderConfigured() ? 'google-drive' : mongoConfigured() ? 'mongodb-gridfs' : null,
     drive: driveConfigured() ? 'google-drive' : null,
     db: process.env.MONGODB_DB || 'store_employee',
     auth: true,
@@ -1023,12 +1080,23 @@ app.post('/api/notifications/:id/pin', requireAuth, async (req, res) => {
 app.post('/api/files', requireAuth, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'file field required' });
-    const saved = await uploadFile({
+    if (!driveFolderConfigured() && !mongoConfigured()) {
+      return res.status(503).json({
+        error: '檔案儲存未設定。請在 Railway 設定 GOOGLE_SERVICE_ACCOUNT_JSON 與 GOOGLE_DRIVE_FOLDER_ID。',
+      });
+    }
+    if (!driveFolderConfigured()) {
+      console.warn('[files] Drive folder not configured; falling back to Mongo GridFS');
+    }
+    const saved = await uploadAppFile({
       buffer: req.file.buffer,
       filename: req.file.originalname,
       mimeType: req.file.mimetype,
     });
-    res.json(saved);
+    res.json({
+      ...saved,
+      storage: driveFolderConfigured() ? 'google-drive' : 'mongodb',
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: String(e.message || e) });
@@ -1037,7 +1105,7 @@ app.post('/api/files', requireAuth, upload.single('file'), async (req, res) => {
 
 app.get('/api/files/:id', requireAuth, async (req, res) => {
   try {
-    const { stream, name, mimeType } = await downloadFile(req.params.id);
+    const { stream, name, mimeType } = await downloadAppFile(req.params.id);
     res.setHeader('Content-Type', mimeType);
     res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`);
     stream.on('error', (err) => {
