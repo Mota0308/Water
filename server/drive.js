@@ -143,11 +143,13 @@ function formatDriveError(err) {
   const reason = err?.response?.data?.error?.errors?.[0]?.reason || err?.errors?.[0]?.reason || '';
   if (
     reason === 'storageQuotaExceeded' ||
-    /Service Accounts do not have storage quota/i.test(apiMsg)
+    /Service Accounts do not have storage quota/i.test(apiMsg) ||
+    /storageQuotaExceeded/i.test(apiMsg)
   ) {
     return (
-      'Google 服務帳戶無法在「我的雲端硬碟」新建檔案（無儲存配額）。' +
-      '請確認資料夾內已有 users.json，或在 Railway 設定 GOOGLE_DRIVE_USERS_FILE_ID（檔案網址 /d/ 與 /view 之間的 ID）。'
+      'Google 服務帳戶無法在「我的雲端硬碟」個人資料夾新增檔案（沒有儲存配額）。' +
+      '長期解法：改用「共用雲端硬碟 Shared Drive」，把目標資料夾放進去並讓服務帳戶成為內容管理員。' +
+      '短期：系統會自動改存 MongoDB（若已設定）。'
     );
   }
   if (/File not found/i.test(apiMsg) || reason === 'notFound') {
@@ -157,6 +159,21 @@ function formatDriveError(err) {
     );
   }
   return apiMsg;
+}
+
+export function isDriveStorageQuotaError(err) {
+  const msg = String(err?.message || err || '');
+  const reason =
+    err?.response?.data?.error?.errors?.[0]?.reason ||
+    err?.errors?.[0]?.reason ||
+    '';
+  return (
+    reason === 'storageQuotaExceeded' ||
+    /Service Accounts do not have storage quota/i.test(msg) ||
+    /storageQuotaExceeded/i.test(msg) ||
+    /服務帳戶無法在「我的雲端硬碟」/i.test(msg) ||
+    /沒有儲存配額/i.test(msg)
+  );
 }
 
 async function updateJsonFileById(fileId, data) {
@@ -360,24 +377,28 @@ export async function uploadFile({ buffer, filename, mimeType }) {
   const drive = getDrive();
   const folderId = getFolderId();
   if (!folderId) throw new Error('Missing GOOGLE_DRIVE_FOLDER_ID');
-  const created = await drive.files.create({
-    requestBody: {
-      name: filename || 'upload.bin',
-      parents: [folderId],
-    },
-    media: {
-      mimeType: mimeType || 'application/octet-stream',
-      body: Readable.from(buffer),
-    },
-    fields: 'id,name,mimeType,size,webViewLink',
-    supportsAllDrives: true,
-  });
-  return {
-    id: created.data.id,
-    name: created.data.name,
-    mimeType: created.data.mimeType,
-    size: created.data.size,
-  };
+  try {
+    const created = await drive.files.create({
+      requestBody: {
+        name: filename || 'upload.bin',
+        parents: [folderId],
+      },
+      media: {
+        mimeType: mimeType || 'application/octet-stream',
+        body: Readable.from(buffer),
+      },
+      fields: 'id,name,mimeType,size,webViewLink',
+      supportsAllDrives: true,
+    });
+    return {
+      id: created.data.id,
+      name: created.data.name,
+      mimeType: created.data.mimeType,
+      size: created.data.size,
+    };
+  } catch (e) {
+    throw new Error(formatDriveError(e));
+  }
 }
 
 export async function downloadFile(fileId) {

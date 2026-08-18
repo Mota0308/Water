@@ -85,6 +85,7 @@ import {
   getDriveExportStatus,
   uploadFile as uploadFileDrive,
   downloadFile as downloadFileDrive,
+  isDriveStorageQuotaError,
 } from './drive.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -130,10 +131,22 @@ function looksLikeMongoObjectId(id) {
 
 async function uploadAppFile(opts) {
   if (driveFolderConfigured()) {
-    return uploadFileDrive(opts);
+    try {
+      const saved = await uploadFileDrive(opts);
+      return { ...saved, storage: 'google-drive' };
+    } catch (e) {
+      // 個人 My Drive + 新版服務帳戶無配額：回退 Mongo，避免上載完全失敗
+      if (isDriveStorageQuotaError(e) && mongoConfigured()) {
+        console.warn('[files] Drive storage quota blocked SA upload; falling back to Mongo GridFS:', e.message || e);
+        const saved = await uploadFileMongo(opts);
+        return { ...saved, storage: 'mongodb', driveFallback: true };
+      }
+      throw e;
+    }
   }
   if (mongoConfigured()) {
-    return uploadFileMongo(opts);
+    const saved = await uploadFileMongo(opts);
+    return { ...saved, storage: 'mongodb' };
   }
   throw new Error('未設定檔案儲存：請設定 Google Drive（GOOGLE_DRIVE_FOLDER_ID）或 MongoDB');
 }
@@ -1093,10 +1106,7 @@ app.post('/api/files', requireAuth, upload.single('file'), async (req, res) => {
       filename: req.file.originalname,
       mimeType: req.file.mimetype,
     });
-    res.json({
-      ...saved,
-      storage: driveFolderConfigured() ? 'google-drive' : 'mongodb',
-    });
+    res.json(saved);
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: String(e.message || e) });
