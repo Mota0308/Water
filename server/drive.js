@@ -323,10 +323,13 @@ export async function getDriveExportStatus() {
       try {
         const meta = await drive.files.get({
           fileId: folderId,
-          fields: 'id,name,mimeType',
+          fields: 'id,name,mimeType,driveId,capabilities',
           supportsAllDrives: true,
         });
-        folder = meta.data;
+        folder = {
+          ...meta.data,
+          isSharedDrive: Boolean(meta.data.driveId),
+        };
       } catch (e) {
         folder = { error: formatDriveError(e) };
       }
@@ -367,6 +370,11 @@ export async function getDriveExportStatus() {
       files,
       usersFile,
       canExportWithoutCreate: !!(usersFile && usersFile.id),
+      /** 個人 My Drive 上服務帳戶無法 create；需 Shared Drive */
+      canCreateNewFiles: Boolean(folder?.isSharedDrive),
+      uploadHint: folder?.isSharedDrive
+        ? '資料夾在共用雲端硬碟，服務帳戶可上載新檔。'
+        : '資料夾似在個人「我的雲端硬碟」：服務帳戶無儲存配額，新建檔會失敗；系統會改存 MongoDB。請改用 Shared Drive。',
     };
   } catch (e) {
     return { ok: false, configured: true, error: formatDriveError(e) };
