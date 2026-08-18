@@ -607,6 +607,12 @@ async function cloudUploadFile(file){
     dataUrl: withFileToken(apiUrl('/api/files/'+j.id))
   };
 }
+async function cloudDeleteFile(fileId){
+  if(!apiEnabled || !fileId) return;
+  try{
+    await apiFetch('/api/files/'+encodeURIComponent(fileId), { method:'DELETE' });
+  }catch(_e){ /* 引用已從項目移除即可；實體刪除失敗不阻斷 */ }
+}
 async function cloudUploadDataUrl(name, dataUrl){
   if(!apiEnabled) return { name:name, dataUrl:dataUrl };
   const blob = await (await fetch(dataUrl)).blob();
@@ -4640,16 +4646,65 @@ function previewProjectFileCached(key){
     if(href && href!=='#') window.open(href, '_blank');
   }
 }
+function canDeleteProjectFile(p, f){
+  if(!p || !f || !currentUser) return false;
+  if(isProjectLocked(p)) return false;
+  if(isAdmin()) return true;
+  return f.by === currentUser.id;
+}
+function recomputeLatestInFileList(arr){
+  if(!Array.isArray(arr) || !arr.length) return;
+  arr.forEach(function(x){ if(x) x.latest = false; });
+  arr[arr.length - 1].latest = true;
+}
+async function deleteProjectFile(pid, kind, a, b){
+  const p = projects.find(x=>x.id===pid);
+  if(!p){ alert2('找不到項目。'); return; }
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法刪除文件。'); return; }
+  let arr = null;
+  let idx = -1;
+  let stageLabel = '建立項目';
+  if(kind === 'project'){
+    if(!Array.isArray(p.files)) p.files = [];
+    arr = p.files;
+    idx = Number(a);
+  } else if(kind === 'stage'){
+    const s = p.stages[Number(a)];
+    if(!s){ alert2('找不到階段。'); return; }
+    if(!Array.isArray(s.files)) s.files = [];
+    arr = s.files;
+    idx = Number(b);
+    stageLabel = s.name || '階段';
+  } else {
+    alert2('無法刪除此檔案。');
+    return;
+  }
+  if(idx < 0 || idx >= arr.length || !arr[idx]){ alert2('找不到此檔案。'); return; }
+  const f = arr[idx];
+  if(!canDeleteProjectFile(p, f)){
+    alert2('只有上載人或系統管理員可以刪除此檔案。');
+    return;
+  }
+  const fname = f.name || '附件';
+  if(!confirm('確定刪除「'+fname+'」？此操作無法復原。')) return;
+  const fileId = f.driveFileId || null;
+  arr.splice(idx, 1);
+  recomputeLatestInFileList(arr);
+  addProjLog(p, '刪除文件', stageLabel+'｜'+fname);
+  if(fileId) await cloudDeleteFile(fileId);
+  render();
+}
 function tabFiles(p){
   const all = [];
-  (p.files||[]).forEach(f=>all.push({...ensureFilePayload(f), stage:'建立項目'}));
-  p.stages.forEach(s=>(s.files||[]).forEach(f=>all.push({...ensureFilePayload(f), stage:s.name})));
+  (p.files||[]).forEach((f, fi)=>all.push({...ensureFilePayload(f), stage:'建立項目', _kind:'project', _a:fi, _b:0}));
+  p.stages.forEach((s, si)=>(s.files||[]).forEach((f, fi)=>all.push({...ensureFilePayload(f), stage:s.name, _kind:'stage', _a:si, _b:fi})));
   if(!window._projectPreviewFiles) window._projectPreviewFiles={};
-  return `<div class="info-banner">📁 同一份文件可有多個版本，舊版本會保留，系統標示最新版本。點擊檔名或縮圖可開啟／預覽。建立項目時的附件標示為「建立項目」；工作流程／今日工作上傳的附件依階段顯示。</div>
+  return `<div class="info-banner">📁 同一份文件可有多個版本，舊版本會保留，系統標示最新版本。點擊檔名或縮圖可開啟／預覽。上載人或系統管理員可刪除檔案。</div>
     ${all.length? all.map((f, idx)=>{
       const href = fileHref(f);
       const isImg = isProjectImageFile(f);
       const safeName = String(f.name||'file').replace(/"/g,'');
+      const canDel = canDeleteProjectFile(p, f);
       let thumbHtml = '<span class="file-icon" aria-hidden="true">📎</span>';
       if(isImg && href && href!=='#'){
         const key='pf_'+String(f.driveFileId||f.name||'x')+'_'+idx;
@@ -4657,6 +4712,9 @@ function tabFiles(p){
         const safeSrc = String(href).replace(/"/g,'&quot;');
         thumbHtml = `<a class="file-thumb-wrap" href="#" data-call="previewProjectFileCached" data-arg0="${escHtml(key)}" title="預覽圖片"><img class="file-thumb" src="${safeSrc}" alt="${escHtml(f.name||'圖片')}" loading="lazy"></a>`;
       }
+      const delBtn = canDel
+        ? `<button type="button" class="btn red sm" data-call="deleteProjectFile" data-arg0="${escHtml(String(p.id))}" data-arg1="${escHtml(String(f._kind))}" data-arg2="${escHtml(String(f._a))}" data-arg3="${escHtml(String(f._b))}">刪除</button>`
+        : '';
       return `<div class="file-item${isImg?' is-image':''}">
       ${thumbHtml}
       <div class="file-item-main">
@@ -4667,7 +4725,10 @@ function tabFiles(p){
         </div>
         <span class="fmeta">上載人：${userName(f.by)}｜${f.time}</span>
       </div>
-      <a class="btn gray sm" style="display:inline-block;text-decoration:none;color:#fff" href="${href}" download="${safeName}" target="_blank" rel="noopener">下載</a>
+      <div class="file-item-actions">
+        <a class="btn gray sm" style="display:inline-block;text-decoration:none;color:#fff" href="${href}" download="${safeName}" target="_blank" rel="noopener">下載</a>
+        ${delBtn}
+      </div>
     </div>`;
     }).join('') : '<p style="color:#888">此項目暫無文件。</p>'}`;
 }

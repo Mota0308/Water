@@ -1461,6 +1461,21 @@ export async function downloadFile(fileId) {
   };
 }
 
+export async function deleteFile(fileId) {
+  await connectMongo();
+  let oid;
+  try {
+    oid = new ObjectId(fileId);
+  } catch {
+    throw new Error('Invalid file id');
+  }
+  const files = db.collection('uploads.files');
+  const meta = await files.findOne({ _id: oid });
+  if (!meta) throw new Error('File not found');
+  await bucket.delete(oid);
+  return { ok: true, id: String(oid) };
+}
+
 /* ═══════════ Auth / sessions ═══════════ */
 export async function createSession(userId) {
   await connectMongo();

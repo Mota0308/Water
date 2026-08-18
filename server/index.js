@@ -22,6 +22,7 @@ import {
   filterNotificationForViewerWithRole,
   uploadFile as uploadFileMongo,
   downloadFile as downloadFileMongo,
+  deleteFile as deleteFileMongo,
   loginWithPassword,
   changeOwnPassword,
   getSessionUser,
@@ -192,6 +193,26 @@ async function downloadAppFile(fileId) {
 
   if (mongoConfigured()) {
     return downloadFileMongo(id);
+  }
+  throw new Error('File not found');
+}
+
+async function deleteAppFile(fileId) {
+  const id = String(fileId || '').trim();
+  if (!id) throw new Error('File not found');
+  if (looksLikeMongoObjectId(id) && mongoConfigured()) {
+    try {
+      return await deleteFileMongo(id);
+    } catch (e) {
+      if (!driveConfigured()) throw e;
+    }
+  }
+  // Drive 實體刪除暫不強制（服務帳戶未必有權）；引用已由前端從項目移除即可
+  if (driveConfigured() && !looksLikeMongoObjectId(id)) {
+    return { ok: true, id, storage: 'google-drive-ref-only' };
+  }
+  if (mongoConfigured()) {
+    return deleteFileMongo(id);
   }
   throw new Error('File not found');
 }
@@ -1138,6 +1159,16 @@ app.get('/api/files/:id', requireAuth, async (req, res) => {
       if (!res.headersSent) res.status(404).json({ error: 'File not found' });
     });
     stream.pipe(res);
+  } catch (e) {
+    console.error(e);
+    res.status(404).json({ error: String(e.message || e) });
+  }
+});
+
+app.delete('/api/files/:id', requireAuth, async (req, res) => {
+  try {
+    const result = await deleteAppFile(req.params.id);
+    res.json(result);
   } catch (e) {
     console.error(e);
     res.status(404).json({ error: String(e.message || e) });
