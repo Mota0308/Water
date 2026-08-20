@@ -14,6 +14,7 @@ import {
   textareaClass,
 } from '@/components/ui'
 import { PAYMENT_METHODS, type PosReportSummary, type PosSettlementDoc, type PosTransaction } from '@/lib/types'
+import { usePosStore } from '@/store/PosStoreContext'
 
 function todayYmd() {
   return new Intl.DateTimeFormat('en-CA', {
@@ -59,7 +60,7 @@ function statusMeta(data: SettlementRes | null) {
 }
 
 export function SettlementPage() {
-  const [store, setStore] = useState('')
+  const { store, setStore } = usePosStore()
   const [date, setDate] = useState(todayYmd())
   const [data, setData] = useState<SettlementRes | null>(null)
   const [actualAmounts, setActualAmounts] = useState<Record<string, string>>({})
@@ -70,11 +71,12 @@ export function SettlementPage() {
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
+    if (!store) return
     setLoading(true)
     setError('')
     try {
       const q = new URLSearchParams()
-      if (store) q.set('store', store)
+      q.set('store', store)
       if (date) q.set('date', date)
       const [res, txRes] = await Promise.all([
         apiJson<SettlementRes>(`/api/pos/settlement?${q}`),
@@ -84,7 +86,7 @@ export function SettlementPage() {
       setTodayTransactions(
         (txRes.transactions || []).filter((tx) => tx.store === (res.store || store) && String(tx.createdAt || '').slice(0, 10) === (res.date || date)),
       )
-      if (res.store) setStore(res.store)
+      if (res.store && res.store !== store) setStore(res.store)
       if (res.date) setDate(res.date)
       const systemSummary = res.locked ? res.settlement?.snapshot || res.live : res.live
       const defaults = Object.fromEntries(
@@ -102,7 +104,7 @@ export function SettlementPage() {
     } finally {
       setLoading(false)
     }
-  }, [store, date])
+  }, [store, date, setStore])
 
   useEffect(() => {
     void load()
@@ -233,13 +235,10 @@ export function SettlementPage() {
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="text-sm text-slate-600">
               門市
-              <select value={store} onChange={(e) => setStore(e.target.value)} className={fieldClass('mt-1')}>
-                {(data?.stores || []).map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
+              <div className="mt-1 flex h-10 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-800">
+                {store ? `${store}店` : '—'}
+              </div>
+              <p className="mt-1 text-xs text-slate-400">請用上方「現門市」切換</p>
             </label>
             <label className="text-sm text-slate-600">
               營業日期

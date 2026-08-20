@@ -6,6 +6,7 @@ import { formatDateTime, formatHKD } from '@/lib/format'
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, btnClass, fieldClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { PAYMENT_METHODS, type PosStore, type PosTransaction } from '@/lib/types'
+import { usePosStore } from '@/store/PosStoreContext'
 
 const STORES: PosStore[] = ['觀塘', '荔枝角', '灣仔', '屯門']
 const QUICK_DATES = [
@@ -79,12 +80,13 @@ function itemSummary(tx: PosTransaction) {
 
 export function TransactionsPage() {
   const navigate = useNavigate()
+  const { store: currentStore, stores: contextStores } = usePosStore()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [txs, setTxs] = useState<PosTransaction[]>([])
   const [stores, setStores] = useState<string[]>(STORES)
   const [kw, setKw] = useState('')
-  const [storeFilter, setStoreFilter] = useState('all')
+  const [storeFilter, setStoreFilter] = useState(currentStore || 'all')
   const [statusFilter, setStatusFilter] = useState('all')
   const [paymentFilter, setPaymentFilter] = useState('all')
   const [quickDate, setQuickDate] = useState<QuickDate>('all')
@@ -95,17 +97,21 @@ export function TransactionsPage() {
     try {
       const res = await apiJson<{ transactions: PosTransaction[]; stores?: string[] }>('/api/pos/transactions')
       setTxs(res.transactions || [])
-      setStores(res.stores?.length ? res.stores : STORES)
+      setStores(res.stores?.length ? res.stores : contextStores.length ? contextStores : STORES)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [contextStores])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (currentStore) setStoreFilter(currentStore)
+  }, [currentStore])
 
   const filtered = useMemo(() => {
     const q = kw.trim().toLowerCase()

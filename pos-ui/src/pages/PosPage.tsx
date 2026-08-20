@@ -20,6 +20,7 @@ import { formatHKD } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { PosCartLine, PosMember, PosProduct, PointsSettings } from '@/lib/types'
 import { PAYMENT_METHODS } from '@/lib/types'
+import { usePosStore } from '@/store/PosStoreContext'
 
 type PosDraft = {
   id: string
@@ -54,14 +55,14 @@ function stockOf(p: PosProduct, store: string) {
 export function PosPage() {
   const navigate = useNavigate()
   const barcodeRef = useRef<HTMLInputElement>(null)
+  const { store, stores } = usePosStore()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [products, setProducts] = useState<PosProduct[]>([])
-  const [stores, setStores] = useState<string[]>([])
-  const [store, setStore] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [barcodeInput, setBarcodeInput] = useState('')
   const [cart, setCart] = useState<PosCartLine[]>([])
+  const prevStoreRef = useRef(store)
   const [member, setMember] = useState<PosMember | null>(null)
   const [memberPhone, setMemberPhone] = useState('')
   const [showMemberDialog, setShowMemberDialog] = useState(false)
@@ -95,9 +96,6 @@ export function PosPage() {
         })),
       ])
       setProducts(prods.products || [])
-      const st = prods.stores || []
-      setStores(st)
-      setStore((prev) => (prev && st.includes(prev) ? prev : st[0] || ''))
       if (pts.settings) setPointsSettings(pts.settings)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -110,6 +108,18 @@ export function PosPage() {
     void load()
     barcodeRef.current?.focus()
   }, [load])
+
+  useEffect(() => {
+    if (prevStoreRef.current && prevStoreRef.current !== store) {
+      setCart([])
+      setActiveDraftId('')
+      setMember(null)
+      setMemberPhone('')
+      setPointsToRedeem(0)
+      setRemark('')
+    }
+    prevStoreRef.current = store
+  }, [store])
 
   const loadDrafts = useCallback(async (targetStore: string) => {
     if (!targetStore) {
@@ -470,27 +480,10 @@ export function PosPage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-8px)] min-h-[560px] bg-slate-50 text-slate-900">
+    <div className="flex h-full min-h-0 bg-slate-50 text-slate-900">
       {/* Left: products */}
       <div className="flex w-[340px] shrink-0 flex-col border-r border-slate-200 bg-white lg:w-[380px]">
         <div className="space-y-2 border-b border-slate-200 p-3">
-          <div className="flex items-center gap-2">
-            <label className="text-xs font-medium text-slate-500">店舖</label>
-            <select
-              value={store}
-              onChange={(e) => {
-                setStore(e.target.value)
-                setCart([])
-              }}
-              className="h-9 flex-1 rounded-md border border-slate-200 bg-white px-2 text-sm"
-            >
-              {stores.map((s) => (
-                <option key={s} value={s}>
-                  {s}店
-                </option>
-              ))}
-            </select>
-          </div>
           <form onSubmit={handleBarcode} className="flex gap-2">
             <div className="relative flex-1">
               <Barcode className="pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2 text-slate-400" />

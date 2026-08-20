@@ -7,6 +7,7 @@ import { formatDate, formatHKD } from '@/lib/format'
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, btnClass, fieldClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { PAYMENT_METHODS, type PosReportSummary } from '@/lib/types'
+import { usePosStore } from '@/store/PosStoreContext'
 
 function todayYmd() {
   return new Intl.DateTimeFormat('en-CA', {
@@ -33,13 +34,18 @@ const TAB_ITEMS = [
 ] as const
 
 export function ReportsPage() {
+  const { store: currentStore, stores: contextStores, setStore: setGlobalStore } = usePosStore()
   const [from, setFrom] = useState(todayYmd())
   const [to, setTo] = useState(todayYmd())
-  const [store, setStore] = useState('')
+  const [store, setStore] = useState(currentStore || '')
   const [data, setData] = useState<ReportRes | null>(null)
   const [tab, setTab] = useState<(typeof TAB_ITEMS)[number]['id']>('overview')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (currentStore) setStore(currentStore)
+  }, [currentStore])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -160,9 +166,17 @@ export function ReportsPage() {
 
       <Card>
         <CardContent className="grid gap-3 lg:grid-cols-[1.2fr_1fr_1fr_auto]">
-          <select value={store} onChange={(e) => setStore(e.target.value)} className={fieldClass()}>
+          <select
+            value={store}
+            onChange={(e) => {
+              const v = e.target.value
+              setStore(v)
+              if (v) setGlobalStore(v)
+            }}
+            className={fieldClass()}
+          >
             <option value="">全部門市</option>
-            {(data?.stores || ['觀塘', '荔枝角', '灣仔', '屯門']).map((x) => (
+            {(data?.stores || contextStores || ['觀塘', '荔枝角', '灣仔', '屯門']).map((x) => (
               <option key={x} value={x}>
                 {x}
               </option>
