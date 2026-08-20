@@ -996,9 +996,55 @@ function syncRecipientReadFlags(item) {
     const readAt = read
       ? readers[userId]?.confirmTime || prev.readAt || null
       : null;
-    return { userId, read, readAt, status: st, openTime: readers[userId]?.openTime || null, confirmTime: readers[userId]?.confirmTime || null };
+    return {
+      userId,
+      read,
+      readAt,
+      status: st,
+      openTime: readers[userId]?.openTime || null,
+      confirmTime: readers[userId]?.confirmTime || null,
+      segmentTicks: Array.isArray(readers[userId]?.segmentTicks)
+        ? readers[userId].segmentTicks
+        : Array.isArray(prev.segmentTicks)
+          ? prev.segmentTicks
+          : [],
+    };
   });
   return item;
+}
+
+/** 通知詳細內容段落；舊資料無 segments 時以整段 content 當作一段 */
+export function contentSegmentsOf(item) {
+  if (!item) return [];
+  if (Array.isArray(item.contentSegments) && item.contentSegments.length) {
+    return item.contentSegments.map((s) => String(s || '').trim()).filter(Boolean);
+  }
+  const c = String(item.content || '').trim();
+  return c ? [c] : [];
+}
+
+function normalizeContentSegmentsInput(input, fallbackContent) {
+  if (Array.isArray(input?.contentSegments)) {
+    return input.contentSegments.map((s) => String(s || '').trim()).filter(Boolean);
+  }
+  const c = String(fallbackContent || input?.content || '').trim();
+  return c ? [c] : [];
+}
+
+function ensureReaderSegmentTicks(reader, segmentCount) {
+  const prev = Array.isArray(reader?.segmentTicks) ? reader.segmentTicks.slice() : [];
+  const ticks = [];
+  for (let i = 0; i < segmentCount; i++) ticks.push(!!prev[i]);
+  return ticks;
+}
+
+function allSegmentsTicked(ticks, segmentCount) {
+  if (segmentCount <= 0) return true;
+  if (!Array.isArray(ticks) || ticks.length < segmentCount) return false;
+  for (let i = 0; i < segmentCount; i++) {
+    if (!ticks[i]) return false;
+  }
+  return true;
 }
 
 /** 舊通知映射新模型；必要時自動到期完結 */
@@ -1009,6 +1055,10 @@ export function normalizeNotification(raw) {
   n.cat = cat;
   n.category = n.category || categoryLabelFromCat(cat);
   n.summary = n.summary != null ? String(n.summary) : '';
+  n.contentSegments = contentSegmentsOf(n);
+  if (!String(n.content || '').trim() && n.contentSegments.length) {
+    n.content = n.contentSegments.join('\n\n');
+  }
   n.startDate = n.startDate || null;
   n.endDate = n.endDate || null;
   n.recipientDesc = n.recipientDesc || '';
@@ -1086,6 +1136,7 @@ function viewerReaderSlice(item, viewerId, full) {
         status: r.status || 'unopen',
         openTime: r.openTime || null,
         confirmTime: r.confirmTime || null,
+        segmentTicks: Array.isArray(r.segmentTicks) ? r.segmentTicks : [],
       };
     });
   }
@@ -1098,6 +1149,7 @@ function viewerReaderSlice(item, viewerId, full) {
       status: r.status || 'unopen',
       openTime: r.openTime || null,
       confirmTime: r.confirmTime || null,
+      segmentTicks: Array.isArray(r.segmentTicks) ? r.segmentTicks : [],
     },
   ];
 }
@@ -1189,8 +1241,13 @@ export async function createNotification(input) {
         }))
     : [];
   let content = String(input?.content || '').trim();
-  if (!content && !attachments.length) throw new Error('content or attachments required');
-  if (!content && attachments.length) content = '（見附件）';
+  const contentSegments = normalizeContentSegmentsInput(input, content);
+  if (!contentSegments.length && !attachments.length) throw new Error('content or attachments required');
+  if (!contentSegments.length && attachments.length) {
+    content = '（見附件）';
+  } else {
+    content = contentSegments.join('\n\n');
+  }
   const id = 'N' + String(state.notifSeq).padStart(3, '0');
   const now = new Date();
   const createdAt = input?.createdAt || formatHkDateTime(now);
@@ -1201,7 +1258,12 @@ export async function createNotification(input) {
   const summary = String(input?.summary || '').trim() || title || content.slice(0, 80);
   const readers = {};
   for (const userId of recipientIds) {
-    readers[userId] = { status: 'unopen', openTime: null, confirmTime: null };
+    readers[userId] = {
+      status: 'unopen',
+      openTime: null,
+      confirmTime: null,
+      segmentTicks: contentSegments.map(() => false),
+    };
   }
   const item = normalizeNotification({
     id,
@@ -1211,6 +1273,7 @@ export async function createNotification(input) {
     title,
     summary,
     content,
+    contentSegments,
     attachments,
     fromUserId: String(input?.fromUserId || ''),
     fromName: String(input?.fromName || ''),
@@ -1297,7 +1360,12 @@ export async function openNotification(id, userId) {
   const cur = item.readers[uid];
   if (!cur || cur.status === 'unopen') {
     const time = formatHkDateTime(new Date());
-    item.readers[uid] = { status: 'opened', openTime: time, confirmTime: null };
+    item.readers[uid] = {
+      status: 'opened',
+      openTime: time,
+      confirmTime: null,
+      segmentTicks: ensureReaderSegmentTicks(cur || {}, contentSegmentsOf(item).length),
+    };
     item.logs = [
       {
         time,
@@ -1314,7 +1382,42 @@ export async function openNotification(id, userId) {
   return item;
 }
 
-export async function confirmNotificationRead(id, user, userLogin) {
+export async function tickNotificationSegment(id, user, { index, checked } = {}) {
+  const me = publicUser(user);
+  const uid = String(me?.id || '');
+  if (!uid) throw new Error('未登入');
+  await connectMongo();
+  const state = await getNotificationsState();
+  const { item } = findNoticeInState(state, id);
+  if (!item) throw new Error('Notification not found');
+  if (item.cat === 'transfer' || item.actionType === 'transfer_decide') {
+    throw new Error('調動通知不支援段落勾選');
+  }
+  if (!recipientIdsOf(item).includes(uid)) throw new Error('Not a recipient');
+  if (item.status !== '進行中') throw new Error('此通知已完結，無法再勾選');
+  const segs = contentSegmentsOf(item);
+  const idx = Number(index);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= segs.length) {
+    throw new Error('段落編號無效');
+  }
+  if (!item.readers) item.readers = {};
+  const prev = item.readers[uid] || { status: 'unopen', openTime: null, confirmTime: null };
+  if (prev.status === 'read') throw new Error('已確認已讀，不可更改段落勾選');
+  const ticks = ensureReaderSegmentTicks(prev, segs.length);
+  ticks[idx] = !!checked;
+  const time = formatHkDateTime(new Date());
+  item.readers[uid] = {
+    status: prev.status === 'unopen' ? 'opened' : prev.status || 'opened',
+    openTime: prev.openTime || time,
+    confirmTime: null,
+    segmentTicks: ticks,
+  };
+  syncRecipientReadFlags(item);
+  await saveNotificationsState(state);
+  return item;
+}
+
+export async function confirmNotificationRead(id, user, userLogin, opts = {}) {
   const me = publicUser(user);
   const uid = String(me?.id || '');
   if (!uid) throw new Error('未登入');
@@ -1327,12 +1430,21 @@ export async function confirmNotificationRead(id, user, userLogin) {
   }
   if (!recipientIdsOf(item).includes(uid)) throw new Error('Not a recipient');
   if (item.status !== '進行中') throw new Error('此通知已完結，無法再確認');
-  const time = formatHkDateTime(new Date());
+  const segs = contentSegmentsOf(item);
   const prev = item.readers?.[uid] || {};
+  let ticks = ensureReaderSegmentTicks(prev, segs.length);
+  if (Array.isArray(opts.segmentTicks) && opts.segmentTicks.length) {
+    ticks = ensureReaderSegmentTicks({ segmentTicks: opts.segmentTicks }, segs.length);
+  }
+  if (segs.length && !allSegmentsTicked(ticks, segs.length)) {
+    throw new Error('請先勾選所有段落的已讀，才能確認整則通知');
+  }
+  const time = formatHkDateTime(new Date());
   item.readers[uid] = {
     status: 'read',
     openTime: prev.openTime || time,
     confirmTime: time,
+    segmentTicks: segs.length ? ticks : [],
   };
   item.logs = [
     {

@@ -267,6 +267,7 @@ let mailboxTab = 'inbox'; // inbox | sent
 let mailboxDetailId = null;
 let mailboxDetailTab = 'inbox'; // which tab opened the detail
 let pushDraftFiles = []; // {name, dataUrl} draft attachments for compose
+let pushDraftSegments = ['']; // 新增通知：詳細內容分段
 
 let currentUser = null, currentModule = 'production', currentView = 'home', currentProject = null, currentTab = 'overview', commentFilter = '全部';
 /** 三層側欄展開狀態（空字串＝依目前模組自動展開） */
@@ -871,7 +872,13 @@ function refreshMailboxDetailUi(){
   bodyEl.innerHTML =
     '<div class="md-meta">'+escHtml(item.category||'一般通知')+'｜'+notifPriorityTag(item.priority)
     +'｜'+escHtml(item.createdAt||'')+metaTo+'</div>'
-    +'<div class="md-content">'+escHtml(item.content||'（無內容）')+'</div>'
+    +(isSentView
+      ? '<div class="md-content">'+escHtml(item.content||'（無內容）')+'</div>'
+      : noticeSegmentsReadHtml(item, {
+          isRecipient: !!rec,
+          confirmed: isRead,
+          interactive: false
+        }))
     +notifAttachHtml(item.attachments)
     +(isSentView ? mailboxReceiptHtml(item) : '');
   if(isSentView){
@@ -926,6 +933,11 @@ function askConfirmMailboxRead(id){
     alert2('此通知已完結，無法再確認已讀。');
     return;
   }
+  if(item && noticeContentSegments(item).length && !allNoticeSegmentsTicked(item)){
+    alert2('請先在「推送通知」詳情逐段勾選已讀，再確認整則通知。');
+    openPushNotice(id);
+    return;
+  }
   showModal(
     '<h3>確認已讀？</h3>'+
     '<p style="font-size:14px;line-height:1.6">確定已閱讀並知悉此通知內容？<br><span style="color:#888">確認後將標記為已讀，通常不可改回。</span></p>'+
@@ -943,8 +955,17 @@ async function doConfirmMailboxRead(id){
     alert2('此通知已完結，無法再確認已讀。');
     return;
   }
+  if(item && !allNoticeSegmentsTicked(item)){
+    alert2('請先在推送通知詳情勾選所有段落已讀。');
+    openPushNotice(id);
+    return;
+  }
   try{
-    await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/confirm', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+    await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/confirm', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ segmentTicks: myNoticeSegmentTicks(item) })
+    });
     await loadNotifications();
     refreshMailboxUi();
     refreshMailboxDetailUi();
@@ -1621,11 +1642,13 @@ function vPushDetail(){
         +'<div style="font-size:15px;color:#2e7d32;font-weight:bold">✅ 已成功確認閱讀</div>'
         +'<div style="font-size:13px;margin-top:6px;color:#555">已由 <b>'+escHtml(currentUser.name)+'</b> 於 <b>'+escHtml(s.confirmTime||'')+'</b> 確認。首次開啟：'+escHtml(s.openTime||'—')+'</div></div>';
     } else if(n.status==='進行中'){
+      const allDone = allNoticeSegmentsTicked(n);
       confirmHtml = '<div style="border:2px solid #4a2c6b;border-radius:10px;padding:16px;background:#f8f6fb;margin-top:14px">'
-        +'<div style="font-size:13px;color:#888;margin-bottom:10px">⚠️ 請先閱讀完整內容。只打開不會算已讀，必須剔選確認並提交。</div>'
+        +'<div style="font-size:13px;color:#888;margin-bottom:10px">⚠️ 請逐段勾選「已閱讀本段」。全部段落勾完後，才能勾選下方最終已讀並提交。</div>'
+        +'<div id="push-seg-gate-hint" style="font-size:13px;color:#c62828;margin-bottom:10px;'+(allDone?'display:none':'')+'">尚有段落未勾選，最終已讀暫時無法勾選。</div>'
         +'<label style="display:flex;gap:10px;align-items:flex-start;font-size:14px;cursor:pointer;margin:0">'
-        +'<input type="checkbox" id="push-read-chk" onchange="var b=document.getElementById(\'push-confirm-btn\'); if(b) b.disabled=!this.checked" style="width:20px;height:20px">'
-        +'<span>本人已閱讀及知悉以上通知內容。</span></label>'
+        +'<input type="checkbox" id="push-read-chk" '+(allDone?'':'disabled ')+'onchange="var b=document.getElementById(\'push-confirm-btn\'); if(b) b.disabled=!this.checked" style="width:20px;height:20px">'
+        +'<span>本人已閱讀及知悉以上全部通知內容。</span></label>'
         +'<button type="button" class="btn green" id="push-confirm-btn" disabled data-action="confirm-push-read" data-nid="'+escHtml(String(n.id))+'">確認已讀</button></div>';
     } else {
       confirmHtml = '<div style="border:2px solid #78909c;border-radius:10px;padding:16px;background:#f5f6f7;margin-top:14px;color:#78909c">⏰ 此通知已完結，本人於完結時仍未確認。</div>';
@@ -1647,7 +1670,7 @@ function vPushDetail(){
     +(n.endDate?'<span>有效期至：'+escHtml(n.endDate)+'</span>':'')
     +(n.recipientDesc?'<span>接收：'+escHtml(n.recipientDesc)+'</span>':'')
     +'</div>'
-    +'<div style="border:1px solid #e5e9f0;border-radius:10px;padding:16px;margin:12px 0;white-space:pre-wrap;line-height:1.7">'+escHtml(n.content||'')+'</div>'
+    +noticeSegmentsReadHtml(n, { isRecipient:isRecip, confirmed:confirmed, interactive:true })
     +notifAttachHtml(n.attachments)
     +confirmHtml
     +(canManage?mailboxReceiptHtml(n):'')
@@ -1664,9 +1687,18 @@ function askConfirmPushRead(id){
     alert2('此通知已完結，無法再確認已讀。');
     return;
   }
+  if(n && !allNoticeSegmentsTicked(n)){
+    alert2('請先勾選所有段落的已讀，才能確認整則通知。');
+    return;
+  }
+  const finalChk = document.getElementById('push-read-chk');
+  if(finalChk && !finalChk.checked){
+    alert2('請勾選「本人已閱讀及知悉以上全部通知內容」。');
+    return;
+  }
   showModal(
     '<h3>確認已讀？</h3>'+
-    '<p style="font-size:14px;line-height:1.6">確定已閱讀並知悉此通知內容？<br><span style="color:#888">確認後將標記為已讀，通常不可改回。</span></p>'+
+    '<p style="font-size:14px;line-height:1.6">確定已閱讀並知悉此通知全部段落？<br><span style="color:#888">確認後將標記為已讀，通常不可改回。</span></p>'+
     '<div class="actions">'+
       '<button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'+
       '<button type="button" class="btn green sm" data-call="doConfirmPushRead" data-arg0="'+escHtml(String(id))+'">確定確認已讀</button>'+
@@ -1683,8 +1715,16 @@ async function confirmPushRead(id){
     alert2('此通知已完結，無法再確認已讀。');
     return;
   }
+  if(n && !allNoticeSegmentsTicked(n)){
+    alert2('請先勾選所有段落的已讀，才能確認整則通知。');
+    return;
+  }
   try{
-    await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/confirm', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+    await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/confirm', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ segmentTicks: myNoticeSegmentTicks(n) })
+    });
     await loadNotifications();
     render();
     alert2('已成功確認閱讀。');
@@ -1750,24 +1790,168 @@ function onPushTargetChange(){
   if(reg) reg.style.display = v==='regions' ? '' : 'none';
   if(per) per.style.display = v==='person' ? '' : 'none';
 }
+function noticeContentSegments(n){
+  if(!n) return [];
+  if(Array.isArray(n.contentSegments) && n.contentSegments.length){
+    return n.contentSegments.map(function(s){ return String(s||'').trim(); }).filter(Boolean);
+  }
+  const c = String(n.content||'').trim();
+  return c ? [c] : [];
+}
+function myNoticeSegmentTicks(n){
+  const s = myNoticeReader(n);
+  const segs = noticeContentSegments(n);
+  const raw = (s && Array.isArray(s.segmentTicks)) ? s.segmentTicks
+    : (n.readers && currentUser && n.readers[currentUser.id] && Array.isArray(n.readers[currentUser.id].segmentTicks))
+      ? n.readers[currentUser.id].segmentTicks
+      : [];
+  return segs.map(function(_, i){ return !!raw[i]; });
+}
+function allNoticeSegmentsTicked(n){
+  const segs = noticeContentSegments(n);
+  if(!segs.length) return true;
+  const ticks = myNoticeSegmentTicks(n);
+  return segs.every(function(_, i){ return !!ticks[i]; });
+}
+function noticeSegmentsReadHtml(n, opts){
+  opts = opts || {};
+  const segs = noticeContentSegments(n);
+  if(!segs.length){
+    return '<div style="border:1px solid #e5e9f0;border-radius:10px;padding:16px;margin:12px 0;white-space:pre-wrap;line-height:1.7">'
+      +escHtml(n.content||'（無內容）')+'</div>';
+  }
+  const isRecip = !!opts.isRecipient;
+  const confirmed = !!opts.confirmed;
+  const canTick = isRecip && !confirmed && n.status==='進行中' && !!opts.interactive;
+  const ticks = myNoticeSegmentTicks(n);
+  return segs.map(function(text, i){
+    const checked = !!ticks[i];
+    const tickHtml = canTick
+      ? '<label style="display:flex;gap:10px;align-items:center;margin-top:12px;padding-top:10px;border-top:1px dashed #dce3ec;font-size:13px;cursor:pointer">'
+        +'<input type="checkbox" class="push-seg-tick" data-nid="'+escHtml(String(n.id))+'" data-seg="'+i+'"'
+        +(checked?' checked':'')
+        +' onchange="onPushSegmentTick(this)" style="width:18px;height:18px">'
+        +'<span>本人已閱讀本段內容</span></label>'
+      : (isRecip
+        ? '<div style="margin-top:10px;font-size:12px;color:'+(checked||confirmed?'#2e7d32':'#888')+'">'
+          +(confirmed||checked?'✓ 本段已勾選':'○ 本段尚未勾選')+'</div>'
+        : '');
+    return '<div class="push-seg-block" style="border:1px solid #e5e9f0;border-radius:10px;padding:14px 16px;margin:10px 0;background:#fff">'
+      +'<div style="font-size:12px;color:#7b1fa2;font-weight:bold;margin-bottom:6px">段落 '+(i+1)+'／'+segs.length+'</div>'
+      +'<div style="white-space:pre-wrap;line-height:1.7">'+escHtml(text)+'</div>'
+      +tickHtml
+      +'</div>';
+  }).join('');
+}
+function updatePushFinalReadGate(nid){
+  const n = findMailboxItem(nid) || (notifications||[]).find(function(x){ return String(x.id)===String(nid); });
+  const finalChk = document.getElementById('push-read-chk');
+  const btn = document.getElementById('push-confirm-btn');
+  const hint = document.getElementById('push-seg-gate-hint');
+  const allDone = n ? allNoticeSegmentsTicked(n) : false;
+  if(finalChk){
+    finalChk.disabled = !allDone;
+    if(!allDone) finalChk.checked = false;
+  }
+  if(btn){
+    btn.disabled = !(allDone && finalChk && finalChk.checked);
+  }
+  if(hint){
+    hint.style.display = allDone ? 'none' : '';
+  }
+}
+async function onPushSegmentTick(el){
+  if(!el || !currentUser) return;
+  const nid = el.getAttribute('data-nid');
+  const idx = Number(el.getAttribute('data-seg'));
+  const checked = !!el.checked;
+  if(!nid || !Number.isInteger(idx)) return;
+  try{
+    const item = await apiFetch('/api/notifications/'+encodeURIComponent(nid)+'/segment-tick', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ index: idx, checked })
+    });
+    // 更新本機快取，避免整頁重繪打亂捲動
+    const i = (notifications||[]).findIndex(function(x){ return String(x.id)===String(nid); });
+    if(i>=0 && item){
+      notifications[i] = Object.assign({}, notifications[i], item);
+    }
+    updatePushFinalReadGate(nid);
+  }catch(e){
+    el.checked = !checked;
+    alert2('勾選失敗：'+(e.message||e));
+  }
+}
+function pushSyncSegmentsFromDom(){
+  const areas = document.querySelectorAll('.push-seg-input');
+  if(!areas.length) return pushDraftSegments.slice();
+  const next = [];
+  areas.forEach(function(ta){ next.push(String(ta.value||'')); });
+  pushDraftSegments = next.length ? next : [''];
+  return pushDraftSegments;
+}
+function pushSegmentsEditorHtml(){
+  if(!Array.isArray(pushDraftSegments) || !pushDraftSegments.length) pushDraftSegments = [''];
+  return '<div id="push-segments-editor">'
+    +pushDraftSegments.map(function(text, i){
+      return '<div class="push-seg-edit" data-seg="'+i+'" style="border:1px solid #e5e9f0;border-radius:10px;padding:12px;margin:0 0 10px;background:#fafbff">'
+        +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+        +'<span style="font-size:13px;font-weight:bold;color:#4a2c6b">段落 '+(i+1)+'</span>'
+        +'<button type="button" class="btn red sm" data-call="pushRemoveSegment" data-arg0="'+i+'" '+(pushDraftSegments.length<=1?'disabled':'')+'>刪除段落</button>'
+        +'</div>'
+        +'<textarea class="push-seg-input" style="min-height:90px;width:100%" placeholder="輸入本段詳細內容">'+escHtml(text)+'</textarea>'
+        +'</div>';
+    }).join('')
+    +'<button type="button" class="btn sm" data-call="pushAddSegment">＋ 新增段落</button>'
+    +'<p style="font-size:12px;color:#888;margin:8px 0 0">收信者須逐段勾選「已閱讀本段」，全部勾完後才能確認整則已讀。</p>'
+    +'</div>';
+}
+function pushRenderSegmentsEditor(){
+  const host = document.getElementById('push-segments-wrap');
+  if(!host) return;
+  pushSyncSegmentsFromDom();
+  host.innerHTML = pushSegmentsEditorHtml();
+}
+function pushAddSegment(){
+  pushSyncSegmentsFromDom();
+  pushDraftSegments.push('');
+  pushRenderSegmentsEditor();
+}
+function pushRemoveSegment(idx){
+  pushSyncSegmentsFromDom();
+  const i = Number(idx);
+  if(!Number.isInteger(i) || i<0 || i>=pushDraftSegments.length) return;
+  if(pushDraftSegments.length<=1){
+    alert2('至少保留一段內容。');
+    return;
+  }
+  pushDraftSegments.splice(i, 1);
+  pushRenderSegmentsEditor();
+}
+function collectPushSegmentsForPublish(){
+  pushSyncSegmentsFromDom();
+  return pushDraftSegments.map(function(s){ return String(s||'').trim(); }).filter(Boolean);
+}
 function confirmSendPush(){
   if(!requireCloud('推送通知')) return;
   const cat = (document.getElementById('push-cat')||{}).value || 'general';
   const priority = (document.getElementById('push-pri')||{}).value || '一般';
   const title = ((document.getElementById('push-title')||{}).value || '').trim();
   const summary = ((document.getElementById('push-summary')||{}).value || '').trim();
-  const content = ((document.getElementById('push-content')||{}).value || '').trim();
+  const segments = collectPushSegmentsForPublish();
   const startDate = (document.getElementById('push-start')||{}).value || '';
   const endDate = (document.getElementById('push-end')||{}).value || '';
   const resolved = resolvePushRecipients();
   if(!title){ alert2('請填寫通知標題。'); return; }
-  if(!content && !pushDraftFiles.length){ alert2('請填寫詳細內容，或至少添加 1 個附件。'); return; }
+  if(!segments.length && !pushDraftFiles.length){ alert2('請至少填寫一段詳細內容，或添加 1 個附件。'); return; }
   if(!resolved.ids.length){ alert2('請至少選擇一位收件人。'); return; }
   if(!endDate){ alert2('請選擇完結日期。'); return; }
   const catName = (NOTICE_CAT_META[cat]||NOTICE_CAT_META.general).name;
   showModal('<h3>確認發布</h3>'
     +'<p style="font-size:14px;line-height:1.7">類別：<b>'+escHtml(catName)+'</b>｜優先：<b>'+escHtml(priority)+'</b><br>'
     +'標題：<b>'+escHtml(title)+'</b><br>'
+    +'內容段落：'+segments.length+' 段<br>'
     +'接收：'+escHtml(resolved.desc)+'（'+resolved.ids.length+' 人）<br>'
     +'生效：'+escHtml(startDate)+'｜完結：'+escHtml(endDate)+'<br>'
     +'附件：'+pushDraftFiles.length+' 個</p>'
@@ -1780,17 +1964,20 @@ async function sendPushNotification(){
   const priority = (document.getElementById('push-pri')||{}).value || '一般';
   const title = ((document.getElementById('push-title')||{}).value || '').trim();
   const summary = ((document.getElementById('push-summary')||{}).value || '').trim();
-  const content = ((document.getElementById('push-content')||{}).value || '').trim();
+  const segments = collectPushSegmentsForPublish();
+  const content = segments.join('\n\n');
   const startDate = (document.getElementById('push-start')||{}).value || '';
   const endDate = (document.getElementById('push-end')||{}).value || '';
   const resolved = resolvePushRecipients();
-  if(!title || (!content && !pushDraftFiles.length) || !resolved.ids.length || !currentUser) return;
+  if(!title || (!segments.length && !pushDraftFiles.length) || !resolved.ids.length || !currentUser) return;
   let attachments = [];
   try{ attachments = await uploadPushAttachments(); }
   catch(e){ alert2('上傳附件失敗：'+(e.message||e)); return; }
   const category = (NOTICE_CAT_META[cat]||NOTICE_CAT_META.general).name;
   const payload = {
-    cat, category, priority, title, summary, content: content || (attachments.length?'（見附件）':''),
+    cat, category, priority, title, summary,
+    content: content || (attachments.length?'（見附件）':''),
+    contentSegments: segments.length ? segments : (attachments.length ? ['（見附件）'] : []),
     attachments, recipientIds: resolved.ids, recipientDesc: resolved.desc,
     startDate, endDate, pinned: cat==='urgent' || priority==='緊急'
   };
@@ -1800,6 +1987,7 @@ async function sendPushNotification(){
     });
     await loadNotifications();
     pushDraftFiles = [];
+    pushDraftSegments = [''];
     currentView = 'pushMine';
     render();
     const id = item && item.id ? item.id : '';
@@ -1827,14 +2015,14 @@ function vPushCreate(){
   const rows = cands.length
     ? cands.map(function(u){ return '<label class="rc-item"><input type="checkbox" value="'+u.id+'"> '+escHtml(u.name)+' <span style="color:#888">（'+escHtml(roleLabel(u))+'）</span></label>'; }).join('')
     : '<p style="color:#888;font-size:13px;margin:0">目前沒有可選收件人。</p>';
-  setTimeout(pushRenderFileList, 0);
+  setTimeout(function(){ pushRenderFileList(); pushRenderSegmentsEditor(); }, 0);
   return '<div class="card"><h2>➕ 新增通知</h2>'
     +'<div class="info-banner" style="background:#ede7f6;border:1px solid #b39ddb;color:#4a2c6b;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:13px">發布人：<b>'+escHtml(currentUser.name)+'</b>｜不可匿名；發布後保留操作記錄。</div>'
     +'<label>通知類別</label><select id="push-cat">'+catOpts+'</select>'
     +'<label>優先程度</label><select id="push-pri">'+priOpts+'</select>'
     +'<label>通知標題</label><input type="text" id="push-title" placeholder="例如：WS-777 新產品上架通知">'
     +'<label>通知摘要（列表顯示）</label><input type="text" id="push-summary" placeholder="簡短一句概括">'
-    +'<label>詳細內容</label><textarea id="push-content" style="min-height:110px" placeholder="支援分行說明"></textarea>'
+    +'<label>詳細內容（分段）</label><div id="push-segments-wrap">'+pushSegmentsEditorHtml()+'</div>'
     +'<label>接收對象</label><select id="push-target" onchange="onPushTargetChange()">'
     +'<option value="all">全部同事</option>'
     +'<option value="stores">指定單位：全部門市（四間港店）</option>'
@@ -6961,3 +7149,4 @@ function startAppVersionWatcher(){
   if(appVersionTimer) clearInterval(appVersionTimer);
   appVersionTimer = setInterval(checkAppVersion, APP_VERSION_POLL_MS);
 }
+    

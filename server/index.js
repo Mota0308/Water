@@ -17,6 +17,7 @@ import {
   markNotificationUnread,
   openNotification,
   confirmNotificationRead,
+  tickNotificationSegment,
   endNotification,
   toggleNotificationPin,
   filterNotificationForViewerWithRole,
@@ -1092,7 +1093,23 @@ app.post('/api/notifications/:id/open', requireAuth, async (req, res) => {
 app.post('/api/notifications/:id/confirm', requireAuth, async (req, res) => {
   try {
     const me = publicUser(req.user);
-    const item = await confirmNotificationRead(req.params.id, req.user, me?.login);
+    const item = await confirmNotificationRead(req.params.id, req.user, me?.login, {
+      segmentTicks: req.body?.segmentTicks,
+    });
+    res.json(filterNotificationForViewerWithRole(item, req.user) || item);
+  } catch (e) {
+    console.error(e);
+    const msg = String(e.message || e);
+    res.status(msg === 'Notification not found' ? 404 : 400).json({ error: msg });
+  }
+});
+
+app.post('/api/notifications/:id/segment-tick', requireAuth, async (req, res) => {
+  try {
+    const item = await tickNotificationSegment(req.params.id, req.user, {
+      index: req.body?.index,
+      checked: req.body?.checked,
+    });
     res.json(filterNotificationForViewerWithRole(item, req.user) || item);
   } catch (e) {
     console.error(e);
