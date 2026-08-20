@@ -206,7 +206,7 @@ function purgeSampleProjects(){
   const before = projects.length;
   projects = (projects||[]).filter(function(p){
     if(!p) return false;
-    if(SAMPLE_PROJECT_IDS.indexOf(p.id)>=0) return false;
+    // 不可只憑 P001–P003：真實首批項目也會是這些 id
     if(SAMPLE_PROJECT_CODES.indexOf(p.code)>=0) return false;
     if(SAMPLE_PROJECT_NAMES.indexOf(p.name)>=0) return false;
     return true;
@@ -568,8 +568,18 @@ async function loadCloudAppData(){
   }
   // 正規化階段經手人：舊 handler 單值 → handlers[]
   projects.forEach(function(p){
-    if(!p || !Array.isArray(p.stages)) return;
-    p.stages.forEach(function(s){ setStageHandlers(s, stageHandlers(s)); });
+    if(!p) return;
+    // 列表以 type==='dev' 篩選；非補貨一律視為開發及生產
+    if(p.type !== 'rep') p.type = 'dev';
+    if(!Array.isArray(p.stages)) p.stages = [];
+    if(!Array.isArray(p.comments)) p.comments = [];
+    if(!Array.isArray(p.files)) p.files = [];
+    if(!Array.isArray(p.logs)) p.logs = [];
+    p.stages.forEach(function(s){
+      if(!s) return;
+      if(!Array.isArray(s.files)) s.files = [];
+      setStageHandlers(s, stageHandlers(s));
+    });
   });
   // 補齊建立時間並依新→舊排序（列表／首頁共用）
   projects.forEach(function(p){
@@ -3925,10 +3935,10 @@ function go(v){
 }
 function vHomeFiltered(type){
   const scoped = projects.filter(p=>p.type===type);
-  const waitConfirm = scoped.filter(p=>p.stages.some(s=>s.status==='待確認')).length;
-  const needFix = scoped.filter(p=>p.stages.some(s=>s.status==='需要修改')).length;
+  const waitConfirm = scoped.filter(p=>Array.isArray(p.stages)&&p.stages.some(s=>s.status==='待確認')).length;
+  const needFix = scoped.filter(p=>Array.isArray(p.stages)&&p.stages.some(s=>s.status==='需要修改')).length;
   const myTasks = getMyTasks().filter(t=>{ const p=projects.find(x=>x.id===t.pid); return p && p.type===type; });
-  const allComments = scoped.flatMap(p=>p.comments.filter(c=>!c.removed).map(c=>({...c, pname:p.name, pid:p.id}))).slice(0,3);
+  const allComments = scoped.flatMap(p=>(Array.isArray(p.comments)?p.comments:[]).filter(c=>!c.removed).map(c=>({...c, pname:p.name, pid:p.id}))).slice(0,3);
   const title = type==='dev' ? '開發及生產首頁' : '補貨首頁';
   return `<div class="card">
     <h2>🏭 ${title}｜${todayStr()}</h2>

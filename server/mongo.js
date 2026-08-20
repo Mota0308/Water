@@ -190,7 +190,7 @@ function isSampleDailyTemplate(t) {
 }
 function isSampleProject(p) {
   if (!p) return true;
-  if (SAMPLE_PROJECT_IDS.has(p.id) || SAMPLE_PROJECT_IDS.has(p._id)) return true;
+  // 不可只憑 P001–P003：真實項目建立時也會用這些 id，否則會被清掉並寫回空列表
   if (SAMPLE_PROJECT_CODES.has(p.code)) return true;
   if (SAMPLE_PROJECT_NAMES.has(p.name)) return true;
   return false;
@@ -921,6 +921,15 @@ export async function saveProjectsState(data) {
   }
   if (!productionProjects) productionProjects = [];
   if (!replenishmentProjects) replenishmentProjects = [];
+
+  // 若拆欄位為空、但舊版混陣列仍有開發項目，以混陣列為準（避免誤寫空庫）
+  if (
+    productionProjects.length === 0 &&
+    Array.isArray(data?.projects) &&
+    data.projects.some((p) => p && p.type !== 'rep')
+  ) {
+    productionProjects = data.projects.filter((p) => p && p.type !== 'rep');
+  }
 
   await replaceProjectCollection(projectsCol(), productionProjects, 'dev');
   await replaceProjectCollection(replenishmentProjectsCol(), replenishmentProjects, 'rep');
