@@ -7149,4 +7149,3 @@ function startAppVersionWatcher(){
   if(appVersionTimer) clearInterval(appVersionTimer);
   appVersionTimer = setInterval(checkAppVersion, APP_VERSION_POLL_MS);
 }
-    
