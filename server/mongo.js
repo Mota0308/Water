@@ -660,9 +660,69 @@ export async function getDaily() {
   return Object.keys(rest).length ? rest : { ...EMPTY_DAILY };
 }
 
+function preferDailyWork(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  if (a.status === 'done' && b.status !== 'done') return a;
+  if (b.status === 'done' && a.status !== 'done') return b;
+  const ta = String(a.updatedAt || a.completedAt || '');
+  const tb = String(b.updatedAt || b.completedAt || '');
+  return tb.localeCompare(ta) >= 0 ? b : a;
+}
+
+function mergeDailyWorksById(existingArr, incomingArr) {
+  const m = new Map();
+  for (const x of existingArr || []) {
+    if (!x || x.id == null) continue;
+    const id = String(x.id);
+    m.set(id, preferDailyWork(m.get(id), x));
+  }
+  for (const x of incomingArr || []) {
+    if (!x || x.id == null) continue;
+    const id = String(x.id);
+    m.set(id, preferDailyWork(m.get(id), x));
+  }
+  return Array.from(m.values());
+}
+
+function mergeDailyTemplatesById(existingArr, incomingArr) {
+  const m = new Map();
+  for (const x of existingArr || []) {
+    if (!x || x.id == null) continue;
+    m.set(String(x.id), x);
+  }
+  for (const x of incomingArr || []) {
+    if (!x || x.id == null) continue;
+    m.set(String(x.id), x);
+  }
+  return Array.from(m.values());
+}
+
+function dailyOpLogMergeKey(l) {
+  return [l?.time || '', l?.userId || l?.user || '', l?.action || '', l?.detail || ''].join('|');
+}
+
+function mergeDailyOpLogs(existingArr, incomingArr) {
+  const m = new Map();
+  for (const l of existingArr || []) m.set(dailyOpLogMergeKey(l), l);
+  for (const l of incomingArr || []) m.set(dailyOpLogMergeKey(l), l);
+  return Array.from(m.values())
+    .sort((a, b) => String(b?.time || '').localeCompare(String(a?.time || '')))
+    .slice(0, 500);
+}
+
 export async function saveDaily(data) {
   await connectMongo();
-  const payload = { ...data, _id: 'main', updatedAt: new Date() };
+  const prev = await getDaily();
+  const incoming = data && typeof data === 'object' ? data : {};
+  const payload = {
+    version: incoming.version || prev.version || 2,
+    works: mergeDailyWorksById(prev.works, incoming.works),
+    recurringTemplates: mergeDailyTemplatesById(prev.recurringTemplates, incoming.recurringTemplates),
+    opLogs: mergeDailyOpLogs(prev.opLogs, incoming.opLogs),
+    _id: 'main',
+    updatedAt: new Date(),
+  };
   await dailyCol().replaceOne({ _id: 'main' }, payload, { upsert: true });
   return { ok: true };
 }

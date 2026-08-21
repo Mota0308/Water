@@ -543,7 +543,12 @@ async function loadCloudAppData(){
 
   const daily = await apiFetch('/api/daily');
   const cloud = dailyNormalizeState(daily);
-  const shouldMerge = !!(localDirty && localDaily);
+  // 只要本機有快取就與雲端合併（done 優先），避免 dirty=0 時舊雲端 open 蓋掉剛剔選的 done。
+  const shouldMerge = !!(localDaily && (
+    localDirty ||
+    (Array.isArray(localDaily.works) && localDaily.works.length) ||
+    (Array.isArray(localDaily.recurringTemplates) && localDaily.recurringTemplates.length)
+  ));
 
   if(shouldMerge){
     dailyStateCache = mergeDailyStates(cloud, localDaily);
@@ -553,7 +558,7 @@ async function loadCloudAppData(){
 
   const dailyChanged = purgeSampleDailyState(dailyStateCache);
   try{ localStorage.setItem(DAILY_KEY, JSON.stringify(dailyStateCache)); }catch(e){}
-  if(dailyChanged || shouldMerge){
+  if(dailyChanged || localDirty || shouldMerge){
     try{ await persistDailyNow(); }catch(e){ console.warn('sync daily after load', e); }
   } else {
     try{ localStorage.setItem(DAILY_DIRTY_KEY, '0'); }catch(e){}
@@ -5470,6 +5475,11 @@ function dailyNormalizeState(raw){
   s.works=Array.isArray(s.works)?s.works:[];
   s.recurringTemplates=Array.isArray(s.recurringTemplates)?s.recurringTemplates:[];
   s.opLogs=Array.isArray(s.opLogs)?s.opLogs:[];
+  s.works.forEach(function(w){
+    if(!w) return;
+    var due=dailyParseDateYmd(w.dueDate);
+    if(due) w.dueDate=due;
+  });
   return s;
 }
 function addDailyOpLog(action, detail){
@@ -5571,20 +5581,22 @@ function isActiveWork(w){ return w&&w.status!=='cancelled'; }
  * - 已完成：期限為今天，或今日才剔選完成（含逾期後今日完成）
  */
 function isDailyTodayWork(w){
-  if(!isActiveWork(w) || !w.dueDate) return false;
+  if(!isActiveWork(w)) return false;
+  var due=dailyParseDateYmd(w.dueDate);
+  if(!due) return false;
   var today = dailyTodayStr();
   if(w.status==='done'){
-    // 期限為今天，或今日才剔選完成（含逾期後今日完成）
-    if(w.dueDate===today) return true;
+    if(due===today) return true;
     var completedDay=dailyParseDateYmd(w.completedAt);
     return completedDay===today;
   }
-  return w.dueDate<=today;
+  return due<=today;
 }
 function isOverdue(w){
   if(!isActiveWork(w)||w.status==='done') return false;
-  if(!w.dueDate) return false;
-  return w.dueDate<dailyTodayStr();
+  var due=dailyParseDateYmd(w.dueDate);
+  if(!due) return false;
+  return due<dailyTodayStr();
 }
 function workCountsForUnit(unit){
   var items=loadDailyState().works.filter(function(w){ return isDailyTodayWork(w)&&w.unit===unit; });
@@ -5610,8 +5622,10 @@ function generateRecurringForToday(){
         return w.kind==='recurring'&&w.templateId===t.id&&w.unit===unit&&w.status==='open';
       });
       if(openExisting){
-        // 未完成恆常：每日把期限滾到今天（跨日延續仍顯示正確期限）
-        if(openExisting.dueDate!==today){
+        // 未完成恆常：跨日延續時把逾期／舊期限滾到今天；已延期到未來的不要改回今天
+        var openDue=dailyParseDateYmd(openExisting.dueDate)||String(openExisting.dueDate||'');
+        if(openDue && openDue>today) return;
+        if(openDue!==today){
           openExisting.dueDate=today;
           openExisting.updatedAt=dailyNowStr();
         }
@@ -5791,8 +5805,11 @@ function completeDailyWork(id,user,checked,opts){
     w.completedAt=dailyNowStr();
     w.completedBy=dailyUserId(user);
     w.completedByName=dailyUserName(user);
-    // 逾期項今日完成時，把期限滾到今天，避免完成後從今日清單消失
-    if(w.dueDate && w.dueDate<dailyTodayStr()) w.dueDate=dailyTodayStr();
+    // 正規化期限；逾期項今日完成時滾到今天，避免完成後從今日清單消失
+    var dueNorm=dailyParseDateYmd(w.dueDate)||String(w.dueDate||'');
+    var today=dailyTodayStr();
+    if(!dueNorm || dueNorm<today) w.dueDate=today;
+    else w.dueDate=dueNorm;
     w.updatedAt=dailyNowStr();
     saveDailyState(s);
     addDailyOpLog(w.kind==='settlement'?'完成結算':'完成工作', w.unit+'｜'+w.title+(w.attachments.length?'｜附件 '+w.attachments.length+' 個':''));
@@ -6142,13 +6159,13 @@ function dailyToggle(id,el){
     return;
   }
   if(el.checked){
-    // 先還原未勾，確認完成／延期後再變更
+    // 剔選＝完成；延期改走獨立按鈕，避免誤選延期後從今日清單消失
     el.checked=false;
     if(!canTickWork(w,currentUser)){
       alert2('無法更新此工作。你只能操作自己所屬單位的工作。');
       return;
     }
-    dailyAskTickAction(id);
+    dailyChooseComplete(id);
     return;
   }
   // 取消剔選：確認後清空全部附件並重開
@@ -6161,17 +6178,8 @@ function dailyToggle(id,el){
   );
 }
 function dailyAskTickAction(id){
-  var w=loadDailyState().works.find(function(x){ return x.id===id; });
-  if(!w) return;
-  showModal(
-    '<h3>完成或延期？</h3>'+
-    '<p style="font-size:14px;line-height:1.55">「<b>'+dailyEsc(w.title)+'</b>」目前期限：'+dailyEsc(w.dueDate||'—')+'<br>請選擇操作：</p>'+
-    '<div class="actions">'+
-      '<button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'+
-      '<button type="button" class="btn warn sm" data-call="dailyAskPostpone" data-arg0="'+escHtml(String(id))+'">延期</button>'+
-      '<button type="button" class="btn green sm" data-call="dailyChooseComplete" data-arg0="'+escHtml(String(id))+'">完成</button>'+
-    '</div>'
-  );
+  // 保留給舊呼叫；改為直接完成
+  dailyChooseComplete(id);
 }
 function dailyChooseComplete(id){
   closeModal();
@@ -6782,7 +6790,7 @@ function dailyWorkRows(list,user,opts){
             :'<input type="checkbox" checked disabled title="已完成（不可操作其他單位）">';
         }else{
           tick=can
-            ?'<input type="checkbox" onchange="dailyToggle(\''+w.id+'\',this)" title="點擊選擇完成或延期">'
+            ?'<input type="checkbox" onchange="dailyToggle(\''+w.id+'\',this)" title="剔選完成">'
             :'<input type="checkbox" disabled title="不可操作">';
         }
       }
@@ -6795,6 +6803,10 @@ function dailyWorkRows(list,user,opts){
         if(w.status==='done' && !isSettlement) admin+='<button class="btn warn sm" data-call="dailyReopen" data-arg0="'+escHtml(String(w.id))+'">重開</button> ';
         if(isSettlement) admin+='<button class="btn sm" data-call="go" data-arg0="posSettlement">去日結</button> ';
         if(w.kind!=='settlement'&&w.status!=='cancelled') admin+='<button class="btn red sm" data-call="dailyCancelWork" data-arg0="'+escHtml(String(w.id))+'">取消</button>';
+      }
+      var postponeBtn='';
+      if(!readonly && !isSettlement && w.status==='open' && can){
+        postponeBtn='<button type="button" class="btn warn sm" data-call="dailyAskPostpone" data-arg0="'+escHtml(String(w.id))+'" title="延期後會離開今日清單">延期</button> ';
       }
       var subColor=isAdhoc?'#e53935':'#777';
       var assignColor=isAdhoc?'#c62828':'#666';
@@ -6811,7 +6823,7 @@ function dailyWorkRows(list,user,opts){
         '<td>'+dailyEsc(w.unit)+'</td><td>'+dailyKindTag(w)+'</td><td>'+priorityTag(w.priority)+'</td>'+
         (showCreated?'<td style="white-space:nowrap;font-size:12px">'+dailyEsc(workCreatedDate(w)||'—')+'</td>':'')+
         '<td>'+dailyEsc(w.dueDate||'—')+'</td><td>'+dailyStatusTag(w)+'</td><td>'+doneInfo+'</td>'+
-        (showAdmin?'<td><div class="actions-row">'+admin+'</div></td>':'')+
+        ((showAdmin||postponeBtn)?'<td><div class="actions-row">'+postponeBtn+admin+'</div></td>':'')+
         '</tr>';
     }).join('');
   body+=mirrors.map(function(t){ return dailyProjectMirrorRow(t,readonly,showCreated); }).join('');
@@ -6820,7 +6832,7 @@ function dailyWorkRows(list,user,opts){
     '<th>工作</th><th>單位</th><th>類型</th><th>優先</th>'+
     (showCreated?'<th>建立日</th>':'')+
     '<th>期限</th><th>狀態</th><th>完成資訊</th>'+
-    (showAdmin?'<th>管理</th>':'')+
+    ((showAdmin||!readonly)?'<th>操作</th>':'')+
     '</tr></thead><tbody>'+body+'</tbody></table></div>';
 }
 function dailyProjectMirrorRow(t,readonly,showCreated){
@@ -6845,7 +6857,9 @@ function dailyProjectMirrorRow(t,readonly,showCreated){
     '<td><b>'+dailyEsc(title)+'</b><div style="font-size:12px;color:#777;margin-top:2px">'+dailyEsc(t.pname)+'</div>'+extra+'</td>'+
     '<td>—</td><td>'+typeTag(t.type)+'</td><td>—</td>'+
     (showCreated?'<td>—</td>':'')+
-    '<td>'+dailyEsc(t.deadline||'—')+'</td><td>'+stTag(t.status)+'</td><td>—</td></tr>';
+    '<td>'+dailyEsc(t.deadline||'—')+'</td><td>'+stTag(t.status)+'</td><td>—</td>'+
+    (readonly?'':'<td></td>')+
+    '</tr>';
 }
 function dailyToggleProject(pid,idx,el){
   if(isManager()){ el.checked=!el.checked; alert2('一般管理層不可推進階段。'); return; }

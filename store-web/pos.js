@@ -95,17 +95,18 @@ function posPayName(id) {
 async function posReloadDailyAfterSettlement() {
   if (typeof apiEnabled === 'undefined' || !apiEnabled || !authToken) return;
   try {
-    var dirty = false;
-    try { dirty = localStorage.getItem(typeof DAILY_DIRTY_KEY !== 'undefined' ? DAILY_DIRTY_KEY : 'store-web-daily-dirty') === '1'; } catch (e) {}
-    if (dirty) return;
     var daily = await apiFetch('/api/daily');
-    if (typeof dailyNormalizeState === 'function' && typeof dailyStateCache !== 'undefined') {
-      dailyStateCache = dailyNormalizeState(daily);
-      try {
-        if (typeof DAILY_KEY !== 'undefined') localStorage.setItem(DAILY_KEY, JSON.stringify(dailyStateCache));
-        if (typeof DAILY_DIRTY_KEY !== 'undefined') localStorage.setItem(DAILY_DIRTY_KEY, '0');
-      } catch (e) {}
+    if (typeof dailyNormalizeState !== 'function' || typeof dailyStateCache === 'undefined') return;
+    var cloud = dailyNormalizeState(daily);
+    var local = dailyStateCache ? dailyNormalizeState(dailyStateCache) : null;
+    if (local && typeof mergeDailyStates === 'function') {
+      dailyStateCache = mergeDailyStates(cloud, local);
+    } else {
+      dailyStateCache = cloud;
     }
+    try {
+      if (typeof DAILY_KEY !== 'undefined') localStorage.setItem(DAILY_KEY, JSON.stringify(dailyStateCache));
+    } catch (e) {}
   } catch (e) {}
 }
 
