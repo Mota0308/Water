@@ -882,7 +882,7 @@ function refreshMailboxDetailUi(){
     +notifAttachHtml(item.attachments)
     +(isSentView ? mailboxReceiptHtml(item) : '');
   if(isSentView){
-    actionsEl.innerHTML = '';
+    actionsEl.innerHTML = noticeCtaButtonHtml(item, { className: 'btn green sm' });
     readBtn.classList.add('hidden');
   } else if(isTransferNotice(item)){
     actionsEl.innerHTML = transferMailboxActionsHtml(item);
@@ -891,7 +891,9 @@ function refreshMailboxDetailUi(){
     readBtn.textContent = isRead ? '已讀' : '未讀';
     readBtn.title = isRead ? '點擊改為未讀' : '點擊改為已讀';
   } else {
-    actionsEl.innerHTML = '<button type="button" class="btn sm" data-call="openPushNotice" data-arg0="'+escHtml(String(item.id))+'">在推送通知開啟</button>';
+    const ctaBtn = noticeCtaButtonHtml(item, { className: 'btn green sm' });
+    actionsEl.innerHTML = (ctaBtn ? ctaBtn+' ' : '')
+      +'<button type="button" class="btn sm" data-call="openPushNotice" data-arg0="'+escHtml(String(item.id))+'">在推送通知開啟</button>';
     readBtn.classList.remove('hidden');
     if(isRead){
       readBtn.className = 'md-read-toggle is-read';
@@ -1314,6 +1316,109 @@ function isTransferNotice(n){
   return !!(n && (n.actionType==='transfer_decide' || n.cat==='transfer' || n.category==='貨品調動'));
 }
 function isAnnouncement(n){ return n && !isTransferNotice(n); }
+
+/** 人工通知導航 CTA（與調貨操作列分開） */
+const NOTICE_CTA_EXCLUDE_VIEWS = { pushCreate: true, posReset: true };
+const NOTICE_CTA_NEEDS_MOD = { home: true, myTasks: true, sysLogs: true, addProject: true };
+function noticeCtaOf(n){
+  if(!n || isTransferNotice(n) || !n.cta || typeof n.cta!=='object') return null;
+  const mod = String(n.cta.mod||'').trim();
+  const view = String(n.cta.view||'').trim();
+  if(!mod || !view || NOTICE_CTA_EXCLUDE_VIEWS[view]) return null;
+  return { mod: mod, view: view };
+}
+function noticeCtaCleanLabel(label){
+  return String(label||'')
+    .replace(/（\d+）/g, '')
+    .replace(/\(\d+\)/g, '')
+    .replace(/／未閱讀$/, '／未閱讀')
+    .trim();
+}
+function noticeCtaCatalog(){
+  const out = [];
+  const seen = {};
+  (getSidebarTree()||[]).forEach(function(l1){
+    (l1.children||[]).forEach(function(c){
+      const mod = c.mod;
+      (getSidebarItemsForModule(mod)||[]).forEach(function(it){
+        const view = it[0];
+        if(NOTICE_CTA_EXCLUDE_VIEWS[view]) return;
+        const key = mod+'|'+view;
+        if(seen[key]) return;
+        seen[key] = true;
+        out.push({
+          mod: mod,
+          view: view,
+          label: noticeCtaCleanLabel(it[1]),
+          group: c.label || mod
+        });
+      });
+    });
+  });
+  return out;
+}
+function noticeCtaLabel(cta){
+  if(!cta) return '';
+  const hit = noticeCtaCatalog().find(function(e){ return e.mod===cta.mod && e.view===cta.view; });
+  if(hit && hit.label) return '前往'+hit.label;
+  return '前往目標頁面';
+}
+function canAccessNoticeCta(n){
+  const cta = noticeCtaOf(n);
+  if(!cta || !currentUser) return false;
+  if(cta.mod==='production' && isPersonal()) return false;
+  const items = getSidebarItemsForModule(cta.mod)||[];
+  return items.some(function(it){ return it[0]===cta.view; });
+}
+function noticeCtaButtonHtml(n, opts){
+  opts = opts || {};
+  if(!canAccessNoticeCta(n)) return '';
+  const cta = noticeCtaOf(n);
+  if(!cta) return '';
+  const cls = opts.className || 'btn sm';
+  return '<button type="button" class="'+cls+'" data-call="followNoticeCta" data-arg0="'+escHtml(String(n.id))+'">'+escHtml(noticeCtaLabel(cta))+'</button>';
+}
+function followNoticeCta(id){
+  const n = findMailboxItem(id) || (notifications||[]).find(function(x){ return String(x.id)===String(id); });
+  if(!n || isTransferNotice(n)) return;
+  if(!canAccessNoticeCta(n)){
+    alert2('你沒有權限開啟此功能。');
+    return;
+  }
+  const cta = noticeCtaOf(n);
+  if(!cta) return;
+  try{ closeMailbox(); }catch(e){}
+  if(NOTICE_CTA_NEEDS_MOD[cta.view]) goInModule(cta.mod, cta.view);
+  else go(cta.view);
+}
+function readPushCtaFromForm(){
+  const el = document.getElementById('push-cta');
+  const raw = el ? String(el.value||'') : '';
+  if(!raw || raw==='__none__') return null;
+  const parts = raw.split('|');
+  if(parts.length!==2) return null;
+  const mod = String(parts[0]||'').trim();
+  const view = String(parts[1]||'').trim();
+  if(!mod || !view || NOTICE_CTA_EXCLUDE_VIEWS[view]) return null;
+  return { mod: mod, view: view };
+}
+function pushCtaSelectHtml(){
+  const entries = noticeCtaCatalog();
+  let html = '<label>前往頁面（選填）</label><select id="push-cta">'
+    +'<option value="__none__">無</option>';
+  let lastGroup = '';
+  entries.forEach(function(e){
+    if(e.group!==lastGroup){
+      if(lastGroup) html += '</optgroup>';
+      html += '<optgroup label="'+escHtml(e.group)+'">';
+      lastGroup = e.group;
+    }
+    html += '<option value="'+escHtml(e.mod+'|'+e.view)+'">'+escHtml(e.label)+'</option>';
+  });
+  if(lastGroup) html += '</optgroup>';
+  html += '</select>';
+  return html;
+}
 function noticeCatKey(n){
   if(!n) return 'general';
   if(isTransferNotice(n)) return 'transfer';
@@ -1672,6 +1777,9 @@ function vPushDetail(){
     +'</div>'
     +noticeSegmentsReadHtml(n, { isRecipient:isRecip, confirmed:confirmed, interactive:true })
     +notifAttachHtml(n.attachments)
+    +(canAccessNoticeCta(n)
+      ? '<div class="actions" style="margin-top:12px">'+noticeCtaButtonHtml(n, { className: 'btn green' })+'</div>'
+      : '')
     +confirmHtml
     +(canManage?mailboxReceiptHtml(n):'')
     +(canManage?'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">'
@@ -1943,6 +2051,7 @@ function confirmSendPush(){
   const startDate = (document.getElementById('push-start')||{}).value || '';
   const endDate = (document.getElementById('push-end')||{}).value || '';
   const resolved = resolvePushRecipients();
+  const cta = readPushCtaFromForm();
   if(!title){ alert2('請填寫通知標題。'); return; }
   if(!segments.length && !pushDraftFiles.length){ alert2('請至少填寫一段詳細內容，或添加 1 個附件。'); return; }
   if(!resolved.ids.length){ alert2('請至少選擇一位收件人。'); return; }
@@ -1954,6 +2063,7 @@ function confirmSendPush(){
     +'內容段落：'+segments.length+' 段<br>'
     +'接收：'+escHtml(resolved.desc)+'（'+resolved.ids.length+' 人）<br>'
     +'生效：'+escHtml(startDate)+'｜完結：'+escHtml(endDate)+'<br>'
+    +'前往：'+(cta?escHtml(noticeCtaLabel(cta)):'無')+'<br>'
     +'附件：'+pushDraftFiles.length+' 個</p>'
     +'<div class="actions"><button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
     +'<button type="button" class="btn green sm" data-action="submit-push-publish">確定發布</button></div>');
@@ -1974,6 +2084,7 @@ async function sendPushNotification(){
   try{ attachments = await uploadPushAttachments(); }
   catch(e){ alert2('上傳附件失敗：'+(e.message||e)); return; }
   const category = (NOTICE_CAT_META[cat]||NOTICE_CAT_META.general).name;
+  const cta = readPushCtaFromForm();
   const payload = {
     cat, category, priority, title, summary,
     content: content || (attachments.length?'（見附件）':''),
@@ -1981,6 +2092,7 @@ async function sendPushNotification(){
     attachments, recipientIds: resolved.ids, recipientDesc: resolved.desc,
     startDate, endDate, pinned: cat==='urgent' || priority==='緊急'
   };
+  if(cta) payload.cta = cta;
   try{
     const item = await apiFetch('/api/notifications', {
       method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
@@ -2035,6 +2147,7 @@ function vPushCreate(){
     +'<button type="button" class="btn sm gray" onclick="togglePushRecipients(false)">取消全選</button></div>'+rows+'</div></div>'
     +'<label>生效日期</label><input type="date" id="push-start" value="'+ymd+'">'
     +'<label>完結日期</label><input type="date" id="push-end" value="'+endYmd+'">'
+    +pushCtaSelectHtml()
     +'<label>附件</label><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0">'
     +'<button type="button" class="btn green sm" onclick="document.getElementById(\'push-files\').click()">📎 添加附件</button></div>'
     +'<input type="file" id="push-files" multiple onchange="pushOnFilesPick(this)" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">'

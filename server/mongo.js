@@ -1023,6 +1023,19 @@ export function contentSegmentsOf(item) {
   return c ? [c] : [];
 }
 
+/** 人工／系統導航 CTA：僅允許 { mod, view }；調貨操作列不走此欄位 */
+const NOTICE_CTA_BLOCKED_VIEWS = new Set(['pushCreate', 'posReset']);
+function normalizeNoticeCta(raw) {
+  const src = raw && typeof raw === 'object' ? raw : null;
+  if (!src) return null;
+  const mod = String(src.mod || '').trim();
+  const view = String(src.view || '').trim();
+  if (!mod || !view) return null;
+  if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(mod) || !/^[a-zA-Z][a-zA-Z0-9_]*$/.test(view)) return null;
+  if (NOTICE_CTA_BLOCKED_VIEWS.has(view)) return null;
+  return { mod, view };
+}
+
 function normalizeContentSegmentsInput(input, fallbackContent) {
   if (Array.isArray(input?.contentSegments)) {
     return input.contentSegments.map((s) => String(s || '').trim()).filter(Boolean);
@@ -1064,6 +1077,7 @@ export function normalizeNotification(raw) {
   n.recipientDesc = n.recipientDesc || '';
   n.pinned = !!n.pinned || cat === 'urgent' || n.priority === '緊急';
   n.logs = Array.isArray(n.logs) ? n.logs : [];
+  n.cta = normalizeNoticeCta(n.cta);
   if (!n.status) n.status = '進行中';
   const ids = recipientIdsOf(n);
   if (!n.readers || typeof n.readers !== 'object') n.readers = {};
@@ -1299,6 +1313,9 @@ export async function createNotification(input) {
   if (input?.actionType) item.actionType = String(input.actionType);
   if (input?.transferId) item.transferId = String(input.transferId);
   if (input?.transferResolved != null) item.transferResolved = !!input.transferResolved;
+  const cta = normalizeNoticeCta(input?.cta);
+  if (cta) item.cta = cta;
+  else delete item.cta;
   state.notifications.unshift(item);
   state.notifSeq = (state.notifSeq || 1) + 1;
   await saveNotificationsState(state);
