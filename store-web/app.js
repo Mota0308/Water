@@ -888,7 +888,7 @@ function refreshMailboxDetailUi(){
       : noticeSegmentsReadHtml(item, {
           isRecipient: !!rec,
           confirmed: isRead,
-          interactive: false
+          interactive: true
         }))
     +notifAttachHtml(item.attachments)
     +(isSentView ? mailboxReceiptHtml(item) : '');
@@ -915,9 +915,13 @@ function refreshMailboxDetailUi(){
       readBtn.textContent = '已完結未確認';
       readBtn.title = '通知已完結，無法再確認已讀';
     } else {
+      const segsReady = allNoticeSegmentsTicked(item);
       readBtn.className = 'md-read-toggle is-unread';
       readBtn.textContent = '確認已讀';
-      readBtn.title = '確認已閱讀及知悉';
+      readBtn.title = segsReady
+        ? '確認已閱讀及知悉'
+        : '請先勾選所有段落的「本人已閱讀本段內容」';
+      readBtn.style.opacity = segsReady ? '' : '0.7';
     }
   }
 }
@@ -947,8 +951,7 @@ function askConfirmMailboxRead(id){
     return;
   }
   if(item && noticeContentSegments(item).length && !allNoticeSegmentsTicked(item)){
-    alert2('請先在「推送通知」詳情逐段勾選已讀，再確認整則通知。');
-    openPushNotice(id);
+    alert2('請先在本則通知逐段勾選「本人已閱讀本段內容」，再確認整則已讀。');
     return;
   }
   showModal(
@@ -969,8 +972,8 @@ async function doConfirmMailboxRead(id){
     return;
   }
   if(item && !allNoticeSegmentsTicked(item)){
-    alert2('請先在推送通知詳情勾選所有段落已讀。');
-    openPushNotice(id);
+    alert2('請先勾選所有段落的已讀，才能確認整則通知。');
+    refreshMailboxDetailUi();
     return;
   }
   try{
@@ -1997,6 +2000,18 @@ async function onPushSegmentTick(el){
       notifications[i] = Object.assign({}, notifications[i], item);
     }
     updatePushFinalReadGate(nid);
+    if(mailboxDetailId && String(mailboxDetailId)===String(nid)){
+      // 同步信箱詳情的「確認已讀」可用狀態（不整頁重繪，保留勾選框焦點）
+      const readBtn = document.getElementById('mailbox-detail-read-btn');
+      const n = findMailboxItem(nid);
+      if(readBtn && n && isNotifUnreadForMe(n) && isPushNoticeConfirmable(n)){
+        const segsReady = allNoticeSegmentsTicked(n);
+        readBtn.title = segsReady
+          ? '確認已閱讀及知悉'
+          : '請先勾選所有段落的「本人已閱讀本段內容」';
+        readBtn.style.opacity = segsReady ? '' : '0.7';
+      }
+    }
   }catch(e){
     el.checked = !checked;
     alert2('勾選失敗：'+(e.message||e));
