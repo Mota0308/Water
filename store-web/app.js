@@ -4193,21 +4193,47 @@ function isSidebarItemActive(mod, viewKey){
   if(currentView==='posReceipt' && mod==='pos' && viewKey==='posTransactions') return true;
   return false;
 }
+/** 僅手機殼層（≤900px）；桌面永遠走原本常駐側欄 UI */
+function isMobileChrome(){
+  try{
+    return !!(window.matchMedia && window.matchMedia('(max-width: 900px)').matches);
+  }catch(e){ return false; }
+}
+function syncSidebarToggleAria(){
+  const toggle = document.getElementById('sidebar-toggle');
+  const side = document.getElementById('app-sidebar');
+  if(!toggle) return;
+  const open = !!(side && side.classList.contains('open'));
+  toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  toggle.setAttribute('aria-label', open ? '關閉選單' : '開啟選單');
+  toggle.title = open ? '關閉選單' : '選單';
+}
 function closeAppSidebar(){
   const side = document.getElementById('app-sidebar');
   const backdrop = document.getElementById('sidebar-backdrop');
   if(side) side.classList.remove('open');
   if(backdrop) backdrop.classList.remove('show');
   document.body.classList.remove('sidebar-open');
+  syncSidebarToggleAria();
 }
 function openAppSidebar(){
+  // 桌面不使用抽屜；避免誤加 sidebar-open 鎖捲動
+  if(!isMobileChrome()){
+    closeAppSidebar();
+    return;
+  }
   const side = document.getElementById('app-sidebar');
   const backdrop = document.getElementById('sidebar-backdrop');
   if(side) side.classList.add('open');
   if(backdrop) backdrop.classList.add('show');
   document.body.classList.add('sidebar-open');
+  syncSidebarToggleAria();
 }
 function toggleAppSidebar(){
+  if(!isMobileChrome()){
+    closeAppSidebar();
+    return;
+  }
   const side = document.getElementById('app-sidebar');
   if(side && side.classList.contains('open')) closeAppSidebar();
   else openAppSidebar();
@@ -4217,8 +4243,10 @@ function bindAppSidebarChrome(){
   const backdrop = document.getElementById('sidebar-backdrop');
   if(toggle && toggle.dataset.bound!=='1'){
     toggle.dataset.bound = '1';
+    toggle.setAttribute('aria-controls', 'app-sidebar');
     toggle.addEventListener('click', function(e){
       e.preventDefault();
+      e.stopPropagation();
       toggleAppSidebar();
     });
   }
@@ -4226,6 +4254,21 @@ function bindAppSidebarChrome(){
     backdrop.dataset.bound = '1';
     backdrop.addEventListener('click', function(){ closeAppSidebar(); });
   }
+  if(!window.__mobileChromeBound){
+    window.__mobileChromeBound = true;
+    window.addEventListener('resize', function(){
+      // 回到桌面寬度時強制關閉抽屜，還原原本側欄行為
+      if(!isMobileChrome()) closeAppSidebar();
+    });
+    document.addEventListener('keydown', function(e){
+      if(e.key==='Escape' && isMobileChrome() && document.body.classList.contains('sidebar-open')){
+        closeAppSidebar();
+      }
+    });
+  }
+  // 非手機時清掉可能殘留的 open 狀態
+  if(!isMobileChrome()) closeAppSidebar();
+  else syncSidebarToggleAria();
 }
 function render(){
   bindAppSidebarChrome();
