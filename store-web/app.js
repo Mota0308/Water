@@ -1326,7 +1326,8 @@ async function markNotifUnread(id){ return setNotifReadState(id, false); }
 function pushRecipientCandidates(){
   if(!currentUser) return [];
   ensureAdminUser();
-  return users.filter(u => u.active!==false && u.id !== currentUser.id);
+  // 允許把自己也選為接收對象
+  return users.filter(u => u.active!==false);
 }
 function togglePushRecipients(on){
   document.querySelectorAll('#push-recipients input[type=checkbox]').forEach(cb=>{ cb.checked = !!on; });
@@ -1479,7 +1480,8 @@ function followNoticeCta(id){
     return;
   }
   if(cta.unit && typeof setDailyUnitFilter==='function' && (cta.view==='dailyToday' || cta.mod==='daily')){
-    dailyUnitFilter = cta.unit;
+    dailyUnitFilterSelected = [String(cta.unit)];
+    dailyUnitFilter = String(cta.unit);
   }
   if(NOTICE_CTA_NEEDS_MOD[cta.view]) goInModule(cta.mod, cta.view);
   else go(cta.view);
@@ -1966,11 +1968,10 @@ function resolvePushRecipients(){
   const stores = ['觀塘','荔枝角','灣仔','屯門'];
   let ids = [];
   let desc = '';
-  const me = String(currentUser.id);
-  function activeUsers(){ return users.filter(function(u){ return u && u.active!==false && String(u.id)!==me; }); }
+  function activeUsers(){ return users.filter(function(u){ return u && u.active!==false; }); }
   if(target==='all'){
     ids = activeUsers().map(function(u){ return String(u.id); });
-    desc = '全部同事';
+    desc = '全部同事（含自己）';
   } else if(target==='stores'){
     ids = activeUsers().filter(function(u){ return userUnits(u).some(function(x){ return stores.indexOf(x)>=0; }); }).map(function(u){ return String(u.id); });
     desc = '指定單位：全部門市';
@@ -2231,7 +2232,12 @@ function vPushCreate(){
   }).join('');
   const cands = pushRecipientCandidates();
   const rows = cands.length
-    ? cands.map(function(u){ return '<label class="rc-item"><input type="checkbox" value="'+u.id+'"> '+escHtml(u.name)+' <span style="color:#888">（'+escHtml(roleLabel(u))+'）</span></label>'; }).join('')
+    ? cands.map(function(u){
+        const self = currentUser && String(u.id)===String(currentUser.id);
+        return '<label class="rc-item"><input type="checkbox" value="'+u.id+'"> '+escHtml(u.name)
+          +(self?' <span style="color:#1565c0">（自己）</span>':'')
+          +' <span style="color:#888">（'+escHtml(roleLabel(u))+'）</span></label>';
+      }).join('')
     : '<p style="color:#888;font-size:13px;margin:0">目前沒有可選收件人。</p>';
   setTimeout(function(){ pushRenderFileList(); pushRenderSegmentsEditor(); }, 0);
   return '<div class="card"><h2>➕ 新增通知</h2>'
@@ -2242,10 +2248,10 @@ function vPushCreate(){
     +'<label>通知摘要（列表顯示）</label><input type="text" id="push-summary" placeholder="簡短一句概括">'
     +'<label>詳細內容（分段）</label><div id="push-segments-wrap">'+pushSegmentsEditorHtml()+'</div>'
     +'<label>接收對象</label><select id="push-target" onchange="onPushTargetChange()">'
-    +'<option value="all">全部同事</option>'
+    +'<option value="all">全部同事（含自己）</option>'
     +'<option value="stores">指定單位：全部門市（四間港店）</option>'
     +'<option value="regions">指定地區（多選）</option>'
-    +'<option value="person">指定個人</option></select>'
+    +'<option value="person">指定個人（可含自己）</option></select>'
     +'<div id="push-regions-wrap" style="display:none;margin-top:8px;padding:10px;background:#f8f6fb;border-radius:8px">'+regionChecks+'</div>'
     +'<div id="push-persons-wrap" style="display:none;margin-top:8px">'
     +'<div class="recipient-box" id="push-recipients"><div class="rc-tools">'
@@ -2255,7 +2261,8 @@ function vPushCreate(){
     +'<label>完結日期</label><input type="date" id="push-end" value="'+endYmd+'">'
     +pushCtaSelectHtml()
     +'<label>附件</label><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0">'
-    +'<button type="button" class="btn green sm" onclick="document.getElementById(\'push-files\').click()">📎 添加附件</button></div>'
+    +'<button type="button" class="btn green sm" onclick="document.getElementById(\'push-files\').click()">📎 添加附件</button>'
+    +'<span style="font-size:12px;color:#888">可多次添加、可刪除；數量不限</span></div>'
     +'<input type="file" id="push-files" multiple onchange="pushOnFilesPick(this)" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">'
     +'<div id="push-file-list">'+pushFileListHtml()+'</div>'
     +'<button type="button" class="btn green" onclick="confirmSendPush()">預覽並發布</button></div>';
@@ -5550,7 +5557,8 @@ var DAILY_DIRTY_KEY='store-web-daily-v6-dirty';
 var FIXED_UNITS=['觀塘','荔枝角','灣仔','屯門'];
 var STORE_UNITS=['觀塘','荔枝角','灣仔','屯門','國內倉'];
 var PRIORITIES=['高','中','低'];
-var dailyUnitFilter='全部';
+var dailyUnitFilter='全部'; // 相容舊呼叫；實際篩選改用 dailyUnitFilterSelected
+var dailyUnitFilterSelected=null; // null／空＝尚未初始化；陣列＝已勾選單位
 var dailyHistoryUnit='全部';
 var dailyHistoryStatus='全部';
 var dailyHistoryKw='';
@@ -6190,7 +6198,7 @@ function createAdhocWork(data,user){
   }
   var s=loadDailyState();
   var requireAttachment=!!data.requireAttachment;
-  var descImages=Array.isArray(data.descImages)?data.descImages.slice(0,5):[];
+  var descImages=Array.isArray(data.descImages)?data.descImages.slice():[];
   units.forEach(function(unit){
     var unitAssigneeIds=assigneeIds.filter(function(id){
       return dailyUserUnits(validIds[id]).indexOf(unit)>=0;
@@ -6225,7 +6233,7 @@ function createRecurringTemplate(data,user){
   validStaff.forEach(function(u){ validIds[String(u.id)]=u; });
   assigneeIds=assigneeIds.filter(function(id){ return !!validIds[id]; });
   var s=loadDailyState();
-  var descImages=Array.isArray(data.descImages)?data.descImages.slice(0,5):[];
+  var descImages=Array.isArray(data.descImages)?data.descImages.slice():[];
   var t={
     id:dailyId('tpl'), title:title, content:content, units:units, priority:priority, active:true,
     requireAttachment:!!data.requireAttachment,
@@ -6263,7 +6271,7 @@ function editTemplate(id,data,user){
   if(data.priority!=null&&PRIORITIES.indexOf(data.priority)>=0) t.priority=data.priority;
   if(Array.isArray(data.units)) t.units=data.units.filter(function(u){ return STORE_UNITS.indexOf(u)>=0; });
   if(typeof data.requireAttachment!=='undefined') t.requireAttachment=!!data.requireAttachment;
-  if(Array.isArray(data.descImages)) t.descImages=data.descImages.slice(0,5);
+  if(Array.isArray(data.descImages)) t.descImages=data.descImages.slice();
   if(Array.isArray(data.assigneeIds)){
     var validStaff=listDailyStaffForUnits(t.units||[]);
     var validIds={};
@@ -6296,22 +6304,19 @@ function deleteTemplate(id,user){
 }
 function getTodayWorksForUser(user){
   user=user||currentUser;
+  ensureDailyUnitFilterDefaults(user);
   var list=loadDailyState().works.filter(isDailyTodayWork);
   if(dailyCanManage(user)){
-    if(dailyUnitFilter!=='全部') list=list.filter(function(w){ return w.unit===dailyUnitFilter; });
+    list=list.filter(function(w){ return isUnitInDailyFilter(w.unit); });
   }else{
     var units=dailyUserUnits(user);
     var uid=String(user.id);
     list=list.filter(function(w){
+      if(!isUnitInDailyFilter(w.unit)) return false;
       var ids=workAssigneeIds(w);
-      if(ids.length && ids.indexOf(uid)>=0){
-        // 指定人員：仍可依單位篩選
-        if(dailyUnitFilter && dailyUnitFilter!=='全部') return w.unit===dailyUnitFilter;
-        return true;
-      }
+      if(ids.length && ids.indexOf(uid)>=0) return true;
       if(units.indexOf(w.unit)<0) return false;
       if(ids.length) return false;
-      if(dailyUnitFilter && dailyUnitFilter!=='全部') return w.unit===dailyUnitFilter;
       return true;
     });
   }
@@ -6346,7 +6351,88 @@ function goDailyView(v){
   if(v!=='unit') dailyProgressUnit=null;
   render();
 }
-function setDailyUnitFilter(unit){ dailyUnitFilter=unit||'全部'; render(); }
+function getDailyUnitFilterOptions(user){
+  user=user||currentUser;
+  if(dailyCanManage(user)) return STORE_UNITS.slice();
+  return dailyUserUnits(user).slice();
+}
+function ensureDailyUnitFilterDefaults(user){
+  var opts=getDailyUnitFilterOptions(user);
+  if(!Array.isArray(dailyUnitFilterSelected)){
+    dailyUnitFilterSelected = opts.slice();
+  } else {
+    // 去掉已失效單位；允許「全不選」（空陣列＝不顯示任何單位工作）
+    dailyUnitFilterSelected = dailyUnitFilterSelected.filter(function(u){ return opts.indexOf(u)>=0; });
+  }
+  // 同步舊字串欄位（部分 CTA／舊碼可能仍讀取）
+  if(dailyUnitFilterSelected.length===opts.length) dailyUnitFilter='全部';
+  else if(!dailyUnitFilterSelected.length) dailyUnitFilter='（未選）';
+  else if(dailyUnitFilterSelected.length===1) dailyUnitFilter=dailyUnitFilterSelected[0];
+  else dailyUnitFilter=dailyUnitFilterSelected.join('、');
+}
+function isUnitInDailyFilter(unit){
+  if(!Array.isArray(dailyUnitFilterSelected)) return true;
+  if(!dailyUnitFilterSelected.length) return false;
+  return dailyUnitFilterSelected.indexOf(unit)>=0;
+}
+function setDailyUnitFilter(unit){
+  // 相容舊 select：設成單一單位或全部
+  if(!unit || unit==='全部'){
+    dailyUnitFilterSelected = getDailyUnitFilterOptions(currentUser);
+  } else {
+    dailyUnitFilterSelected = [String(unit)];
+  }
+  ensureDailyUnitFilterDefaults(currentUser);
+  render();
+}
+function toggleDailyUnitFilterCheck(unit, checked){
+  unit=String(unit||'');
+  ensureDailyUnitFilterDefaults(currentUser);
+  var opts=getDailyUnitFilterOptions(currentUser);
+  if(opts.indexOf(unit)<0) return;
+  var i=dailyUnitFilterSelected.indexOf(unit);
+  if(checked){
+    if(i<0) dailyUnitFilterSelected.push(unit);
+  } else {
+    if(i>=0) dailyUnitFilterSelected.splice(i,1);
+  }
+  ensureDailyUnitFilterDefaults(currentUser);
+  render();
+}
+function setDailyUnitFilterAll(on){
+  var opts=getDailyUnitFilterOptions(currentUser);
+  dailyUnitFilterSelected = on ? opts.slice() : [];
+  // 全不選時仍允許空清單（顯示無工作）；不強制回填
+  if(dailyUnitFilterSelected.length===opts.length) dailyUnitFilter='全部';
+  else if(!dailyUnitFilterSelected.length) dailyUnitFilter='（未選）';
+  else if(dailyUnitFilterSelected.length===1) dailyUnitFilter=dailyUnitFilterSelected[0];
+  else dailyUnitFilter=dailyUnitFilterSelected.join('、');
+  render();
+}
+function dailyUnitFilterChecksHtml(user){
+  user=user||currentUser;
+  ensureDailyUnitFilterDefaults(user);
+  var opts=getDailyUnitFilterOptions(user);
+  if(!opts.length){
+    return '<span class="tag dept">所屬單位：—</span>';
+  }
+  if(!dailyCanManage(user) && opts.length===1){
+    return '<span class="tag dept">所屬單位：'+dailyEsc(opts[0])+'</span>';
+  }
+  var checks=opts.map(function(u){
+    var on=dailyUnitFilterSelected.indexOf(u)>=0;
+    return '<label style="display:inline-flex;align-items:center;gap:6px;margin:4px 12px 4px 0;font-size:13px;color:#455a64;cursor:pointer">'
+      +'<input type="checkbox" '+(on?'checked':'')+' onchange="toggleDailyUnitFilterCheck(\''+escHtml(u)+'\', this.checked)"> '
+      +escHtml(u)+'</label>';
+  }).join('');
+  return '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px">'
+    +'<span style="font-size:13px;color:#555;margin-right:4px">顯示單位</span>'
+    +'<button type="button" class="btn gray sm" onclick="setDailyUnitFilterAll(true)">全選</button>'
+    +'<button type="button" class="btn gray sm" onclick="setDailyUnitFilterAll(false)">全不選</button>'
+    +'<div style="flex-basis:100%;height:0"></div>'
+    +checks
+    +'</div>';
+}
 function setDailyHistoryUnit(unit){ dailyHistoryUnit=unit||'全部'; render(); }
 function setDailyHistoryStatus(st){ dailyHistoryStatus=st||'全部'; render(); }
 function setDailyHistoryKw(v){ dailyHistoryKw=String(v||''); render(); }
@@ -6513,28 +6599,86 @@ function dailyConfirmUntick(id){
   if(!ok){ alert2('無法取消完成。'); return; }
   render();
 }
+
+/** 上傳彈窗草稿：可多次選擇、逐項刪除，確認後才一次上傳 */
+var modalUploadDraftFiles = [];
+function clearModalUploadDraft(){ modalUploadDraftFiles = []; }
+function modalUploadDraftListHtml(){
+  if(!modalUploadDraftFiles.length){
+    return '<p id="modal-upload-list" style="font-size:12px;color:#888;margin:8px 0">尚未選擇檔案。可多次點「添加檔案」累積。</p>';
+  }
+  return '<div id="modal-upload-list" style="margin:8px 0">'+modalUploadDraftFiles.map(function(f,i){
+    return '<div class="file-item" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">'
+      +'<span>📎 '+dailyEsc(f.name||('檔案'+(i+1)))+'</span>'
+      +'<button type="button" class="btn red sm" data-call="modalUploadDraftRemove" data-arg0="'+i+'">刪除</button>'
+      +'</div>';
+  }).join('')+'</div>';
+}
+function modalUploadDraftRender(){
+  var el=document.getElementById('modal-upload-list');
+  if(!el) return;
+  var wrap=document.createElement('div');
+  wrap.innerHTML=modalUploadDraftListHtml();
+  var next=wrap.firstChild;
+  if(next) el.replaceWith(next);
+}
+function modalUploadDraftRemove(i){
+  i=Number(i);
+  if(!Number.isInteger(i) || i<0 || i>=modalUploadDraftFiles.length) return;
+  modalUploadDraftFiles.splice(i,1);
+  modalUploadDraftRender();
+}
+function modalUploadDraftOnPick(input){
+  var files=input && input.files;
+  if(!files || !files.length) return;
+  for(var i=0;i<files.length;i++){
+    modalUploadDraftFiles.push(files[i]);
+  }
+  input.value='';
+  modalUploadDraftRender();
+}
+function modalUploadPickerHtml(){
+  return '<label>選擇檔案</label>'
+    +'<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0">'
+    +'<button type="button" class="btn green sm" onclick="document.getElementById(\'modal-upload-input\').click()">📎 添加檔案</button>'
+    +'<span style="font-size:12px;color:#888">可多選、可多次添加；上傳數量不限</span></div>'
+    +'<input type="file" id="modal-upload-input" multiple onchange="modalUploadDraftOnPick(this)" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">'
+    +modalUploadDraftListHtml();
+}
+async function modalUploadDraftToAttachments(){
+  var out=[];
+  for(var i=0;i<modalUploadDraftFiles.length;i++){
+    var f=modalUploadDraftFiles[i];
+    var up=await cloudUploadFile(f);
+    out.push({
+      name:up.name||f.name,
+      dataUrl:up.dataUrl,
+      driveFileId:up.driveFileId,
+      mimeType:up.mimeType||f.type,
+      by:dailyUserId(currentUser),
+      time:dailyNowStr()
+    });
+  }
+  return out;
+}
 function dailyAskCompleteWithFiles(id){
   var w=loadDailyState().works.find(function(x){ return x.id===id; });
   if(!w) return;
+  clearModalUploadDraft();
   showModal(
     '<h3>上傳附件後完成</h3>'+
-    '<p style="font-size:13px;color:#555">「'+dailyEsc(w.title)+'」需要上傳至少 1 個附件（格式不限，可多選）。上傳成功後才會剔選完成。</p>'+
-    '<label>選擇檔案</label><input type="file" id="d-complete-files" multiple>'+
+    '<p style="font-size:13px;color:#555">「'+dailyEsc(w.title)+'」需要上傳至少 1 個附件（格式不限）。可多次添加，確認前可刪除個別檔案。</p>'+
+    modalUploadPickerHtml()+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'+
     '<button class="btn sm" data-call="dailySubmitCompleteWithFiles" data-arg0="'+escHtml(String(id))+'">上傳並完成</button></div>'
   );
 }
 async function dailySubmitCompleteWithFiles(id){
-  var input=document.getElementById('d-complete-files');
-  if(!input||!input.files||!input.files.length) return alert2('請至少選擇 1 個附件。');
-  var files=[];
-  try{
-    for(var i=0;i<input.files.length;i++){
-      var f=input.files[i];
-      var up=await cloudUploadFile(f);
-      files.push({name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType, by:dailyUserId(currentUser), time:dailyNowStr()});
-    }
-  }catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
+  if(!modalUploadDraftFiles.length) return alert2('請至少選擇 1 個附件。');
+  var files;
+  try{ files=await modalUploadDraftToAttachments(); }
+  catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
+  clearModalUploadDraft();
   var ok=completeDailyWork(id,currentUser,true,{attachments:files});
   closeModal();
   if(!ok){ alert2('無法完成此工作。'); return; }
@@ -6543,25 +6687,21 @@ async function dailySubmitCompleteWithFiles(id){
 function dailyAskAddFiles(id){
   var w=loadDailyState().works.find(function(x){ return x.id===id; });
   if(!w) return;
+  clearModalUploadDraft();
   showModal(
     '<h3>補傳附件</h3>'+
-    '<p style="font-size:13px;color:#555">「'+dailyEsc(w.title)+'」已完成，可再補傳附件（不影響完成狀態）。</p>'+
-    '<label>選擇檔案</label><input type="file" id="d-add-files" multiple>'+
+    '<p style="font-size:13px;color:#555">「'+dailyEsc(w.title)+'」已完成，可再補傳附件（不影響完成狀態）。可多次添加，確認前可刪除。</p>'+
+    modalUploadPickerHtml()+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'+
     '<button class="btn sm" data-call="dailySubmitAddFiles" data-arg0="'+escHtml(String(id))+'">上傳</button></div>'
   );
 }
 async function dailySubmitAddFiles(id){
-  var input=document.getElementById('d-add-files');
-  if(!input||!input.files||!input.files.length) return alert2('請選擇至少 1 個檔案。');
-  var files=[];
-  try{
-    for(var i=0;i<input.files.length;i++){
-      var f=input.files[i];
-      var up=await cloudUploadFile(f);
-      files.push({name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType, by:dailyUserId(currentUser), time:dailyNowStr()});
-    }
-  }catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
+  if(!modalUploadDraftFiles.length) return alert2('請選擇至少 1 個檔案。');
+  var files;
+  try{ files=await modalUploadDraftToAttachments(); }
+  catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
+  clearModalUploadDraft();
   var ok=addAttachmentsToWork(id,files,currentUser);
   closeModal();
   if(!ok){ alert2('無法補傳附件。'); return; }
@@ -6620,7 +6760,7 @@ function prioritySelectHtml(val,id){
   id=id||'d-priority';
   return '<select id="'+id+'">'+PRIORITIES.map(function(p){ return '<option value="'+p+'" '+(p===(val||'中')?'selected':'')+'>'+p+'</option>'; }).join('')+'</select>';
 }
-var DAILY_DESC_IMAGE_MAX=5;
+var DAILY_DESC_IMAGE_MAX=0; // 0＝不限制張數
 function dailyDescImagesFieldHtml(existing){
   existing=Array.isArray(existing)?existing:[];
   var keep=existing.length
@@ -6628,9 +6768,9 @@ function dailyDescImagesFieldHtml(existing){
       '<label style="display:flex;align-items:center;gap:8px;margin:0 0 8px;font-size:13px"><input type="checkbox" id="d-desc-clear"> 清除全部現有說明圖</label>')
     :'';
   return keep+
-    '<label>說明圖（可選，最多 '+DAILY_DESC_IMAGE_MAX+' 張，僅 JPG／PNG／WebP／GIF）</label>'+
+    '<label>說明圖（可選，僅 JPG／PNG／WebP／GIF，數量不限）</label>'+
     '<input type="file" id="d-desc-images" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" multiple>'+
-    '<p style="font-size:12px;color:#888;margin-top:4px">參考圖／說明用，與「完成時需上傳附件」無關。'+(existing.length?'新選圖片會加在現有圖之後（合計最多 '+DAILY_DESC_IMAGE_MAX+' 張）。':'')+'</p>';
+    '<p style="font-size:12px;color:#888;margin-top:4px">參考圖／說明用，與「完成時需上傳附件」無關。可一次多選；新圖會加在現有圖之後。</p>';
 }
 function dailyIsAllowedDescImageFile(file){
   if(!file) return false;
@@ -6644,10 +6784,7 @@ async function dailyUploadDescImagesFromInput(existingKeep){
   var clear=!!(document.getElementById('d-desc-clear')||{}).checked;
   var base=clear?[]:existingKeep;
   var files=input&&input.files?Array.prototype.slice.call(input.files):[];
-  if(!files.length) return base.slice(0,DAILY_DESC_IMAGE_MAX);
-  if(base.length+files.length>DAILY_DESC_IMAGE_MAX){
-    throw new Error('說明圖合計最多 '+DAILY_DESC_IMAGE_MAX+' 張（含現有）。');
-  }
+  if(!files.length) return base;
   var out=base.slice();
   for(var i=0;i<files.length;i++){
     var f=files[i];
@@ -6662,7 +6799,7 @@ async function dailyUploadDescImagesFromInput(existingKeep){
       time:dailyNowStr()
     });
   }
-  return out.slice(0,DAILY_DESC_IMAGE_MAX);
+  return out;
 }
 function dailyCreateAdhoc(){
   if(!dailyCanManage(currentUser)) return alert2('只有管理層可以建立突發工作。');
@@ -7168,10 +7305,11 @@ function dailyAskProjectSubmit(pid,idx){
   var p=projects.find(function(x){ return x.id===pid; });
   if(!p||!p.stages[idx]) return;
   var s=p.stages[idx];
+  clearModalUploadDraft();
   showModal(
     '<h3>上傳附件後提交確認</h3>'+
-    '<p style="font-size:13px;color:#555">「'+dailyEsc(p.code)+'｜'+dailyEsc(s.name)+'」提交前必須<strong>新上傳</strong>至少 1 個附件（格式不限，可多選）。未開始的階段會自動開始處理。</p>'+
-    '<label>選擇檔案</label><input type="file" id="d-proj-files" multiple>'+
+    '<p style="font-size:13px;color:#555">「'+dailyEsc(p.code)+'｜'+dailyEsc(s.name)+'」提交前必須<strong>新上傳</strong>至少 1 個附件（格式不限）。可多次添加，確認前可刪除。</p>'+
+    modalUploadPickerHtml()+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'+
     '<button class="btn sm" data-call="dailySubmitProject" data-arg0="'+escHtml(String(pid))+'" data-arg1="'+idx+'">上傳並提交</button></div>'
   );
@@ -7182,11 +7320,10 @@ async function dailySubmitProject(pid,idx){
   if(!p||!p.stages[idx]) return;
   var s=p.stages[idx];
   if(!isStageHandler(s,currentUser.id)&&!isAdmin()) return alert2('此階段不是你的待辦。');
-  var input=document.getElementById('d-proj-files');
-  if(!input||!input.files||!input.files.length) return alert2('請至少選擇 1 個附件。');
+  if(!modalUploadDraftFiles.length) return alert2('請至少選擇 1 個附件。');
   try{
-    for(var i=0;i<input.files.length;i++){
-      var f=input.files[i];
+    for(var i=0;i<modalUploadDraftFiles.length;i++){
+      var f=modalUploadDraftFiles[i];
       var up=await cloudUploadFile(f);
       s.files.forEach(function(x){ x.latest=false; });
       var ver='V'+(s.files.length+1);
@@ -7194,6 +7331,7 @@ async function dailySubmitProject(pid,idx){
       addProjLog(p,'上載文件', s.name+'｜'+(up.name||f.name)+'（'+ver+'）');
     }
   }catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
+  clearModalUploadDraft();
   if(['未開始','待處理'].includes(s.status)){
     s.status='進行中';
     addProjLog(p,'開始處理', s.name+' → 進行中');
@@ -7225,23 +7363,11 @@ function vDailyToday(user){
   var done=list.filter(function(w){return w.status==='done';}).length;
   var overdue=list.filter(isOverdue).length;
   var filter='';
-  if(dailyCanManage(user)){
-    filter='<select onchange="setDailyUnitFilter(this.value)">'+['全部'].concat(STORE_UNITS).map(function(u){
-      return '<option value="'+u+'"'+(dailyUnitFilter===u?' selected':'')+'>'+u+'</option>';
-    }).join('')+'</select>';
+  if(dailyCanManage(user) || dailyUserUnits(user).length>1){
+    filter=dailyUnitFilterChecksHtml(user);
   }else{
     var myUnits=dailyUserUnits(user);
-    if(myUnits.length>1){
-      // 多單位：可切換地點，只看該單位工作
-      var opts=['全部'].concat(myUnits);
-      if(dailyUnitFilter!=='全部' && myUnits.indexOf(dailyUnitFilter)<0) dailyUnitFilter='全部';
-      filter='<label style="display:inline-flex;align-items:center;gap:6px;margin:0;font-size:13px;color:#555">單位 '+
-        '<select onchange="setDailyUnitFilter(this.value)">'+opts.map(function(u){
-          return '<option value="'+escHtml(u)+'"'+(dailyUnitFilter===u?' selected':'')+'>'+escHtml(u)+'</option>';
-        }).join('')+'</select></label>';
-    }else{
-      filter='<span class="tag dept">所屬單位：'+dailyEsc(myUnits.length?myUnits.join('、'):'—')+'</span>';
-    }
+    filter='<span class="tag dept">所屬單位：'+dailyEsc(myUnits.length?myUnits.join('、'):'—')+'</span>';
   }
   return '<div class="card"><h2>🗓️ 今日工作｜'+dailyEsc(todayStr())+'</h2>'+
     '<div class="stats">'+
@@ -7454,6 +7580,7 @@ function closeModal(){
   var el=document.getElementById('modal-content');
   if(el) el.classList.remove('modal-wide');
   document.getElementById('modal-bg').classList.add('hidden');
+  try{ clearModalUploadDraft(); }catch(e){}
 }
 function alert2(msg){ showModal(`<h3>提示</h3><p style="font-size:14px">${msg}</p><div class="actions"><button class="btn sm" onclick="closeModal()">確定</button></div>`); }
 document.getElementById('modal-bg').addEventListener('click', e=>{ if(e.target.id==='modal-bg') closeModal(); });
