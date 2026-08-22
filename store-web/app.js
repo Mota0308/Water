@@ -1331,15 +1331,56 @@ function isTransferNotice(n){
 }
 function isAnnouncement(n){ return n && !isTransferNotice(n); }
 
-/** 人工通知導航 CTA（與調貨操作列分開） */
+/** 人工／系統導航 CTA（與調貨操作列分開） */
 const NOTICE_CTA_EXCLUDE_VIEWS = { pushCreate: true, posReset: true };
 const NOTICE_CTA_NEEDS_MOD = { home: true, myTasks: true, sysLogs: true, addProject: true };
-function noticeCtaOf(n){
-  if(!n || isTransferNotice(n) || !n.cta || typeof n.cta!=='object') return null;
-  const mod = String(n.cta.mod||'').trim();
-  const view = String(n.cta.view||'').trim();
+function normalizeClientNoticeCta(raw){
+  if(!raw || typeof raw!=='object') return null;
+  const mod = String(raw.mod||'').trim();
+  const view = String(raw.view||'').trim();
   if(!mod || !view || NOTICE_CTA_EXCLUDE_VIEWS[view]) return null;
-  return { mod: mod, view: view };
+  const out = { mod: mod, view: view };
+  if(raw.projectId) out.projectId = String(raw.projectId).trim();
+  if(raw.unit) out.unit = String(raw.unit).trim();
+  if(raw.workId) out.workId = String(raw.workId).trim();
+  if(raw.label) out.label = String(raw.label).trim();
+  return out;
+}
+/** 系統產生的流程通知（非用戶手動推送）→ 推斷來源頁 */
+function inferSystemNoticeCta(n){
+  if(!n || isTransferNotice(n)) return null;
+  const cat = String(n.category||'');
+  const title = String(n.title||'');
+  if(n.systemSource || n.fromUserId==='system' || n.fromName==='系統'){
+    if(cat==='開發及生產' || title.indexOf('開發及生產')===0){
+      return { mod:'production', view:'devList', projectId: n.cta && n.cta.projectId, label:'前往項目' };
+    }
+    if(cat==='補貨' || title.indexOf('補貨')===0){
+      return { mod:'replenishment', view:'repList', projectId: n.cta && n.cta.projectId, label:'前往項目' };
+    }
+    if(cat==='恆常任務' || cat==='突發任務' || title.indexOf('恆常任務')===0 || title.indexOf('突發任務')===0){
+      return { mod:'daily', view:'dailyToday', label:'前往今日工作' };
+    }
+  }
+  if(cat==='恆常任務' || title.indexOf('恆常任務：')===0){
+    return { mod:'daily', view:'dailyToday', label:'前往今日工作' };
+  }
+  if(cat==='突發任務' || title.indexOf('突發任務：')===0){
+    return { mod:'daily', view:'dailyToday', label:'前往今日工作' };
+  }
+  if(cat==='開發及生產' || title.indexOf('開發及生產：')===0){
+    return { mod:'production', view:'devList', label:'前往項目列表' };
+  }
+  if(cat==='補貨' || title.indexOf('補貨：')===0){
+    return { mod:'replenishment', view:'repList', label:'前往項目列表' };
+  }
+  return null;
+}
+function noticeCtaOf(n){
+  if(!n || isTransferNotice(n)) return null;
+  const stored = normalizeClientNoticeCta(n.cta);
+  if(stored) return stored;
+  return inferSystemNoticeCta(n);
 }
 function noticeCtaCleanLabel(label){
   return String(label||'')
@@ -1373,13 +1414,21 @@ function noticeCtaCatalog(){
 }
 function noticeCtaLabel(cta){
   if(!cta) return '';
+  if(cta.label) return String(cta.label);
   const hit = noticeCtaCatalog().find(function(e){ return e.mod===cta.mod && e.view===cta.view; });
   if(hit && hit.label) return '前往'+hit.label;
-  return '前往目標頁面';
+  return '前往來源界面';
 }
 function canAccessNoticeCta(n){
   const cta = noticeCtaOf(n);
   if(!cta || !currentUser) return false;
+  if(cta.projectId){
+    const p = (projects||[]).find(function(x){ return String(x.id)===String(cta.projectId); });
+    if(p){
+      if(p.type!=='rep' && isPersonal()) return false;
+      return true;
+    }
+  }
   if(cta.mod==='production' && isPersonal()) return false;
   const items = getSidebarItemsForModule(cta.mod)||[];
   return items.some(function(it){ return it[0]===cta.view; });
@@ -1402,6 +1451,13 @@ function followNoticeCta(id){
   const cta = noticeCtaOf(n);
   if(!cta) return;
   try{ closeMailbox(); }catch(e){}
+  if(cta.projectId && typeof openProject==='function'){
+    openProject(cta.projectId, 'overview');
+    return;
+  }
+  if(cta.unit && typeof setDailyUnitFilter==='function' && (cta.view==='dailyToday' || cta.mod==='daily')){
+    dailyUnitFilter = cta.unit;
+  }
   if(NOTICE_CTA_NEEDS_MOD[cta.view]) goInModule(cta.mod, cta.view);
   else go(cta.view);
 }
@@ -4831,11 +4887,19 @@ async function notifyProjectStageTurn(p, stageName, reason){
         title: title,
         summary: typeLabel+'｜'+(p.code||'')+'｜'+(stageName||''),
         content: body,
+        contentSegments: [body],
         recipientIds: recipientIds,
         recipientDesc: '項目經手人 '+recipientIds.length+' 人',
         startDate: todayStr(),
         endDate: todayStr(),
-        pinned: false
+        pinned: false,
+        systemSource: true,
+        cta: {
+          mod: p.type==='rep' ? 'replenishment' : 'production',
+          view: p.type==='rep' ? 'repList' : 'devList',
+          projectId: p.id,
+          label: '前往項目'
+        }
       })
     });
     await loadNotifications();
@@ -5839,11 +5903,20 @@ async function notifyRecurringInstancesCreated(works){
           title: title,
           summary: '恆常任務｜'+(w.unit||'')+'｜期限 '+(w.dueDate||''),
           content: body,
+          contentSegments: [body],
           recipientIds: recipientIds,
           recipientDesc: '指定人員 '+recipientIds.length+' 人',
           startDate: dailyTodayStr(),
           endDate: w.dueDate || dailyTodayStr(),
-          pinned: priority==='緊急'
+          pinned: priority==='緊急',
+          systemSource: true,
+          cta: {
+            mod: 'daily',
+            view: 'dailyToday',
+            unit: w.unit || '',
+            workId: w.id || '',
+            label: '前往今日工作'
+          }
         })
       });
       any=true;
@@ -6579,13 +6652,21 @@ async function notifyAdhocWorkCreated(workMeta){
         title: title,
         summary: summary,
         content: body,
+        contentSegments: [body],
         recipientIds: recipientIds,
         recipientDesc: workMeta.assigneeIds && workMeta.assigneeIds.length
           ? ('指定員工 '+recipientIds.length+' 人')
           : ('單位：'+(workMeta.units||[]).join('、')),
         startDate: dailyTodayStr(),
         endDate: workMeta.dueDate || dailyTodayStr(),
-        pinned: priority==='緊急'
+        pinned: priority==='緊急',
+        systemSource: true,
+        cta: {
+          mod: 'daily',
+          view: 'dailyToday',
+          unit: (workMeta.units&&workMeta.units[0])||'',
+          label: '前往今日工作'
+        }
       })
     });
     await loadNotifications();

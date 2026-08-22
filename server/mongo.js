@@ -1176,7 +1176,7 @@ export function contentSegmentsOf(item) {
   return c ? [c] : [];
 }
 
-/** 人工／系統導航 CTA：僅允許 { mod, view }；調貨操作列不走此欄位 */
+/** 人工／系統導航 CTA：{ mod, view }，可選 projectId／unit／workId；調貨操作列不走此欄位 */
 const NOTICE_CTA_BLOCKED_VIEWS = new Set(['pushCreate', 'posReset']);
 function normalizeNoticeCta(raw) {
   const src = raw && typeof raw === 'object' ? raw : null;
@@ -1186,7 +1186,12 @@ function normalizeNoticeCta(raw) {
   if (!mod || !view) return null;
   if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(mod) || !/^[a-zA-Z][a-zA-Z0-9_]*$/.test(view)) return null;
   if (NOTICE_CTA_BLOCKED_VIEWS.has(view)) return null;
-  return { mod, view };
+  const out = { mod, view };
+  if (src.projectId != null && String(src.projectId).trim()) out.projectId = String(src.projectId).trim();
+  if (src.unit != null && String(src.unit).trim()) out.unit = String(src.unit).trim();
+  if (src.workId != null && String(src.workId).trim()) out.workId = String(src.workId).trim();
+  if (src.label != null && String(src.label).trim()) out.label = String(src.label).trim().slice(0, 40);
+  return out;
 }
 
 function normalizeContentSegmentsInput(input, fallbackContent) {
@@ -1231,6 +1236,7 @@ export function normalizeNotification(raw) {
   n.pinned = !!n.pinned || cat === 'urgent' || n.priority === '緊急';
   n.logs = Array.isArray(n.logs) ? n.logs : [];
   n.cta = normalizeNoticeCta(n.cta);
+  n.systemSource = !!n.systemSource;
   if (!n.status) n.status = '進行中';
   const ids = recipientIdsOf(n);
   if (!n.readers || typeof n.readers !== 'object') n.readers = {};
@@ -1469,6 +1475,7 @@ export async function createNotification(input) {
   const cta = normalizeNoticeCta(input?.cta);
   if (cta) item.cta = cta;
   else delete item.cta;
+  if (input?.systemSource) item.systemSource = true;
   state.notifications.unshift(item);
   state.notifSeq = (state.notifSeq || 1) + 1;
   await saveNotificationsState(state);

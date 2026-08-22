@@ -1034,10 +1034,12 @@ app.post('/api/notifications', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'JSON body required' });
     }
     const me = publicUser(req.user);
+    const isSystem = !!req.body.systemSource;
     const body = {
       ...req.body,
-      fromUserId: String(me?.id || req.body.fromUserId || ''),
-      fromName: String(me?.name || me?.login || req.body.fromName || ''),
+      fromUserId: isSystem ? 'system' : String(me?.id || req.body.fromUserId || ''),
+      fromName: isSystem ? '系統' : String(me?.name || me?.login || req.body.fromName || ''),
+      systemSource: isSystem,
     };
     const item = await createNotification(body);
     const filtered = filterNotificationForViewerWithRole(item, req.user) || item;
