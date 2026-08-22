@@ -1157,19 +1157,42 @@ function bindStaticChrome(){
   });
   bindMailboxDelegates();
 }
+function transferMailboxJumpBtn(transferId){
+  if(!transferId) return '';
+  return '<button type="button" class="btn sm" data-call="openTransferFromNotice" data-arg0="'+escHtml(String(transferId))+'">前往調動記錄</button>';
+}
+function openTransferFromNotice(transferId){
+  transferId = String(transferId||'').trim();
+  if(!transferId) return;
+  if(!currentUser){ alert2('請先登入。'); return; }
+  if(!apiEnabled){ alert2('需要連接 MongoDB 雲端。'); return; }
+  try{ closeMailbox(); }catch(e){}
+  transferHistoryExpandedId = transferId;
+  go('transferHistory');
+  loadTransferOrders(true).then(function(){ render(); }).catch(function(){ render(); });
+}
 function transferMailboxActionsHtml(item){
   if(!item || item.actionType!=='transfer_decide' || !item.transferId) return '';
+  const jump = transferMailboxJumpBtn(item.transferId);
+  const wrapStart = '<div class="mailbox-transfer-actions" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">';
   if(item.transferResolved){
-    return `<div class="mailbox-transfer-actions"><span style="font-size:12px;color:#78909c">此調動已處理${item.transferDecision?'：'+escHtml(item.transferDecision):''}</span></div>`;
+    return wrapStart
+      +'<span style="font-size:12px;color:#78909c">此調動已處理'+(item.transferDecision?'：'+escHtml(item.transferDecision):'')+'</span>'
+      +jump
+      +'</div>';
   }
   const isOwn = currentUser && String(item.fromUserId||'')===String(currentUser.id);
   if(isOwn){
-    return '<div class="mailbox-transfer-actions"><span style="font-size:12px;color:#78909c">你是申請人，不可自行審批。</span></div>';
+    return wrapStart
+      +'<span style="font-size:12px;color:#78909c">你是申請人，不可自行審批。</span>'
+      +jump
+      +'</div>';
   }
   const tidAttr = escHtml(String(item.transferId));
-  return '<div class="mailbox-transfer-actions">'
+  return wrapStart
     +'<button type="button" class="btn sm green" data-tid="'+tidAttr+'" data-decision="approve">通過</button>'
     +'<button type="button" class="btn sm red" data-tid="'+tidAttr+'" data-decision="reject">拒絕</button>'
+    +jump
     +'</div>';
 }
 async function decideTransferFromMailbox(transferId, decision){
@@ -1801,6 +1824,7 @@ function vPushDetail(){
       +'貨品調動審批請在信箱處理（通過／拒絕）。'
       +'</div>'
       +'<div class="actions">'
+      +transferMailboxJumpBtn(n.transferId)
       +'<button type="button" class="btn sm" data-call="openMailboxDetail" data-arg0="'+escHtml(String(n.id))+'">打開信箱詳情</button>'
       +(canManage?'<button type="button" class="btn sm" data-call="viewPushStats" data-arg0="'+escHtml(String(n.id))+'">📊 閱讀統計</button>':'')
       +'</div>'
