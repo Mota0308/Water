@@ -652,14 +652,6 @@ export async function purgeSampleDataOnce() {
 const EMPTY_DAILY = { version: 2, works: [], recurringTemplates: [], opLogs: [] };
 const EMPTY_NOTIFICATIONS = { notifications: [], notifSeq: 1 };
 
-export async function getDaily() {
-  await connectMongo();
-  const doc = await dailyCol().findOne({ _id: 'main' });
-  if (!doc) return { ...EMPTY_DAILY };
-  const { _id, ...rest } = doc;
-  return Object.keys(rest).length ? rest : { ...EMPTY_DAILY };
-}
-
 function preferDailyWork(a, b) {
   if (!a) return b;
   if (!b) return a;
@@ -668,6 +660,98 @@ function preferDailyWork(a, b) {
   const ta = String(a.updatedAt || a.completedAt || '');
   const tb = String(b.updatedAt || b.completedAt || '');
   return tb.localeCompare(ta) >= 0 ? b : a;
+}
+
+function parseDailyDueYmd(v) {
+  if (v == null || v === '') return '';
+  const s = String(v).trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+  m = s.match(/^(\d{4})年(\d{1,2})月(\d{1,2})日/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+  return '';
+}
+
+function dedupeDailyWorksServer(works) {
+  const byId = new Map();
+  for (const w of works || []) {
+    if (!w || w.id == null) continue;
+    const id = String(w.id);
+    byId.set(id, preferDailyWork(byId.get(id), w));
+  }
+  const bySem = new Map();
+  for (const w of byId.values()) {
+    const kind = String(w.kind || '');
+    const unit = String(w.unit || '');
+    const due = parseDailyDueYmd(w.dueDate) || String(w.dueDate || '');
+    let key;
+    if (kind === 'recurring') {
+      key = `recTitle|${String(w.title || '').trim()}|${unit}|${due}`;
+    } else if (kind === 'settlement') {
+      key = `set|${unit}|${due}`;
+    } else {
+      key = `id|${String(w.id)}`;
+    }
+    bySem.set(key, preferDailyWork(bySem.get(key), w));
+  }
+  return Array.from(bySem.values());
+}
+
+function dedupeDailyTemplatesServer(templates) {
+  const byId = new Map();
+  for (const t of templates || []) {
+    if (!t || t.id == null) continue;
+    byId.set(String(t.id), t);
+  }
+  const bySem = new Map();
+  const idMap = {};
+  for (const t of byId.values()) {
+    const units = (Array.isArray(t.units) ? t.units : []).map(String).slice().sort().join(',');
+    const key = `${String(t.title || '').trim()}|${units}`;
+    const prev = bySem.get(key);
+    if (!prev) {
+      bySem.set(key, t);
+      continue;
+    }
+    let keep = prev;
+    let drop = t;
+    if ((!prev.active && t.active) || (prev.active === t.active && String(t.id).localeCompare(String(prev.id)) > 0)) {
+      keep = t;
+      drop = prev;
+    }
+    bySem.set(key, keep);
+    idMap[String(drop.id)] = String(keep.id);
+  }
+  return { templates: Array.from(bySem.values()), idMap };
+}
+
+function normalizeDailyPayload(data) {
+  const raw = data && typeof data === 'object' ? data : {};
+  let works = Array.isArray(raw.works) ? raw.works.slice() : [];
+  let recurringTemplates = Array.isArray(raw.recurringTemplates) ? raw.recurringTemplates.slice() : [];
+  const opLogs = Array.isArray(raw.opLogs) ? raw.opLogs.slice() : [];
+  const tpl = dedupeDailyTemplatesServer(recurringTemplates);
+  recurringTemplates = tpl.templates;
+  if (Object.keys(tpl.idMap).length) {
+    works = works.map((w) => {
+      if (!w || w.kind !== 'recurring') return w;
+      const tid = String(w.templateId || '');
+      if (tpl.idMap[tid]) return { ...w, templateId: tpl.idMap[tid] };
+      return w;
+    });
+  }
+  works = works.map((w) => {
+    if (!w) return w;
+    const due = parseDailyDueYmd(w.dueDate);
+    return due ? { ...w, dueDate: due } : w;
+  });
+  works = dedupeDailyWorksServer(works);
+  return {
+    version: raw.version || 2,
+    works,
+    recurringTemplates,
+    opLogs,
+  };
 }
 
 function mergeDailyWorksById(existingArr, incomingArr) {
@@ -711,18 +795,27 @@ function mergeDailyOpLogs(existingArr, incomingArr) {
     .slice(0, 500);
 }
 
+export async function getDaily() {
+  await connectMongo();
+  const doc = await dailyCol().findOne({ _id: 'main' });
+  if (!doc) return { ...EMPTY_DAILY };
+  const { _id, updatedAt, ...rest } = doc;
+  const normalized = normalizeDailyPayload(Object.keys(rest).length ? rest : { ...EMPTY_DAILY });
+  return normalized;
+}
+
 export async function saveDaily(data) {
   await connectMongo();
   const prev = await getDaily();
   const incoming = data && typeof data === 'object' ? data : {};
-  const payload = {
+  const merged = {
     version: incoming.version || prev.version || 2,
     works: mergeDailyWorksById(prev.works, incoming.works),
     recurringTemplates: mergeDailyTemplatesById(prev.recurringTemplates, incoming.recurringTemplates),
     opLogs: mergeDailyOpLogs(prev.opLogs, incoming.opLogs),
-    _id: 'main',
-    updatedAt: new Date(),
   };
+  const normalized = normalizeDailyPayload(merged);
+  const payload = { ...normalized, _id: 'main', updatedAt: new Date() };
   await dailyCol().replaceOne({ _id: 'main' }, payload, { upsert: true });
   return { ok: true };
 }

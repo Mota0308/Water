@@ -550,13 +550,19 @@ async function loadCloudAppData(){
     (Array.isArray(localDaily.recurringTemplates) && localDaily.recurringTemplates.length)
   ));
 
+  const worksBefore = Array.isArray(cloud.works) ? cloud.works.length : 0;
+  const tplBefore = Array.isArray(cloud.recurringTemplates) ? cloud.recurringTemplates.length : 0;
+
   if(shouldMerge){
     dailyStateCache = mergeDailyStates(cloud, localDaily);
   } else {
-    dailyStateCache = cloud;
+    dailyStateCache = dedupeDailyState(cloud);
   }
 
-  const dailyChanged = purgeSampleDailyState(dailyStateCache);
+  const deduped =
+    (dailyStateCache.works||[]).length < worksBefore ||
+    (dailyStateCache.recurringTemplates||[]).length < tplBefore;
+  const dailyChanged = purgeSampleDailyState(dailyStateCache) || deduped;
   try{ localStorage.setItem(DAILY_KEY, JSON.stringify(dailyStateCache)); }catch(e){}
   if(dailyChanged || localDirty || shouldMerge){
     try{ await persistDailyNow(); }catch(e){ console.warn('sync daily after load', e); }
@@ -5432,6 +5438,100 @@ function dailyMergeById(cloudArr, localArr){
   });
   return Object.keys(m).map(function(k){ return m[k]; });
 }
+/** 恆常／結算語意鍵：同日同單位同範本（或同標題）只留一筆 */
+function dailyWorkSemanticKey(w){
+  if(!w) return '';
+  var unit=String(w.unit||'');
+  var due=dailyParseDateYmd(w.dueDate)||String(w.dueDate||'');
+  var kind=String(w.kind||'');
+  if(kind==='recurring'){
+    var tid=String(w.templateId||'');
+    if(tid) return 'rec|'+tid+'|'+unit+'|'+due;
+    return 'rec|'+String(w.title||'').trim()+'|'+unit+'|'+due;
+  }
+  if(kind==='settlement') return 'set|'+unit+'|'+due;
+  return 'id|'+String(w.id||'');
+}
+function dailyTemplateSemanticKey(t){
+  var units=(t&&Array.isArray(t.units)?t.units:[]).map(String).slice().sort().join(',');
+  return String((t&&t.title)||'').trim()+'|'+units;
+}
+function dedupeDailyWorks(works){
+  var byId={};
+  function prefer(a,b){
+    if(!a) return b;
+    if(!b) return a;
+    if(a.status==='done' && b.status!=='done') return a;
+    if(b.status==='done' && a.status!=='done') return b;
+    var ta=String(a.updatedAt||a.completedAt||'');
+    var tb=String(b.updatedAt||b.completedAt||'');
+    return tb.localeCompare(ta)>=0 ? b : a;
+  }
+  (works||[]).forEach(function(w){
+    if(!w||w.id==null) return;
+    var id=String(w.id);
+    byId[id]=prefer(byId[id], w);
+  });
+  var bySem={};
+  Object.keys(byId).forEach(function(id){
+    var w=byId[id];
+    var key=dailyWorkSemanticKey(w);
+    // 同標題＋單位＋日的恆常（即使 templateId 不同）再壓一次
+    if(w.kind==='recurring'){
+      var titleKey='recTitle|'+String(w.title||'').trim()+'|'+String(w.unit||'')+'|'+(dailyParseDateYmd(w.dueDate)||String(w.dueDate||''));
+      bySem[titleKey]=prefer(bySem[titleKey], w);
+      return;
+    }
+    bySem[key]=prefer(bySem[key], w);
+  });
+  return Object.keys(bySem).map(function(k){ return bySem[k]; });
+}
+function dedupeDailyTemplates(templates){
+  var byId={};
+  (templates||[]).forEach(function(t){
+    if(!t||t.id==null) return;
+    byId[String(t.id)]=t;
+  });
+  var bySem={};
+  var idMap={}; // droppedId -> keptId
+  Object.keys(byId).forEach(function(id){
+    var t=byId[id];
+    var key=dailyTemplateSemanticKey(t);
+    var prev=bySem[key];
+    if(!prev){
+      bySem[key]=t;
+      return;
+    }
+    var keep=prev;
+    var drop=t;
+    if((!prev.active && t.active) || (prev.active===t.active && String(t.id).localeCompare(String(prev.id))>0)){
+      keep=t; drop=prev;
+    }
+    bySem[key]=keep;
+    idMap[String(drop.id)]=String(keep.id);
+  });
+  return { templates: Object.keys(bySem).map(function(k){ return bySem[k]; }), idMap: idMap };
+}
+function applyDailyTemplateIdMap(works, idMap){
+  if(!works||!idMap) return works||[];
+  var keys=Object.keys(idMap);
+  if(!keys.length) return works;
+  return works.map(function(w){
+    if(!w||w.kind!=='recurring') return w;
+    var tid=String(w.templateId||'');
+    if(idMap[tid]) w.templateId=idMap[tid];
+    return w;
+  });
+}
+/** 清掉合併／雙端產生造成的重複恆常範本與同日實例 */
+function dedupeDailyState(state){
+  var s=dailyNormalizeState(state);
+  var tpl=dedupeDailyTemplates(s.recurringTemplates);
+  s.recurringTemplates=tpl.templates;
+  s.works=applyDailyTemplateIdMap(s.works, tpl.idMap);
+  s.works=dedupeDailyWorks(s.works);
+  return s;
+}
 function dailyOpLogKey(l){
   return String((l&&l.time)||'')+'|'+String((l&&(l.userId||l.user))||'')+'|'+String((l&&l.action)||'')+'|'+String((l&&l.detail)||'');
 }
@@ -5443,16 +5543,16 @@ function dailyMergeOpLogs(cloudArr, localArr){
     .sort(function(a,b){ return String((b&&b.time)||'').localeCompare(String((a&&a.time)||'')); })
     .slice(0,500);
 }
-/** 合併雲端與本機：保留尚未成功同步的新建恆常／突發任務。 */
+/** 合併雲端與本機：保留尚未成功同步的新建恆常／突發任務，並去除語意重複。 */
 function mergeDailyStates(cloudRaw, localRaw){
   var cloud=dailyNormalizeState(cloudRaw);
   var local=dailyNormalizeState(localRaw);
-  return {
+  return dedupeDailyState({
     version:2,
     works:dailyMergeById(cloud.works, local.works),
     recurringTemplates:dailyMergeById(cloud.recurringTemplates, local.recurringTemplates),
     opLogs:dailyMergeOpLogs(cloud.opLogs, local.opLogs)
-  };
+  });
 }
 
 function dailyTodayStr(){
@@ -5499,7 +5599,7 @@ function addDailyOpLog(action, detail){
   addModuleLog('daily', action, detail||'');
 }
 function saveDailyState(next){
-  dailyStateCache=dailyNormalizeState(next||dailyStateCache||dailyBaseState());
+  dailyStateCache=dedupeDailyState(next||dailyStateCache||dailyBaseState());
   dailyPersistSeq += 1;
   try{
     localStorage.setItem(DAILY_KEY,JSON.stringify(dailyStateCache));
@@ -5608,11 +5708,27 @@ function workCountsForUnit(unit){
   return {unit:unit,total:total,done:done,open:total-done,overdue:overdue,pct:pct,items:items};
 }
 function generateRecurringForToday(){
-  var s=loadDailyState(), today=dailyTodayStr();
+  var s=dedupeDailyState(loadDailyState()), today=dailyTodayStr();
   var newlyCreated=[];
   // 不再自動植入「每日結算」示範工作
   s.works=(s.works||[]).filter(function(w){ return !isSampleDailyWork(w); });
   s.recurringTemplates=(s.recurringTemplates||[]).filter(function(t){ return !isSampleDailyTemplate(t); });
+  s=dedupeDailyState(s);
+  function recurringCovered(t, unit){
+    return (s.works||[]).some(function(w){
+      if(!w || w.status==='cancelled' || w.kind!=='recurring') return false;
+      if(String(w.unit||'')!==String(unit)) return false;
+      var sameTpl=String(w.templateId||'')===String(t.id);
+      var sameTitle=String(w.title||'').trim()===String(t.title||'').trim();
+      if(!sameTpl && !sameTitle) return false;
+      if(w.status==='open') return true;
+      var due=dailyParseDateYmd(w.dueDate)||String(w.dueDate||'');
+      if(due===today) return true;
+      // 今日才完成的逾期延續件也算已覆蓋，避免再開第二筆
+      if(w.status==='done' && dailyParseDateYmd(w.completedAt)===today) return true;
+      return false;
+    });
+  }
   s.recurringTemplates.forEach(function(t){
     if(!t||!t.active) return;
     (t.units||[]).forEach(function(unit){
@@ -5621,6 +5737,12 @@ function generateRecurringForToday(){
       var openExisting=s.works.find(function(w){
         return w.kind==='recurring'&&w.templateId===t.id&&w.unit===unit&&w.status==='open';
       });
+      if(!openExisting){
+        openExisting=s.works.find(function(w){
+          return w.kind==='recurring'&&w.status==='open'&&w.unit===unit
+            && String(w.title||'').trim()===String(t.title||'').trim();
+        });
+      }
       if(openExisting){
         // 未完成恆常：跨日延續時把逾期／舊期限滾到今天；已延期到未來的不要改回今天
         var openDue=dailyParseDateYmd(openExisting.dueDate)||String(openExisting.dueDate||'');
@@ -5629,34 +5751,32 @@ function generateRecurringForToday(){
           openExisting.dueDate=today;
           openExisting.updatedAt=dailyNowStr();
         }
+        if(!openExisting.templateId) openExisting.templateId=t.id;
         return;
       }
-      var existsToday=s.works.some(function(w){
-        return w.kind==='recurring'&&w.templateId===t.id&&w.unit===unit&&w.dueDate===today&&w.status!=='cancelled';
+      if(recurringCovered(t, unit)) return;
+      var tplAssignees=Array.isArray(t.assigneeIds)?t.assigneeIds.map(String).filter(Boolean):[];
+      var unitAssigneeIds=tplAssignees.filter(function(id){
+        var u=(users||[]).find(function(x){ return String(x.id)===id; });
+        if(!u) return false;
+        var us=dailyUserUnits(u);
+        return !us.length || us.indexOf(unit)>=0;
       });
-      if(!existsToday){
-        var tplAssignees=Array.isArray(t.assigneeIds)?t.assigneeIds.map(String).filter(Boolean):[];
-        var unitAssigneeIds=tplAssignees.filter(function(id){
-          var u=(users||[]).find(function(x){ return String(x.id)===id; });
-          if(!u) return false;
-          var us=dailyUserUnits(u);
-          return !us.length || us.indexOf(unit)>=0;
-        });
-        var w=mkWork({
-          title:t.title, content:t.content||'', unit:unit, kind:'recurring',
-          dueDate:today, priority:t.priority||'中', templateId:t.id,
-          requireAttachment:!!t.requireAttachment, attachments:[],
-          descImages:Array.isArray(t.descImages)?t.descImages.slice():[],
-          createdBy:'system',
-          assigneeIds:unitAssigneeIds,
-          assigneeNames:unitAssigneeIds.map(function(id){ return userName(id); })
-        });
-        s.works.push(w);
-        // 僅有指定人的新實例才排程信箱通知（跨日延續不會走到這裡）
-        if(unitAssigneeIds.length) newlyCreated.push(w);
-      }
+      var w=mkWork({
+        title:t.title, content:t.content||'', unit:unit, kind:'recurring',
+        dueDate:today, priority:t.priority||'中', templateId:t.id,
+        requireAttachment:!!t.requireAttachment, attachments:[],
+        descImages:Array.isArray(t.descImages)?t.descImages.slice():[],
+        createdBy:'system',
+        assigneeIds:unitAssigneeIds,
+        assigneeNames:unitAssigneeIds.map(function(id){ return userName(id); })
+      });
+      s.works.push(w);
+      // 僅有指定人的新實例才排程信箱通知（跨日延續不會走到這裡）
+      if(unitAssigneeIds.length) newlyCreated.push(w);
     });
   });
+  s=dedupeDailyState(s);
   saveDailyState(s);
   if(newlyCreated.length) queueRecurringMailboxNotifies(newlyCreated);
   return newlyCreated;
