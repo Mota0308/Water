@@ -266,6 +266,7 @@ let mailboxOpen = false;
 let mailboxTab = 'inbox'; // inbox | sent
 let mailboxDetailId = null;
 let mailboxDetailTab = 'inbox'; // which tab opened the detail
+let mailboxSearchKw = '';
 let pushDraftFiles = []; // {name, dataUrl} draft attachments for compose
 let pushDraftSegments = ['']; // 新增通知：詳細內容分段
 
@@ -796,6 +797,34 @@ function mySentItems(){
 function myMailboxItems(){
   return mailboxTab === 'sent' ? mySentItems() : myInboxItems();
 }
+function mailboxNoticeSearchBlob(n){
+  if(!n) return '';
+  const segs = Array.isArray(n.contentSegments) ? n.contentSegments.join(' ') : '';
+  const cat = (NOTICE_CAT_META[noticeCatKey(n)]||{}).name || '';
+  return [
+    n.title, n.summary, n.content, segs, n.fromName, n.priority, cat,
+    n.category, n.actionType, n.id
+  ].map(function(x){ return String(x||''); }).join(' ');
+}
+function filterMailboxItems(list, kw){
+  const q = String(kw||'').trim().toLowerCase();
+  if(!q) return list || [];
+  return (list||[]).filter(function(n){
+    return mailboxNoticeSearchBlob(n).toLowerCase().indexOf(q)>=0;
+  });
+}
+function setMailboxSearchKw(kw, opts){
+  opts = opts || {};
+  mailboxSearchKw = String(kw||'');
+  const input = document.getElementById('mailbox-search-input');
+  if(input && opts.syncInput!==false && input.value!==mailboxSearchKw){
+    input.value = mailboxSearchKw;
+  }
+  if(opts.refresh!==false) refreshMailboxUi();
+}
+function clearMailboxSearch(){
+  setMailboxSearchKw('', { syncInput:true, refresh:true });
+}
 function unreadCount(){
   if(!currentUser) return 0;
   return notifications.filter(function(n){ return isNotifUnreadForMe(n); }).length;
@@ -1008,10 +1037,17 @@ function refreshMailboxUi(){
     closeMailboxDetail();
     return;
   }
-  const items = myMailboxItems();
+  const searchInput = document.getElementById('mailbox-search-input');
+  if(searchInput && document.activeElement!==searchInput && searchInput.value!==mailboxSearchKw){
+    searchInput.value = mailboxSearchKw;
+  }
+  const allItems = myMailboxItems();
+  const items = filterMailboxItems(allItems, mailboxSearchKw);
   const isSent = mailboxTab === 'sent';
-  if(!items.length){
+  if(!allItems.length){
     list.innerHTML = '<p class="mailbox-empty">'+(isSent?'尚無發送記錄。':'暫無通知。')+'</p>';
+  } else if(!items.length){
+    list.innerHTML = '<p class="mailbox-empty">沒有符合「'+escHtml(String(mailboxSearchKw).trim())+'」的通知。</p>';
   } else {
     const uid = currentUser.id;
     list.innerHTML = items.map(item=>{
@@ -1057,6 +1093,20 @@ function bindMailboxDelegates(){
       if(id) openMailboxDetail(id);
     });
   }
+  const search = document.getElementById('mailbox-search-input');
+  if(search && search.dataset.bound!=='1'){
+    search.dataset.bound = '1';
+    search.addEventListener('input', function(){
+      setMailboxSearchKw(search.value, { syncInput:false, refresh:true });
+    });
+    search.addEventListener('keydown', function(e){
+      if(e.key==='Escape'){
+        e.preventDefault();
+        clearMailboxSearch();
+        search.blur();
+      }
+    });
+  }
   const actions = document.getElementById('mailbox-detail-actions');
   if(actions && actions.dataset.bound!=='1'){
     actions.dataset.bound = '1';
@@ -1088,6 +1138,7 @@ function bindStaticChrome(){
     const action = actionEl ? actionEl.getAttribute('data-action') : '';
     if(action==='close-mailbox'){ closeMailbox(); return; }
     if(action==='close-mailbox-detail'){ closeMailboxDetail(); return; }
+    if(action==='clear-mailbox-search'){ clearMailboxSearch(); return; }
     if(action==='tab-inbox'){ setMailboxTab('inbox'); return; }
     if(action==='tab-sent'){ setMailboxTab('sent'); return; }
     if(action==='toggle-read'){ toggleMailboxDetailRead(); return; }
