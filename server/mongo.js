@@ -135,6 +135,7 @@ export async function getTransferProductOptions() {
   const brands = normalizeOptionList(doc?.brands, []);
   const colors = normalizeOptionList(doc?.colors, []);
   const sizeOptions = normalizeOptionList(doc?.sizeOptions, DEFAULT_TRANSFER_SIZE_OPTIONS);
+  const categories = normalizeOptionList(doc?.categories, TRANSFER_CATEGORIES);
   const usedBrands = await transferProductsCol()
     .distinct('brand', { brand: { $exists: true, $nin: [null, ''] } })
     .catch(() => []);
@@ -152,7 +153,19 @@ export async function getTransferProductOptions() {
     else if (s) flatSizes.push(s);
   });
   const mergedSizes = normalizeOptionList([...sizeOptions, ...flatSizes], DEFAULT_TRANSFER_SIZE_OPTIONS);
-  return { brands: mergedBrands, colors: mergedColors, sizeOptions: mergedSizes };
+  const usedCategories = await transferProductsCol()
+    .distinct('category', { category: { $exists: true, $nin: [null, ''] } })
+    .catch(() => []);
+  const mergedCategories = normalizeOptionList(
+    [...categories, ...usedCategories],
+    TRANSFER_CATEGORIES
+  );
+  return {
+    brands: mergedBrands,
+    colors: mergedColors,
+    sizeOptions: mergedSizes,
+    categories: mergedCategories,
+  };
 }
 
 export async function saveTransferProductOptions(input) {
@@ -166,7 +179,12 @@ export async function saveTransferProductOptions(input) {
     input?.sizeOptions != null
       ? normalizeOptionList(input.sizeOptions, DEFAULT_TRANSFER_SIZE_OPTIONS)
       : current.sizeOptions;
+  const categories =
+    input?.categories != null
+      ? normalizeOptionList(input.categories, TRANSFER_CATEGORIES)
+      : current.categories;
   if (!sizeOptions.length) throw new Error('請至少保留 1 個商品選項');
+  if (!categories.length) throw new Error('請至少保留 1 個產品分類');
   await metaCol().replaceOne(
     { _id: 'transfer_product_options' },
     {
@@ -174,11 +192,12 @@ export async function saveTransferProductOptions(input) {
       brands,
       colors,
       sizeOptions,
+      categories,
       updatedAt: new Date(),
     },
     { upsert: true }
   );
-  return { brands, colors, sizeOptions };
+  return { brands, colors, sizeOptions, categories };
 }
 
 export async function addTransferProductOption(type, value) {
@@ -199,6 +218,7 @@ export async function addTransferProductOptionsBatch(type, values) {
       brands: [...current.brands, ...items],
       colors: current.colors,
       sizeOptions: current.sizeOptions,
+      categories: current.categories,
     });
   }
   if (type === 'color') {
@@ -206,6 +226,7 @@ export async function addTransferProductOptionsBatch(type, values) {
       brands: current.brands,
       colors: [...current.colors, ...items],
       sizeOptions: current.sizeOptions,
+      categories: current.categories,
     });
   }
   if (type === 'size') {
@@ -213,9 +234,18 @@ export async function addTransferProductOptionsBatch(type, values) {
       brands: current.brands,
       colors: current.colors,
       sizeOptions: [...current.sizeOptions, ...items],
+      categories: current.categories,
     });
   }
-  throw new Error('type 須為 brand、color 或 size');
+  if (type === 'category') {
+    return saveTransferProductOptions({
+      brands: current.brands,
+      colors: current.colors,
+      sizeOptions: current.sizeOptions,
+      categories: [...current.categories, ...items],
+    });
+  }
+  throw new Error('type 須為 brand、color、size 或 category');
 }
 
 export async function removeTransferProductOption(type, value) {
@@ -231,13 +261,17 @@ export async function removeTransferProductOption(type, value) {
   } else if (type === 'size') {
     const n = await transferProductsCol().countDocuments({ sizes: v });
     if (n > 0) throw new Error('仍有產品使用此商品選項，無法刪除');
+  } else if (type === 'category') {
+    const n = await transferProductsCol().countDocuments({ category: v, active: { $ne: false } });
+    if (n > 0) throw new Error('仍有產品使用此產品分類，無法刪除');
   } else {
-    throw new Error('type 須為 brand、color 或 size');
+    throw new Error('type 須為 brand、color、size 或 category');
   }
   const doc = await metaCol().findOne({ _id: 'transfer_product_options' });
   const storedBrands = normalizeOptionList(doc?.brands, []);
   const storedColors = normalizeOptionList(doc?.colors, []);
   const storedSizes = normalizeOptionList(doc?.sizeOptions, DEFAULT_TRANSFER_SIZE_OPTIONS);
+  const storedCategories = normalizeOptionList(doc?.categories, TRANSFER_CATEGORIES);
   const current = await getTransferProductOptions();
   if (type === 'brand') {
     if (!current.brands.includes(v) && !storedBrands.includes(v)) throw new Error('找不到此品牌選項');
@@ -245,6 +279,7 @@ export async function removeTransferProductOption(type, value) {
       brands: storedBrands.filter((x) => x !== v),
       colors: storedColors,
       sizeOptions: storedSizes,
+      categories: storedCategories,
     });
   }
   if (type === 'color') {
@@ -253,16 +288,29 @@ export async function removeTransferProductOption(type, value) {
       brands: storedBrands,
       colors: storedColors.filter((x) => x !== v),
       sizeOptions: storedSizes,
+      categories: storedCategories,
     });
   }
-  // size
-  if (!current.sizeOptions.includes(v) && !storedSizes.includes(v)) throw new Error('找不到此商品選項');
-  const nextSizes = storedSizes.filter((x) => x !== v);
-  if (!nextSizes.length) throw new Error('請至少保留 1 個商品選項');
+  if (type === 'size') {
+    if (!current.sizeOptions.includes(v) && !storedSizes.includes(v)) throw new Error('找不到此商品選項');
+    const nextSizes = storedSizes.filter((x) => x !== v);
+    if (!nextSizes.length) throw new Error('請至少保留 1 個商品選項');
+    return saveTransferProductOptions({
+      brands: storedBrands,
+      colors: storedColors,
+      sizeOptions: nextSizes,
+      categories: storedCategories,
+    });
+  }
+  // category
+  if (!current.categories.includes(v) && !storedCategories.includes(v)) throw new Error('找不到此產品分類');
+  const nextCategories = storedCategories.filter((x) => x !== v);
+  if (!nextCategories.length) throw new Error('請至少保留 1 個產品分類');
   return saveTransferProductOptions({
     brands: storedBrands,
     colors: storedColors,
-    sizeOptions: nextSizes,
+    sizeOptions: storedSizes,
+    categories: nextCategories,
   });
 }
 
@@ -2102,7 +2150,8 @@ export async function listTransferInventory() {
     }
   }
   const fromProducts = products.map((p) => String(p.category || '').trim()).filter(Boolean);
-  const categories = [...new Set([...TRANSFER_CATEGORIES, ...fromProducts])].sort((a, b) =>
+  const optionCats = (await getTransferProductOptions().catch(() => null))?.categories || [];
+  const categories = [...new Set([...TRANSFER_CATEGORIES, ...optionCats, ...fromProducts])].sort((a, b) =>
     a.localeCompare(b, 'zh-Hant')
   );
   return {

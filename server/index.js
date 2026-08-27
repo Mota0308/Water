@@ -629,6 +629,7 @@ app.get('/api/transfer/products', requireAuth, async (_req, res) => {
       brands: options.brands,
       colors: options.colors,
       sizeOptions: options.sizeOptions,
+      categories: options.categories,
     });
   } catch (e) {
     console.error(e);
