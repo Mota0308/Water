@@ -2011,6 +2011,7 @@ export async function createTransferProduct(actor, input) {
   if (!sizes.length) throw new Error('請至少選擇或新增 1 個尺碼');
 
   const safetyStock = parseNonNegInt(input?.safetyStock, '安全存量');
+  const extras = normalizeTransferProductExtras(input, {});
 
   const existing = await transferProductsCol().findOne({
     $or: [{ _id: id }, { id }],
@@ -2027,6 +2028,7 @@ export async function createTransferProduct(actor, input) {
     color,
     sizes,
     safetyStock,
+    ...extras,
     active: true,
     createdAt: now,
     updatedAt: now,
@@ -2061,7 +2063,7 @@ export async function createTransferProduct(actor, input) {
     module: 'transfer',
     time,
     action: '新增商品',
-    detail: `${id}｜${name}｜${category}｜尺碼 ${sizes.join('、')}｜安全存量 ${safetyStock}`,
+    detail: `${id}｜${name}｜${category}｜品牌 ${extras.brand || '—'}｜商品選項 ${sizes.join('、')}｜安全存量 ${safetyStock}`,
     userId: me.id,
     userName: actorName,
     user: actorName,
@@ -2071,11 +2073,20 @@ export async function createTransferProduct(actor, input) {
     productName: name,
     action: '建立',
     changes: [
-      { field: '款號', before: '', after: id },
-      { field: '名稱', before: '', after: name },
-      { field: '類別', before: '', after: category },
+      { field: '型號', before: '', after: id },
+      { field: '商品名', before: '', after: name },
+      { field: '產品分類', before: '', after: category },
+      { field: '品牌', before: '', after: extras.brand || '—' },
+      { field: 'SKU', before: '', after: extras.sku || '—' },
+      { field: 'UPC', before: '', after: extras.upc || '—' },
+      { field: '原價', before: '', after: fmtAttrChange(extras.priceOriginal) },
+      { field: '優惠價', before: '', after: fmtAttrChange(extras.priceSale) },
+      { field: '剔剔積分類', before: '', after: extras.tickieCategory || '—' },
+      { field: '剔剔積分', before: '', after: fmtAttrChange(extras.tickiePoints) },
+      { field: '英文', before: '', after: extras.nameEn || '—' },
+      { field: '圖片', before: '', after: extras.imageUrl || '—' },
       { field: '顏色', before: '', after: color || '—' },
-      { field: '尺碼', before: '', after: sizes.join('、') },
+      { field: '商品選項', before: '', after: sizes.join('、') },
       { field: '安全存量', before: '', after: String(safetyStock) },
     ],
     actor: me,
@@ -2084,13 +2095,76 @@ export async function createTransferProduct(actor, input) {
     time,
   });
 
-  const { _id, ...rest } = product;
-  return rest;
+  return stripTransferProduct(product);
+}
+
+/** Excel「18062026」商品屬性（不含門市存貨位置、產品資料） */
+export const TRANSFER_PRODUCT_ATTR_DEFS = [
+  { key: 'brand', label: '品牌', type: 'text', excel: '品牌' },
+  { key: 'id', label: '型號', type: 'text', excel: '型號', core: true },
+  { key: 'sku', label: 'SKU', type: 'text', excel: 'SKU' },
+  { key: 'upc', label: 'UPC', type: 'text', excel: 'UPC' },
+  { key: 'name', label: '商品名', type: 'text', excel: '商品名', core: true },
+  { key: 'sizes', label: '商品選項', type: 'sizes', excel: '商品選項', core: true },
+  { key: 'priceOriginal', label: '原價', type: 'number', excel: '原價' },
+  { key: 'priceSale', label: '優惠價', type: 'number', excel: '優惠價' },
+  { key: 'category', label: '產品分類', type: 'text', excel: '產品分類', core: true },
+  { key: 'tickieCategory', label: '剔剔積分類', type: 'text', excel: '剔剔積分類' },
+  { key: 'tickiePoints', label: '剔剔積分', type: 'number', excel: '剔剔積分' },
+  { key: 'nameEn', label: '英文', type: 'text', excel: '英文' },
+  { key: 'imageUrl', label: '圖片', type: 'text', excel: '圖片' },
+];
+
+function parseOptionalNonNegNumber(v, label) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) throw new Error(label + '須為 ≥ 0 的數字');
+  return n;
+}
+
+function normalizeTransferProductExtras(input, existing = {}) {
+  const brand = String(input?.brand != null ? input.brand : existing.brand || '').trim();
+  const sku = String(input?.sku != null ? input.sku : existing.sku || '').trim();
+  const upc = String(input?.upc != null ? input.upc : existing.upc || '').trim();
+  const nameEn = String(input?.nameEn != null ? input.nameEn : existing.nameEn || '').trim();
+  const imageUrl = String(input?.imageUrl != null ? input.imageUrl : existing.imageUrl || '').trim();
+  const tickieCategory = String(
+    input?.tickieCategory != null ? input.tickieCategory : existing.tickieCategory || ''
+  ).trim();
+  const priceOriginal = parseOptionalNonNegNumber(
+    input?.priceOriginal != null ? input.priceOriginal : existing.priceOriginal,
+    '原價'
+  );
+  const priceSale = parseOptionalNonNegNumber(
+    input?.priceSale != null ? input.priceSale : existing.priceSale,
+    '優惠價'
+  );
+  const tickiePoints = parseOptionalNonNegNumber(
+    input?.tickiePoints != null ? input.tickiePoints : existing.tickiePoints,
+    '剔剔積分'
+  );
+  return {
+    brand,
+    sku,
+    upc,
+    nameEn,
+    imageUrl,
+    tickieCategory,
+    priceOriginal,
+    priceSale,
+    tickiePoints,
+  };
+}
+
+function fmtAttrChange(v) {
+  if (v == null || v === '') return '—';
+  return String(v);
 }
 
 function stripTransferProduct(doc) {
   if (!doc) return null;
   const { _id, ...rest } = doc;
+  const extras = normalizeTransferProductExtras(rest, rest);
   return {
     id: rest.id || String(_id),
     name: rest.name || '',
@@ -2098,6 +2172,7 @@ function stripTransferProduct(doc) {
     color: rest.color || '',
     sizes: Array.isArray(rest.sizes) && rest.sizes.length ? rest.sizes.slice() : ['均碼'],
     safetyStock: Number(rest.safetyStock) || 0,
+    ...extras,
     active: rest.active !== false,
     createdAt: rest.createdAt || null,
     updatedAt: rest.updatedAt || null,
@@ -2206,6 +2281,8 @@ export async function updateTransferProduct(actor, oldProductId, input) {
   );
   const nextSizes = normalizeSizeList(input?.sizes != null ? input.sizes : product.sizes);
   if (!nextSizes.length) throw new Error('請至少保留 1 個尺碼');
+  const extras = normalizeTransferProductExtras(input, product);
+  const prevExtras = normalizeTransferProductExtras({}, product);
 
   const prevSizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes.map(String) : ['均碼'];
   const prevSet = new Set(prevSizes);
@@ -2230,10 +2307,10 @@ export async function updateTransferProduct(actor, oldProductId, input) {
   const time = formatHkDateTime(now);
   const actorName = me.name || me.login || me.id;
   const changes = [];
-  if (nextId !== currentId) changes.push({ field: '款號', before: currentId, after: nextId });
-  if (name !== String(product.name || '')) changes.push({ field: '名稱', before: String(product.name || ''), after: name });
+  if (nextId !== currentId) changes.push({ field: '型號', before: currentId, after: nextId });
+  if (name !== String(product.name || '')) changes.push({ field: '商品名', before: String(product.name || ''), after: name });
   if (category !== String(product.category || '')) {
-    changes.push({ field: '類別', before: String(product.category || ''), after: category });
+    changes.push({ field: '產品分類', before: String(product.category || ''), after: category });
   }
   if (color !== String(product.color || '')) {
     changes.push({ field: '顏色', before: String(product.color || '') || '—', after: color || '—' });
@@ -2247,11 +2324,29 @@ export async function updateTransferProduct(actor, oldProductId, input) {
   }
   if (addedSizes.length || removedSizes.length) {
     changes.push({
-      field: '尺碼',
+      field: '商品選項',
       before: prevSizes.join('、'),
       after: nextSizes.join('、'),
     });
   }
+  const extraLabels = {
+    brand: '品牌',
+    sku: 'SKU',
+    upc: 'UPC',
+    priceOriginal: '原價',
+    priceSale: '優惠價',
+    tickieCategory: '剔剔積分類',
+    tickiePoints: '剔剔積分',
+    nameEn: '英文',
+    imageUrl: '圖片',
+  };
+  Object.keys(extraLabels).forEach((key) => {
+    const before = prevExtras[key];
+    const after = extras[key];
+    if (fmtAttrChange(before) !== fmtAttrChange(after)) {
+      changes.push({ field: extraLabels[key], before: fmtAttrChange(before), after: fmtAttrChange(after) });
+    }
+  });
   if (!changes.length) throw new Error('沒有變更');
 
   // 先處理尺碼增刪（仍用舊款號），再換號
@@ -2289,6 +2384,7 @@ export async function updateTransferProduct(actor, oldProductId, input) {
       color,
       sizes: nextSizes,
       safetyStock,
+      ...extras,
       active: true,
       createdAt: product.createdAt || now,
       updatedAt: now,
@@ -2309,6 +2405,7 @@ export async function updateTransferProduct(actor, oldProductId, input) {
           color,
           sizes: nextSizes,
           safetyStock,
+          ...extras,
           updatedAt: now,
         },
       }

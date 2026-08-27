@@ -49,6 +49,7 @@ import {
   listTransferProductChanges,
   TRANSFER_STORES,
   TRANSFER_CATEGORIES,
+  TRANSFER_PRODUCT_ATTR_DEFS,
   listPosProducts,
   listPosTransactions,
   getPosTransaction,
@@ -560,7 +561,10 @@ app.get('/api/transfer/meta', requireAuth, async (_req, res) => {
 
 app.get('/api/transfer/products', requireAuth, async (_req, res) => {
   try {
-    res.json({ products: await listTransferProducts() });
+    res.json({
+      products: await listTransferProducts(),
+      attributes: TRANSFER_PRODUCT_ATTR_DEFS,
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: String(e.message || e) });
