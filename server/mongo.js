@@ -218,6 +218,54 @@ export async function addTransferProductOptionsBatch(type, values) {
   throw new Error('type 須為 brand、color 或 size');
 }
 
+export async function removeTransferProductOption(type, value) {
+  const v = String(value == null ? '' : value).trim();
+  if (!v) throw new Error('請指定要刪除的選項');
+  await connectMongo();
+  if (type === 'brand') {
+    const n = await transferProductsCol().countDocuments({ brand: v });
+    if (n > 0) throw new Error('仍有產品使用此品牌，無法刪除');
+  } else if (type === 'color') {
+    const n = await transferProductsCol().countDocuments({ color: v });
+    if (n > 0) throw new Error('仍有產品使用此顏色，無法刪除');
+  } else if (type === 'size') {
+    const n = await transferProductsCol().countDocuments({ sizes: v });
+    if (n > 0) throw new Error('仍有產品使用此商品選項，無法刪除');
+  } else {
+    throw new Error('type 須為 brand、color 或 size');
+  }
+  const doc = await metaCol().findOne({ _id: 'transfer_product_options' });
+  const storedBrands = normalizeOptionList(doc?.brands, []);
+  const storedColors = normalizeOptionList(doc?.colors, []);
+  const storedSizes = normalizeOptionList(doc?.sizeOptions, DEFAULT_TRANSFER_SIZE_OPTIONS);
+  const current = await getTransferProductOptions();
+  if (type === 'brand') {
+    if (!current.brands.includes(v) && !storedBrands.includes(v)) throw new Error('找不到此品牌選項');
+    return saveTransferProductOptions({
+      brands: storedBrands.filter((x) => x !== v),
+      colors: storedColors,
+      sizeOptions: storedSizes,
+    });
+  }
+  if (type === 'color') {
+    if (!current.colors.includes(v) && !storedColors.includes(v)) throw new Error('找不到此顏色選項');
+    return saveTransferProductOptions({
+      brands: storedBrands,
+      colors: storedColors.filter((x) => x !== v),
+      sizeOptions: storedSizes,
+    });
+  }
+  // size
+  if (!current.sizeOptions.includes(v) && !storedSizes.includes(v)) throw new Error('找不到此商品選項');
+  const nextSizes = storedSizes.filter((x) => x !== v);
+  if (!nextSizes.length) throw new Error('請至少保留 1 個商品選項');
+  return saveTransferProductOptions({
+    brands: storedBrands,
+    colors: storedColors,
+    sizeOptions: nextSizes,
+  });
+}
+
 
 function formatHkDateTime(d = new Date()) {
   const now = d instanceof Date ? d : new Date(d);
@@ -2120,7 +2168,11 @@ export async function createTransferProduct(actor, input) {
   const existing = await transferProductsCol().findOne({
     $or: [{ _id: id }, { id }],
   });
-  if (existing) throw new Error('產品編號已存在：' + id);
+  if (existing && existing.active !== false) throw new Error('產品編號已存在：' + id);
+  if (existing && existing.active === false) {
+    await transferProductsCol().deleteOne({ _id: existing._id });
+    await transferInventoryCol().deleteMany({ productId: existing.id || String(existing._id) });
+  }
 
   const now = new Date();
   const time = formatHkDateTime(now);
@@ -2544,6 +2596,82 @@ export async function updateTransferProduct(actor, oldProductId, input) {
 
   const updated = await transferProductsCol().findOne({ $or: [{ _id: nextId }, { id: nextId }] });
   return stripTransferProduct(updated);
+}
+
+/**
+ * 刪除貨品主檔：四店庫存皆須為 0，且無待審批調動。
+ */
+export async function deleteTransferProduct(actor, productId) {
+  await connectMongo();
+  await ensureTransferSeed();
+  const me = publicUser(actor);
+  if (!me?.id) throw new Error('未登入');
+
+  const id = normalizeProductId(productId);
+  if (!id) throw new Error('缺少產品編號');
+
+  const product = await transferProductsCol().findOne({
+    $or: [{ _id: id }, { id }],
+    active: { $ne: false },
+  });
+  if (!product) throw new Error('找不到商品');
+
+  const invDocs = await transferInventoryCol().find({ productId: id }).toArray();
+  const stockHits = invDocs.filter((d) => (Number(d.quantity) || 0) > 0);
+  if (stockHits.length) {
+    const sample = stockHits
+      .slice(0, 3)
+      .map((d) => `${d.store} ${d.size}×${Number(d.quantity) || 0}`)
+      .join('、');
+    throw new Error('無法刪除：仍有庫存（' + sample + (stockHits.length > 3 ? '…' : '') + '）');
+  }
+
+  const pending = await transferOrdersCol().countDocuments({
+    status: 'pending',
+    $or: [{ productId: id }, { 'items.productId': id }],
+  });
+  if (pending > 0) throw new Error('無法刪除：尚有待審批調動');
+
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const actorName = me.name || me.login || me.id;
+  const name = String(product.name || '');
+
+  await transferProductsCol().updateOne(
+    { _id: product._id },
+    {
+      $set: {
+        active: false,
+        updatedAt: now,
+        deletedAt: now,
+        deletedBy: String(me.id),
+        deletedByName: actorName,
+      },
+    }
+  );
+  await transferInventoryCol().deleteMany({ productId: id });
+
+  await appendModuleLog({
+    module: 'transfer',
+    time,
+    action: '刪除商品',
+    detail: `${id}｜${name}`,
+    userId: me.id,
+    userName: actorName,
+    user: actorName,
+  });
+  await recordTransferProductChange({
+    productId: id,
+    productName: name,
+    action: '刪除',
+    changes: [{ field: '狀態', before: '啟用', after: '已刪除' }],
+    actor: me,
+    actorName,
+    now,
+    time,
+  });
+
+  return { ok: true, id };
 }
 
 /**

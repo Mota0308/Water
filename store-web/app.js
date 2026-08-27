@@ -3063,20 +3063,43 @@ function openAddTransferProductOptionModal(fromProductForm, optType){
   } else {
     transferProductModalReturn = null;
   }
+  refreshTransferProductOptionModal(optType);
+}
+function transferProductOptionListForType(type){
+  const cache = transferProductOptionsCache || { brands:[], colors:[], sizeOptions: TRANSFER_SIZE_PRESETS.slice() };
+  if(type==='color') return (cache.colors||[]).slice();
+  if(type==='size') return (cache.sizeOptions||[]).slice();
+  return (cache.brands||[]).slice();
+}
+function refreshTransferProductOptionModal(optType){
   const type = String(optType||'brand');
   const typeLabel = type==='color'?'顏色':(type==='size'?'商品選項（尺碼）':'品牌');
-  showModal(
-    '<h3>添加'+escHtml(typeLabel)+'</h3>'
-    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">可一次新增多個；用逗號、頓號或換行分隔。新增後可在產品表單下拉中選擇。</p>'
-    +'<input type="hidden" id="tp-opt-type" value="'+escHtml(type)+'">'
-    +'<label>選項內容（可多個）</label><textarea id="tp-opt-value" rows="5" placeholder="例如：&#10;Arena&#10;Speedo&#10;或 黑, 白, 藍"></textarea>'
-    +'<div class="actions">'
-    +(transferProductModalReturn
-      ? '<button type="button" class="btn gray sm" data-call="cancelTransferProductOptionAndReturn">返回產品表單</button>'
-      : '<button type="button" class="btn gray sm" data-action="close-modal">取消</button>')
-    +'<button type="button" class="btn green" data-call="submitTransferProductOption">儲存選項</button>'
-    +'</div>'
-  );
+  const open = function(){
+    const existing = transferProductOptionListForType(type);
+    const listHtml = existing.length
+      ? '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px">'+existing.map(function(v){
+          return '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid #e0e0e0;border-radius:999px;background:#fafafa;font-size:13px">'
+            +'<span>'+escHtml(v)+'</span>'
+            +'<button type="button" class="btn red sm" style="padding:2px 8px;min-width:0;line-height:1.2" title="刪除" data-call="deleteTransferProductOption" data-arg0="'+escHtml(type)+'" data-arg1="'+escHtml(v)+'">刪除</button>'
+            +'</span>';
+        }).join('')+'</div>'
+      : '<p style="font-size:12px;color:#888;margin:0 0 12px">尚無已新增選項。</p>';
+    showModal(
+      '<h3>管理'+escHtml(typeLabel)+'</h3>'
+      +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">可刪除未使用的選項；下方可一次新增多個（逗號、頓號或換行分隔）。仍被產品使用的選項無法刪除。</p>'
+      +'<input type="hidden" id="tp-opt-type" value="'+escHtml(type)+'">'
+      +'<label>現有選項</label>'
+      +listHtml
+      +'<label>新增選項（可多個）</label><textarea id="tp-opt-value" rows="5" placeholder="例如：&#10;Arena&#10;Speedo&#10;或 黑, 白, 藍"></textarea>'
+      +'<div class="actions">'
+      +(transferProductModalReturn
+        ? '<button type="button" class="btn gray sm" data-call="cancelTransferProductOptionAndReturn">返回產品表單</button>'
+        : '<button type="button" class="btn gray sm" data-action="close-modal">取消</button>')
+      +'<button type="button" class="btn green" data-call="submitTransferProductOption">儲存新增</button>'
+      +'</div>'
+    , { closeOnBackdrop: false });
+  };
+  loadTransferProductOptions(true).then(open).catch(open);
 }
 function parseTransferOptionValues(raw){
   return String(raw||'')
@@ -3093,6 +3116,26 @@ function applyTransferProductOptionsCache(data){
       ? data.sizeOptions
       : (transferProductOptionsCache&&transferProductOptionsCache.sizeOptions)||TRANSFER_SIZE_PRESETS.slice()
   };
+}
+async function deleteTransferProductOption(type, value){
+  type = String(type||'').trim();
+  value = String(value==null?'':value).trim();
+  if(!type || !value) return;
+  const label = type==='brand'?'品牌':(type==='color'?'顏色':'商品選項');
+  if(!confirm('確定刪除'+label+'「'+value+'」？')) return;
+  const keepReturn = transferProductModalReturn;
+  try{
+    const data = await apiFetch(
+      '/api/transfer/product-options?type='+encodeURIComponent(type)+'&value='+encodeURIComponent(value),
+      { method:'DELETE' }
+    );
+    applyTransferProductOptionsCache(data);
+    transferProductModalReturn = keepReturn;
+    refreshTransferProductOptionModal(type);
+  }catch(e){
+    transferProductModalReturn = keepReturn;
+    alert2('刪除失敗：'+(e.message||e));
+  }
 }
 function fillTransferProductFormFields(form){
   if(!form) return;
@@ -3373,6 +3416,23 @@ async function submitTransferProductEdit(){
     alert2('已更新產品。');
   }catch(e){
     alert2('更新失敗：'+(e.message||e));
+  }
+}
+async function deleteTransferProductRow(productId){
+  productId = String(productId||'').trim();
+  if(!productId) return;
+  if(!currentUser){ alert2('請先登入。'); return; }
+  if(!apiEnabled){ alert2('需要連接 MongoDB 雲端。'); return; }
+  if(!confirm('確定刪除產品「'+productId+'」？\n四店庫存須皆為 0，且無待審批調動。此操作會從貨品列表移除。')) return;
+  try{
+    await apiFetch('/api/transfer/products/'+encodeURIComponent(productId), { method:'DELETE' });
+    invalidateTransferCaches();
+    await loadTransferProducts(true);
+    if(currentView==='transferProductLog') await loadTransferProductChanges(true).catch(function(){});
+    render();
+    alert2('已刪除產品 '+productId);
+  }catch(e){
+    alert2('刪除失敗：'+(e.message||e));
   }
 }
 function openTransferStockEditModal(productId, size){
@@ -3841,7 +3901,10 @@ function vTransferProducts(){
         +'<td>'+escHtml(p.tickiePoints!=null&&p.tickiePoints!==''?String(p.tickiePoints):'—')+'</td>'
         +'<td>'+escHtml(p.color||'—')+'</td>'
         +'<td>'+escHtml(String(p.safetyStock!=null?p.safetyStock:0))+'</td>'
-        +'<td><button type="button" class="btn sm" data-call="openEditTransferProductModal" data-arg0="'+escHtml(String(p.id))+'">編輯</button></td>'
+        +'<td style="white-space:nowrap">'
+        +'<button type="button" class="btn sm" data-call="openEditTransferProductModal" data-arg0="'+escHtml(String(p.id))+'">編輯</button> '
+        +'<button type="button" class="btn red sm" data-call="deleteTransferProductRow" data-arg0="'+escHtml(String(p.id))+'">刪除</button>'
+        +'</td>'
         +'</tr>';
     }).join('');
   return '<div class="card">'

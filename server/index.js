@@ -46,6 +46,7 @@ import {
   listTransferStockAdjustments,
   listTransferProducts,
   updateTransferProduct,
+  deleteTransferProduct,
   listTransferProductChanges,
   TRANSFER_STORES,
   TRANSFER_CATEGORIES,
@@ -53,6 +54,7 @@ import {
   getTransferProductOptions,
   addTransferProductOption,
   addTransferProductOptionsBatch,
+  removeTransferProductOption,
   saveTransferProductOptions,
   listPosProducts,
   listPosTransactions,
@@ -593,6 +595,18 @@ app.post('/api/transfer/product-options', requireAuth, async (req, res) => {
   }
 });
 
+app.delete('/api/transfer/product-options', requireAuth, async (req, res) => {
+  try {
+    const type = String(req.body?.type || req.query?.type || '').trim();
+    const value = req.body?.value != null ? req.body.value : req.query?.value;
+    const options = await removeTransferProductOption(type, value);
+    res.json(options);
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
 app.put('/api/transfer/product-options', requireAuth, async (req, res) => {
   try {
     if (!req.body || typeof req.body !== 'object') {
@@ -642,6 +656,16 @@ app.put('/api/transfer/products/:id', requireAuth, async (req, res) => {
     }
     const product = await updateTransferProduct(req.user, req.params.id, req.body);
     res.json({ product });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.delete('/api/transfer/products/:id', requireAuth, async (req, res) => {
+  try {
+    const result = await deleteTransferProduct(req.user, req.params.id);
+    res.json(result);
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });
