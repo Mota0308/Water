@@ -334,10 +334,15 @@ async function apiFetch(path, opts){
   }
   return r;
 }
+function fileStorageId(f){
+  if(!f || typeof f !== 'object') return '';
+  return String(f.driveFileId || f.id || f.fileId || '').trim();
+}
 function slimFileRef(f){
   if(!f || typeof f !== 'object') return f;
-  if(f.driveFileId){
-    return { name:f.name, by:f.by, time:f.time, ver:f.ver, latest:f.latest, driveFileId:f.driveFileId, mimeType:f.mimeType };
+  var driveFileId = fileStorageId(f);
+  if(driveFileId){
+    return { name:f.name, by:f.by, time:f.time, ver:f.ver, latest:f.latest, driveFileId:driveFileId, id:driveFileId, mimeType:f.mimeType };
   }
   if(f.dataUrl && String(f.dataUrl).length > 250000){
     return { name:f.name, by:f.by, time:f.time, ver:f.ver, latest:f.latest, omitted:true };
@@ -616,19 +621,226 @@ async function loadCloudAppData(){
   await loadNotifications();
   if(orphans && orphans.length) await rescueOrphanUsers(orphans);
 }
-async function cloudUploadFile(file){
-  if(!apiEnabled){
-    return { name:file.name, dataUrl: await readFileAsDataUrl(file) };
+/* ═══════════ 上傳進度彈窗（獨立於表單 modal） ═══════════ */
+var _uploadUi = {
+  active: false,
+  batch: false,
+  resolveWait: null
+};
+function ensureUploadProgressDom(){
+  var bg = document.getElementById('upload-progress-bg');
+  if(bg) return bg;
+  bg = document.createElement('div');
+  bg.id = 'upload-progress-bg';
+  bg.className = 'upload-progress-bg hidden';
+  bg.setAttribute('aria-live', 'polite');
+  bg.innerHTML = '<div class="upload-progress-card" id="upload-progress-card"></div>';
+  document.body.appendChild(bg);
+  return bg;
+}
+function openUploadProgressUI(opts){
+  opts = opts || {};
+  _uploadUi.active = true;
+  _uploadUi.batch = !!opts.batch;
+  _uploadUi.resolveWait = null;
+  var bg = ensureUploadProgressDom();
+  var card = document.getElementById('upload-progress-card');
+  var title = opts.title || '上傳附件';
+  var name = opts.name || '';
+  var total = Math.max(1, Number(opts.total) || 1);
+  var index = Math.max(1, Number(opts.index) || 1);
+  if(card){
+    card.innerHTML =
+      '<h3>📤 '+escHtml(title)+'</h3>'+
+      '<p class="up-name" id="upload-progress-name">'+escHtml(name || '準備上傳…')+'</p>'+
+      '<div class="upload-progress-bar"><i id="upload-progress-fill" style="width:0%"></i></div>'+
+      '<div class="upload-progress-meta" id="upload-progress-meta">'+
+        (total>1 ? ('檔案 '+index+'／'+total+' · ') : '')+'0%'+
+      '</div>'+
+      '<div class="upload-progress-result" id="upload-progress-result"></div>'+
+      '<div class="actions" id="upload-progress-actions" style="display:none"></div>';
   }
-  const fd = new FormData();
-  fd.append('file', file);
-  const j = await apiFetch('/api/files', { method:'POST', body: fd });
-  return {
-    name: j.name || file.name,
-    driveFileId: j.id,
-    mimeType: j.mimeType,
-    dataUrl: withFileToken(apiUrl('/api/files/'+j.id))
-  };
+  bg.classList.remove('hidden');
+}
+function updateUploadProgressUI(opts){
+  opts = opts || {};
+  if(!_uploadUi.active) return;
+  var nameEl = document.getElementById('upload-progress-name');
+  var fill = document.getElementById('upload-progress-fill');
+  var meta = document.getElementById('upload-progress-meta');
+  var pct = Math.max(0, Math.min(100, Math.round(Number(opts.pct) || 0)));
+  var total = Math.max(1, Number(opts.total) || 1);
+  var index = Math.max(1, Number(opts.index) || 1);
+  if(nameEl && opts.name!=null) nameEl.textContent = String(opts.name || '');
+  if(fill) fill.style.width = pct + '%';
+  if(meta){
+    meta.textContent = (total>1 ? ('檔案 '+index+'／'+total+' · ') : '') + pct + '%';
+  }
+}
+function finishUploadProgressUI(opts){
+  opts = opts || {};
+  if(!_uploadUi.active) return Promise.resolve();
+  var result = document.getElementById('upload-progress-result');
+  var actions = document.getElementById('upload-progress-actions');
+  var fill = document.getElementById('upload-progress-fill');
+  var ok = opts.ok !== false;
+  if(fill) fill.style.width = ok ? '100%' : (fill.style.width || '0%');
+  if(result){
+    result.className = 'upload-progress-result ' + (ok ? 'ok' : 'err');
+    result.textContent = opts.message || (ok ? '上傳成功' : '上傳失敗');
+  }
+  function hide(){
+    var bg = document.getElementById('upload-progress-bg');
+    if(bg) bg.classList.add('hidden');
+    _uploadUi.active = false;
+    _uploadUi.batch = false;
+    var waiter = _uploadUi.resolveWait;
+    _uploadUi.resolveWait = null;
+    if(waiter) waiter();
+  }
+  if(ok){
+    if(actions){ actions.style.display = 'none'; actions.innerHTML = ''; }
+    return new Promise(function(resolve){
+      setTimeout(function(){ hide(); resolve(); }, opts.holdMs != null ? opts.holdMs : 900);
+    });
+  }
+  return new Promise(function(resolve){
+    _uploadUi.resolveWait = resolve;
+    if(actions){
+      actions.style.display = 'flex';
+      actions.innerHTML = '<button type="button" class="btn sm" id="upload-progress-ok">確定</button>';
+      var btn = document.getElementById('upload-progress-ok');
+      if(btn){
+        btn.onclick = function(){ hide(); };
+      }
+    } else {
+      hide();
+    }
+  });
+}
+function cloudUploadViaXhr(file, onProgress){
+  return new Promise(function(resolve, reject){
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', apiUrl('/api/files'));
+    if(authToken) xhr.setRequestHeader('Authorization', 'Bearer '+authToken);
+    xhr.withCredentials = true;
+    xhr.upload.onprogress = function(e){
+      if(!e.lengthComputable || typeof onProgress !== 'function') return;
+      onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = function(){
+      if(xhr.status === 401){
+        try{ clearAuthToken(); }catch(_e){}
+        reject(new Error('未登入或工作階段已過期，請重新登入。'));
+        return;
+      }
+      if(xhr.status < 200 || xhr.status >= 300){
+        var msg = xhr.statusText || ('HTTP '+xhr.status);
+        try{
+          var j = JSON.parse(xhr.responseText || '{}');
+          if(j && j.error) msg = j.error;
+        }catch(_e){}
+        reject(new Error(msg));
+        return;
+      }
+      try{ resolve(JSON.parse(xhr.responseText || '{}')); }
+      catch(e){ reject(new Error('上傳回應無效')); }
+    };
+    xhr.onerror = function(){ reject(new Error('網絡錯誤，上傳失敗')); };
+    xhr.onabort = function(){ reject(new Error('上傳已取消')); };
+    var fd = new FormData();
+    fd.append('file', file);
+    xhr.send(fd);
+  });
+}
+async function cloudUploadFile(file, opts){
+  opts = opts || {};
+  var silentUi = !!opts.silentUi;
+  var ownUi = !silentUi;
+  var onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  if(ownUi){
+    openUploadProgressUI({
+      title: opts.title || '上傳附件',
+      name: (file && file.name) || '檔案',
+      total: 1,
+      index: 1
+    });
+  }
+  try{
+    if(!apiEnabled){
+      if(onProgress) onProgress(30);
+      updateUploadProgressUI({ name:(file&&file.name)||'檔案', pct:60, total:1, index:1 });
+      var local = { name:file.name, dataUrl: await readFileAsDataUrl(file) };
+      if(onProgress) onProgress(100);
+      updateUploadProgressUI({ name:local.name, pct:100, total:1, index:1 });
+      if(ownUi) await finishUploadProgressUI({ ok:true, message:'已處理：'+local.name });
+      return local;
+    }
+    var j = await cloudUploadViaXhr(file, function(pct){
+      if(onProgress) onProgress(pct);
+      if(ownUi || _uploadUi.active){
+        updateUploadProgressUI({
+          name: (file && file.name) || '檔案',
+          pct: pct,
+          total: opts.total || 1,
+          index: opts.index || 1
+        });
+      }
+    });
+    var result = {
+      name: j.name || file.name,
+      driveFileId: j.id,
+      mimeType: j.mimeType,
+      dataUrl: withFileToken(apiUrl('/api/files/'+j.id))
+    };
+    if(ownUi) await finishUploadProgressUI({ ok:true, message:'上傳成功：'+result.name });
+    return result;
+  }catch(e){
+    if(ownUi){
+      await finishUploadProgressUI({ ok:false, message:'上傳失敗：'+((e && e.message) || e) });
+    }
+    throw e;
+  }
+}
+async function cloudUploadFiles(files, opts){
+  opts = opts || {};
+  var list = Array.prototype.slice.call(files || []).filter(Boolean);
+  if(!list.length) return [];
+  openUploadProgressUI({
+    title: opts.title || '上傳附件',
+    name: list[0].name || '檔案',
+    total: list.length,
+    index: 1,
+    batch: true
+  });
+  var out = [];
+  try{
+    for(var i=0;i<list.length;i++){
+      var f = list[i];
+      updateUploadProgressUI({ name:f.name||('檔案 '+(i+1)), pct:0, total:list.length, index:i+1 });
+      var up = await cloudUploadFile(f, {
+        silentUi: true,
+        total: list.length,
+        index: i+1,
+        onProgress: function(pct){
+          updateUploadProgressUI({ name:f.name||('檔案 '+(i+1)), pct:pct, total:list.length, index:i+1 });
+        }
+      });
+      out.push(up);
+      updateUploadProgressUI({ name:f.name||('檔案 '+(i+1)), pct:100, total:list.length, index:i+1 });
+    }
+    await finishUploadProgressUI({
+      ok: true,
+      message: '已成功上傳 '+out.length+' 個檔案'
+    });
+    return out;
+  }catch(e){
+    await finishUploadProgressUI({
+      ok: false,
+      message: '上傳失敗（已完成 '+out.length+'／'+list.length+'）：'+((e && e.message) || e)
+    });
+    throw e;
+  }
 }
 async function cloudDeleteFile(fileId){
   if(!apiEnabled || !fileId) return;
@@ -636,16 +848,17 @@ async function cloudDeleteFile(fileId){
     await apiFetch('/api/files/'+encodeURIComponent(fileId), { method:'DELETE' });
   }catch(_e){ /* 引用已從項目移除即可；實體刪除失敗不阻斷 */ }
 }
-async function cloudUploadDataUrl(name, dataUrl){
+async function cloudUploadDataUrl(name, dataUrl, opts){
   if(!apiEnabled) return { name:name, dataUrl:dataUrl };
   const blob = await (await fetch(dataUrl)).blob();
   const file = new File([blob], name || 'file.bin', { type: blob.type || 'application/octet-stream' });
-  return cloudUploadFile(file);
+  return cloudUploadFile(file, opts);
 }
 function fileHref(f){
   if(!f) return '#';
   if(typeof f === 'string') return '#';
-  if(f.driveFileId) return withFileToken(apiUrl('/api/files/'+f.driveFileId));
+  var driveFileId = fileStorageId(f);
+  if(driveFileId) return withFileToken(apiUrl('/api/files/'+driveFileId));
   return f.dataUrl || '#';
 }
 async function initCloud(){
@@ -1263,7 +1476,7 @@ async function decideTransferFromMailbox(transferId, decision){
     transferOrdersCache = null;
     transferInvCache = null;
     await loadNotifications();
-    if(currentView==='transferInventory' || currentView==='transferHistory' || currentView==='transferStockLog' || currentView==='transferProducts' || currentView==='transferProductLog' || currentView==='transferApply'){
+    if(currentView==='transferInventory' || currentView==='transferHistory' || currentView==='transferStockLog' || currentView==='transferProducts' || currentView==='transferProductLog' || currentView==='transferApply' || currentView==='posProducts' || currentView==='posCashier'){
       try{ await loadTransferInventory(true); }catch(_e){}
       try{ await loadTransferOrders(true); }catch(_e){}
       render();
@@ -1315,14 +1528,24 @@ async function pushOnFilesPick(input){
 }
 async function uploadPushAttachments(){
   const out = [];
+  if(!pushDraftFiles.length) return out;
+  if(apiEnabled){
+    const files = [];
+    for(let i=0;i<pushDraftFiles.length;i++){
+      const f = pushDraftFiles[i];
+      const blob = await (await fetch(f.dataUrl)).blob();
+      files.push(new File([blob], f.name || 'file.bin', { type: blob.type || 'application/octet-stream' }));
+    }
+    const uploaded = await cloudUploadFiles(files, { title:'上傳推送附件' });
+    for(let i=0;i<uploaded.length;i++){
+      const up = uploaded[i];
+      out.push({ name:up.name||files[i].name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType });
+    }
+    return out;
+  }
   for(let i=0;i<pushDraftFiles.length;i++){
     const f = pushDraftFiles[i];
-    if(apiEnabled){
-      const up = await cloudUploadDataUrl(f.name, f.dataUrl);
-      out.push({ name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType });
-    } else {
-      out.push({ name:f.name, dataUrl:f.dataUrl });
-    }
+    out.push({ name:f.name, dataUrl:f.dataUrl });
   }
   return out;
 }
@@ -2240,7 +2463,7 @@ async function sendPushNotification(){
   if(!title || (!segments.length && !pushDraftFiles.length) || !resolved.ids.length || !currentUser) return;
   let attachments = [];
   try{ attachments = await uploadPushAttachments(); }
-  catch(e){ alert2('上傳附件失敗：'+(e.message||e)); return; }
+  catch(_e){ return; }
   const category = (NOTICE_CAT_META[cat]||NOTICE_CAT_META.general).name;
   const cta = readPushCtaFromForm();
   const payload = {
@@ -3173,7 +3396,7 @@ function vTransferInventory(){
     +'<button type="button" class="btn gray sm" data-call="refreshTransferInventory">重新整理</button>'
     +'<button type="button" class="btn green sm" data-call="openTransferApplyPage">申請調動</button>'
     +'</div>'
-    +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 列 · 新增／編輯產品請到「貨品」</p>'
+    +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 列 · 新增／編輯產品請到 POS「貨品」</p>'
     +'</div>'
     +'<div class="card"><div class="table-wrap"><table>'+head+body+'</table></div></div>';
 }
@@ -3209,7 +3432,7 @@ function vTransferProducts(){
     }).join('');
   return '<div class="card">'
     +'<h2>🏷️ 貨品</h2>'
-    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">一列一款主檔。可新增或編輯款號／名稱／類別／顏色／尺碼／安全存量；庫存數量請在「庫存查詢」調整。</p>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">一列一款主檔（已移至 POS）。可新增或編輯款號／名稱／類別／顏色／尺碼／安全存量；庫存數量請在「貨品調動 → 庫存查詢」調整。</p>'
     +'<div class="filters">'
     +'<button type="button" class="btn green sm" data-call="openAddTransferProductModal">＋ 新增產品</button>'
     +'<button type="button" class="btn gray sm" data-call="refreshTransferProducts">重新整理</button>'
@@ -3255,7 +3478,7 @@ function vTransferProductLog(){
     }).join('');
   return '<div class="card">'
     +'<h2>📑 主檔變更記錄</h2>'
-    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">建立／編輯貨品主檔的痕跡（含改款號、增刪尺碼）。所有已登入可查看。</p>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">建立／編輯貨品主檔的痕跡（含改款號、增刪尺碼）。主檔維護已移至 POS「貨品」。所有已登入可查看。</p>'
     +'<div class="filters"><button type="button" class="btn gray sm" data-call="refreshTransferProductChanges">重新整理</button></div>'
     +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 筆</p>'
     +'</div>'
@@ -3880,8 +4103,11 @@ function fmtMention(text){
 function ensureFilePayload(f){
   if(!f) return f;
   if(typeof f==='string') return {name:f};
-  if(f.driveFileId){
-    f.dataUrl = withFileToken(apiUrl('/api/files/'+f.driveFileId));
+  var driveFileId = fileStorageId(f);
+  if(driveFileId){
+    f.driveFileId = driveFileId;
+    if(!f.id) f.id = driveFileId;
+    f.dataUrl = withFileToken(apiUrl('/api/files/'+driveFileId));
     return f;
   }
   return f;
@@ -4191,6 +4417,7 @@ function getSidebarItemsForModule(mod){
       ['posReport','銷售報表'],
       ['posMembers','會員管理'],
       ['posProducts','可售商品'],
+      ['transferProducts','貨品'],
       ['posReset','示範資料']
     ];
   }
@@ -4226,7 +4453,6 @@ function getSidebarItemsForModule(mod){
       ['transferInventory','庫存查詢'],
       ['transferHistory','調動記錄'],
       ['transferStockLog','庫存校正記錄'],
-      ['transferProducts','貨品'],
       ['transferProductLog','主檔變更記錄']
     ];
   }
@@ -4434,9 +4660,9 @@ function go(v){
   if(v==='pushNotify' || v==='pushAll' || v==='pushUnread' || v==='pushRead' || v==='pushEnded' || v==='pushMine' || v==='pushCreate' || v==='pushDetail' || v==='pushStats' || v==='pushLogs'){ currentModule='push'; }
   if(v==='createStaff'){ currentModule='createStaff'; }
   if(v==='settings'){ currentModule='settings'; }
-  if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProducts' || v==='transferProductLog'){ currentModule='transfer'; }
+  if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProductLog'){ currentModule='transfer'; }
   if(v==='dailyToday' || v==='dailyProgress' || v==='dailyUnit' || v==='dailyHistory' || v==='dailyRecords' || v==='dailyNew' || v==='dailyRecurring' || v==='dailyOpLogs'){ currentModule='daily'; }
-  if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posSettlement' || v==='posReport' || v==='posProducts' || v==='posReset'){ currentModule='pos'; }
+  if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posSettlement' || v==='posReport' || v==='posProducts' || v==='posReset' || v==='transferProducts'){ currentModule='pos'; }
   fCat='全部'; fStatus='全部'; fKw='';
   closeAppSidebar();
   render();
@@ -4794,11 +5020,10 @@ async function saveProjectEdit(pid){
   let nextCoverFileId = p.coverFileId || null;
   if(epCoverDraft){
     try{
-      const up = await cloudUploadDataUrl(epCoverDraft.name, epCoverDraft.dataUrl);
+      const up = await cloudUploadDataUrl(epCoverDraft.name, epCoverDraft.dataUrl, { title:'上傳封面' });
       nextCoverUrl = up.dataUrl;
       nextCoverFileId = up.driveFileId || null;
-    }catch(e){
-      alert2('上傳封面失敗：'+(e.message||e));
+    }catch(_e){
       return;
     }
   } else if(epCoverRemove){
@@ -5148,7 +5373,7 @@ async function doUpload(pid, idx){
   let uploaded;
   try{
     uploaded = await cloudUploadFile(picked);
-  }catch(e){ alert2('上載失敗：'+(e.message||e)); return; }
+  }catch(_e){ return; }
   s.files.forEach(f=>f.latest=false);
   const ver = 'V'+(s.files.length+1);
   s.files.push({name:uploaded.name||name, by:currentUser.id, time:nowStr(), ver, latest:true, dataUrl:uploaded.dataUrl, driveFileId:uploaded.driveFileId, mimeType:uploaded.mimeType});
@@ -5321,7 +5546,7 @@ async function postComment(pid){
     try {
       const up = await cloudUploadFile(picked);
       file = {name:up.name||picked.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType};
-    } catch(e){ alert2('讀取／上載附件失敗：'+(e.message||e)); return; }
+    } catch(_e){ return; }
   }
   p.comments.unshift({by:currentUser.id, time:nowStr(), stage, text, file, removed:false, removedBy:null, replies:[]});
   addProjLog(p,'發表留言', stage+'｜'+text.slice(0,30)+(text.length>30?'…':''));
@@ -5521,18 +5746,27 @@ async function createProject(){
   let files = [];
   try{
     if(npCoverDraft){
-      const up = await cloudUploadDataUrl(npCoverDraft.name, npCoverDraft.dataUrl);
+      const up = await cloudUploadDataUrl(npCoverDraft.name, npCoverDraft.dataUrl, { title:'上傳封面' });
       coverUrl = up.dataUrl; coverFileId = up.driveFileId || null;
     }
-    for(let i=0;i<npDraftFiles.length;i++){
-      const f = npDraftFiles[i];
-      const up = await cloudUploadDataUrl(f.name, f.dataUrl);
-      files.push({
-        name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType,
-        by:currentUser.id, time:nowStr(), ver:'V'+(i+1), latest:i===npDraftFiles.length-1
-      });
+    if(npDraftFiles.length){
+      const fileObjs = [];
+      for(let i=0;i<npDraftFiles.length;i++){
+        const f = npDraftFiles[i];
+        const blob = await (await fetch(f.dataUrl)).blob();
+        fileObjs.push(new File([blob], f.name || 'file.bin', { type: blob.type || 'application/octet-stream' }));
+      }
+      const uploaded = await cloudUploadFiles(fileObjs, { title:'上傳項目附件' });
+      for(let i=0;i<uploaded.length;i++){
+        const up = uploaded[i];
+        const f = npDraftFiles[i];
+        files.push({
+          name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType,
+          by:currentUser.id, time:nowStr(), ver:'V'+(i+1), latest:i===npDraftFiles.length-1
+        });
+      }
     }
-  }catch(e){ alert2('上傳封面／附件失敗：'+(e.message||e)); return; }
+  }catch(_e){ return; }
   const p = {
     id: type==='rep'
       ? ('R'+String(repProjSeq++).padStart(3,'0'))
@@ -6697,10 +6931,13 @@ function modalUploadPickerHtml(){
     +modalUploadDraftListHtml();
 }
 async function modalUploadDraftToAttachments(){
+  var list=modalUploadDraftFiles.slice();
+  if(!list.length) return [];
+  var uploaded=await cloudUploadFiles(list, { title:'上傳附件' });
   var out=[];
-  for(var i=0;i<modalUploadDraftFiles.length;i++){
-    var f=modalUploadDraftFiles[i];
-    var up=await cloudUploadFile(f);
+  for(var i=0;i<uploaded.length;i++){
+    var up=uploaded[i];
+    var f=list[i];
     out.push({
       name:up.name||f.name,
       dataUrl:up.dataUrl,
@@ -6728,7 +6965,7 @@ async function dailySubmitCompleteWithFiles(id){
   if(!modalUploadDraftFiles.length) return alert2('請至少選擇 1 個附件。');
   var files;
   try{ files=await modalUploadDraftToAttachments(); }
-  catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
+  catch(_e){ return; }
   clearModalUploadDraft();
   var ok=completeDailyWork(id,currentUser,true,{attachments:files});
   closeModal();
@@ -6751,7 +6988,7 @@ async function dailySubmitAddFiles(id){
   if(!modalUploadDraftFiles.length) return alert2('請選擇至少 1 個檔案。');
   var files;
   try{ files=await modalUploadDraftToAttachments(); }
-  catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
+  catch(_e){ return; }
   clearModalUploadDraft();
   var ok=addAttachmentsToWork(id,files,currentUser);
   closeModal();
@@ -6836,11 +7073,14 @@ async function dailyUploadDescImagesFromInput(existingKeep){
   var base=clear?[]:existingKeep;
   var files=input&&input.files?Array.prototype.slice.call(input.files):[];
   if(!files.length) return base;
-  var out=base.slice();
   for(var i=0;i<files.length;i++){
-    var f=files[i];
-    if(!dailyIsAllowedDescImageFile(f)) throw new Error('「'+f.name+'」不是允許的圖片格式。');
-    var up=await cloudUploadFile(f);
+    if(!dailyIsAllowedDescImageFile(files[i])) throw new Error('「'+files[i].name+'」不是允許的圖片格式。');
+  }
+  var uploaded=await cloudUploadFiles(files, { title:'上傳說明圖' });
+  var out=base.slice();
+  for(var j=0;j<uploaded.length;j++){
+    var up=uploaded[j];
+    var f=files[j];
     out.push({
       name:up.name||f.name,
       dataUrl:up.dataUrl,
@@ -6943,7 +7183,11 @@ async function dailySubmitAdhoc(){
   var descImages=[];
   try{
     descImages=await dailyUploadDescImagesFromInput([]);
-  }catch(e){ return alert2(e&&e.message?e.message:e); }
+  }catch(e){
+    var msg=e&&e.message?e.message:String(e);
+    if(String(msg).indexOf('不是允許的圖片格式')>=0) return alert2(msg);
+    return;
+  }
   if(!createAdhocWork({title:title,content:content,dueDate:due,priority:priority,units:units,assigneeIds:assigneeIds,requireAttachment:requireAttachment,descImages:descImages},currentUser)){
     return alert2('建立失敗：請確認所選員工屬於已勾選的單位。');
   }
@@ -6987,7 +7231,11 @@ async function dailySubmitRecurring(){
   var descImages=[];
   try{
     descImages=await dailyUploadDescImagesFromInput([]);
-  }catch(e){ return alert2(e&&e.message?e.message:e); }
+  }catch(e){
+    var msg=e&&e.message?e.message:String(e);
+    if(String(msg).indexOf('不是允許的圖片格式')>=0) return alert2(msg);
+    return;
+  }
   createRecurringTemplate({title:title,content:content,priority:priority,units:units,assigneeIds:assigneeIds,requireAttachment:requireAttachment,descImages:descImages},currentUser);
   closeModal();
   try{
@@ -7044,7 +7292,11 @@ async function dailySubmitEditTemplate(id){
   var descImages=[];
   try{
     descImages=await dailyUploadDescImagesFromInput((t&&t.descImages)||[]);
-  }catch(e){ return alert2(e&&e.message?e.message:e); }
+  }catch(e){
+    var msg=e&&e.message?e.message:String(e);
+    if(String(msg).indexOf('不是允許的圖片格式')>=0) return alert2(msg);
+    return;
+  }
   editTemplate(id,{
     title:document.getElementById('d-title').value,
     content:document.getElementById('d-content').value,
@@ -7160,18 +7412,21 @@ function dailyDownloadAttach(workId,idx){
 function dailyFileViewHtml(f,workId,idx){
   f=ensureFilePayload(f);
   var name=f&&f.name?f.name:'附件';
+  if(f&&f.omitted){
+    return '<span style="color:#c62828;margin:2px 8px 2px 0;display:inline-block;word-break:break-all">📎 '+dailyEsc(name)+'（未同步，請重新上傳）</span>';
+  }
   var href=fileHref(f);
   if(!href || href==='#'){
-    return '<span style="color:#999;margin:2px 8px 2px 0;display:inline-block">📎 '+dailyEsc(name)+'</span>';
+    return '<span style="color:#999;margin:2px 8px 2px 0;display:inline-block;word-break:break-all">📎 '+dailyEsc(name)+'</span>';
   }
   if(workId!=null && idx!=null && idx!==''){
-    return '<a class="file-link" href="#" data-call="dailyPreviewAttach" data-arg0="'+escHtml(String(workId))+'" data-arg1="'+escHtml(String(idx))+'" title="點擊在彈窗檢視">📎 '+dailyEsc(name)+'</a>';
+    return '<a class="file-link" href="#" style="word-break:break-all;white-space:normal" data-call="dailyPreviewAttach" data-arg0="'+escHtml(String(workId))+'" data-arg1="'+escHtml(String(idx))+'" title="點擊在彈窗檢視">📎 '+dailyEsc(name)+'</a>';
   }
   // 無工作上下文時仍開彈窗（暫存檔案物件）
   if(!window._dailyPreviewFiles) window._dailyPreviewFiles={};
   var key='p'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
   window._dailyPreviewFiles[key]=f;
-  return '<a class="file-link" href="#" data-call="dailyPreviewAttachCached" data-arg0="'+escHtml(key)+'" title="點擊在彈窗檢視">📎 '+dailyEsc(name)+'</a>';
+  return '<a class="file-link" href="#" style="word-break:break-all;white-space:normal" data-call="dailyPreviewAttachCached" data-arg0="'+escHtml(key)+'" title="點擊在彈窗檢視">📎 '+dailyEsc(name)+'</a>';
 }
 function dailyPreviewAttachCached(key){
   var f=window._dailyPreviewFiles && window._dailyPreviewFiles[key];
@@ -7373,15 +7628,17 @@ async function dailySubmitProject(pid,idx){
   if(!isStageHandler(s,currentUser.id)&&!isAdmin()) return alert2('此階段不是你的待辦。');
   if(!modalUploadDraftFiles.length) return alert2('請至少選擇 1 個附件。');
   try{
-    for(var i=0;i<modalUploadDraftFiles.length;i++){
-      var f=modalUploadDraftFiles[i];
-      var up=await cloudUploadFile(f);
+    var list=modalUploadDraftFiles.slice();
+    var uploaded=await cloudUploadFiles(list, { title:'上傳附件後提交' });
+    for(var i=0;i<uploaded.length;i++){
+      var up=uploaded[i];
+      var f=list[i];
       s.files.forEach(function(x){ x.latest=false; });
       var ver='V'+(s.files.length+1);
       s.files.push({name:up.name||f.name, by:currentUser.id, time:nowStr(), ver:ver, latest:true, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType});
       addProjLog(p,'上載文件', s.name+'｜'+(up.name||f.name)+'（'+ver+'）');
     }
-  }catch(e){ return alert2('上傳失敗：'+(e.message||e)); }
+  }catch(_e){ return; }
   clearModalUploadDraft();
   if(['未開始','待處理'].includes(s.status)){
     s.status='進行中';
@@ -7489,8 +7746,9 @@ function vDailyNew(user){
         var admin='<button class="btn gray sm" data-call="dailyEditWork" data-arg0="'+escHtml(String(w.id))+'">編輯</button> ';
         if(w.status==='done') admin+='<button class="btn warn sm" data-call="dailyReopen" data-arg0="'+escHtml(String(w.id))+'">重開</button> ';
         admin+='<button class="btn red sm" data-call="dailyCancelWork" data-arg0="'+escHtml(String(w.id))+'">取消</button>';
+        var filesHtml=dailyAttachHtml(w,user,false);
         return '<tr>'+
-          '<td><b>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+'</td>'+
+          '<td><b>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+filesHtml+'</td>'+
           '<td>'+dailyEsc(w.unit)+'</td>'+
           '<td style="font-size:12px">'+dailyEsc(workAssigneesLabel(w))+'</td>'+
           '<td>'+priorityTag(w.priority)+'</td>'+

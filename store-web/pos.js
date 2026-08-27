@@ -1312,18 +1312,39 @@ async function posSubmitSettlement() {
   try {
     var attachments = [];
     if (fileEl && fileEl.files && fileEl.files.length) {
-      for (var i = 0; i < fileEl.files.length; i++) {
-        var file = fileEl.files[i];
-        var fd = new FormData();
-        fd.append('file', file);
-        var up = await apiFetch('/api/files', { method: 'POST', body: fd });
-        if (up && up.id) {
-          attachments.push({
-            id: up.id,
-            name: up.name || file.name || '',
-            mimeType: up.mimeType || file.type || ''
-          });
+      var list = Array.prototype.slice.call(fileEl.files);
+      try {
+        var uploaded = (typeof cloudUploadFiles === 'function')
+          ? await cloudUploadFiles(list, { title: '上傳日結附件' })
+          : null;
+        if (uploaded) {
+          for (var i = 0; i < uploaded.length; i++) {
+            var up = uploaded[i];
+            if (up && up.driveFileId) {
+              attachments.push({
+                id: up.driveFileId,
+                name: up.name || list[i].name || '',
+                mimeType: up.mimeType || list[i].type || ''
+              });
+            }
+          }
+        } else {
+          for (var j = 0; j < list.length; j++) {
+            var file = list[j];
+            var fd = new FormData();
+            fd.append('file', file);
+            var raw = await apiFetch('/api/files', { method: 'POST', body: fd });
+            if (raw && raw.id) {
+              attachments.push({
+                id: raw.id,
+                name: raw.name || file.name || '',
+                mimeType: raw.mimeType || file.type || ''
+              });
+            }
+          }
         }
+      } catch (_upErr) {
+        return;
       }
     }
     var res = await apiFetch('/api/pos/settlement/submit', {

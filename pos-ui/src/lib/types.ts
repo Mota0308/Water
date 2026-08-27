@@ -137,6 +137,12 @@ export interface PosReportSummary {
   days: PosReportDay[]
 }
 
+export interface PosSettlementAttachment {
+  id: string
+  name?: string
+  mimeType?: string
+}
+
 export interface PosSettlementDoc {
   id?: string
   store?: string
@@ -152,6 +158,7 @@ export interface PosSettlementDoc {
   cashCounted?: number
   cashDiff?: number
   remark?: string
+  attachments?: PosSettlementAttachment[]
   snapshot?: PosReportSummary
 }
 

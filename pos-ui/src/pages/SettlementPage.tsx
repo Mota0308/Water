@@ -1,6 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { apiJson } from '@/lib/api'
+import { apiJson, fileUrl, uploadFiles } from '@/lib/api'
 import { formatDate, formatDateTime, formatHKD } from '@/lib/format'
 import {
   Badge,
@@ -13,7 +13,13 @@ import {
   fieldClass,
   textareaClass,
 } from '@/components/ui'
-import { PAYMENT_METHODS, type PosReportSummary, type PosSettlementDoc, type PosTransaction } from '@/lib/types'
+import {
+  PAYMENT_METHODS,
+  type PosReportSummary,
+  type PosSettlementAttachment,
+  type PosSettlementDoc,
+  type PosTransaction,
+} from '@/lib/types'
 import { usePosStore } from '@/store/PosStoreContext'
 
 function todayYmd() {
@@ -59,6 +65,50 @@ function statusMeta(data: SettlementRes | null) {
   return { label: '待核對', tone: 'sky' as const }
 }
 
+function SettlementAttachmentsList({
+  attachments,
+  emptyText = '尚無附件',
+}: {
+  attachments?: PosSettlementAttachment[] | null
+  emptyText?: string
+}) {
+  const list = Array.isArray(attachments) ? attachments.filter((a) => a && a.id) : []
+  if (!list.length) {
+    return <p className="text-sm text-slate-400">{emptyText}</p>
+  }
+  return (
+    <ul className="space-y-2">
+      {list.map((att) => {
+        const href = fileUrl(att.id)
+        const name = att.name || att.id
+        return (
+          <li
+            key={att.id}
+            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+          >
+            <div className="break-all font-medium leading-snug">{name}</div>
+            <div className="mt-1 flex flex-wrap gap-3 text-xs">
+              {href ? (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sky-700 underline underline-offset-2"
+                >
+                  開啟／下載完整檔案
+                </a>
+              ) : (
+                <span className="text-slate-400">無法產生連結</span>
+              )}
+              {att.mimeType ? <span className="text-slate-400">{att.mimeType}</span> : null}
+            </div>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 export function SettlementPage() {
   const { store, setStore } = usePosStore()
   const [date, setDate] = useState(todayYmd())
@@ -66,6 +116,8 @@ export function SettlementPage() {
   const [actualAmounts, setActualAmounts] = useState<Record<string, string>>({})
   const [remark, setRemark] = useState('')
   const [reviewNote, setReviewNote] = useState('')
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const [uploading, setUploading] = useState(false)
   const [todayTransactions, setTodayTransactions] = useState<PosTransaction[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -84,7 +136,9 @@ export function SettlementPage() {
       ])
       setData(res)
       setTodayTransactions(
-        (txRes.transactions || []).filter((tx) => tx.store === (res.store || store) && String(tx.createdAt || '').slice(0, 10) === (res.date || date)),
+        (txRes.transactions || []).filter(
+          (tx) => tx.store === (res.store || store) && String(tx.createdAt || '').slice(0, 10) === (res.date || date),
+        ),
       )
       if (res.store && res.store !== store) setStore(res.store)
       if (res.date) setDate(res.date)
@@ -92,13 +146,15 @@ export function SettlementPage() {
       const defaults = Object.fromEntries(
         PAYMENT_METHODS.map((item) => {
           const systemAmount = Number(systemSummary?.byPayment?.[item.id]) || 0
-          const actual = item.id === 'cash' && res.settlement?.cashCounted != null ? res.settlement.cashCounted : systemAmount
+          const actual =
+            item.id === 'cash' && res.settlement?.cashCounted != null ? res.settlement.cashCounted : systemAmount
           return [item.id, actual ? String(actual) : '']
         }),
       )
       setActualAmounts(defaults)
       setRemark(res.settlement?.remark || '')
       setReviewNote(res.settlement?.reviewNote || '')
+      if (res.locked) setPendingFiles([])
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -117,15 +173,33 @@ export function SettlementPage() {
     }
     if (!confirm('確定提交日結？')) return
     try {
+      setUploading(true)
+      let attachments: PosSettlementAttachment[] = []
+      if (pendingFiles.length) {
+        try {
+          attachments = await uploadFiles(pendingFiles, { title: '上傳日結附件' })
+        } catch {
+          return
+        }
+      }
       const res = await apiJson<SettlementRes>('/api/pos/settlement/submit', {
         method: 'POST',
-        body: JSON.stringify({ store, date, cashCounted: Number(actualAmounts.cash), remark }),
+        body: JSON.stringify({
+          store,
+          date,
+          cashCounted: Number(actualAmounts.cash),
+          remark,
+          attachments,
+        }),
       })
       setData(res)
-      toast.success('已提交日結')
+      setPendingFiles([])
+      toast.success(attachments.length ? `已提交日結（含 ${attachments.length} 個附件）` : '已提交日結')
       await load()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setUploading(false)
     }
   }
 
@@ -178,6 +252,7 @@ export function SettlementPage() {
   const displaySummary = data?.locked ? setDoc?.snapshot || live : live
   const rows = paymentRows(displaySummary)
   const status = statusMeta(data)
+  const submittedAttachments = Array.isArray(setDoc?.attachments) ? setDoc.attachments : []
 
   const pointsStats = useMemo(() => {
     return todayTransactions.reduce(
@@ -197,10 +272,7 @@ export function SettlementPage() {
   const paymentSummary = useMemo(() => {
     return rows.map((row) => {
       const actual = Number(actualAmounts[row.key] || 0)
-      const lockedActual =
-        data?.locked && row.key !== 'cash' && !actualAmounts[row.key]
-          ? row.system
-          : actual
+      const lockedActual = data?.locked && row.key !== 'cash' && !actualAmounts[row.key] ? row.system : actual
       const displayActual = data?.locked && row.key !== 'cash' ? lockedActual || row.system : actual
       return {
         ...row,
@@ -225,7 +297,7 @@ export function SettlementPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">每日銷售結算</h1>
-          <p className="mt-1 text-sm text-slate-500">核對營業數據、實收金額與主管審批狀態。</p>
+          <p className="mt-1 text-sm text-slate-500">核對營業數據、實收金額、附件憑證與主管審批狀態。</p>
         </div>
         <Badge tone={status.tone}>{status.label}</Badge>
       </div>
@@ -247,10 +319,13 @@ export function SettlementPage() {
           </div>
 
           <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-            <div>{store || '—'} | {formatDate(date)}</div>
+            <div>
+              {store || '—'} | {formatDate(date)}
+            </div>
             <div className="mt-1 text-xs text-slate-500">
               {setDoc?.submittedAt ? `提交：${formatDateTime(setDoc.submittedAt)} ${setDoc.submittedByName || ''}` : '尚未提交'}
             </div>
+            <div className="mt-1 text-xs text-slate-500">附件：{submittedAttachments.length} 個</div>
           </div>
 
           <div className="flex items-end">
@@ -264,9 +339,7 @@ export function SettlementPage() {
       {loading && <p className="text-slate-500">載入中…</p>}
       {error && <p className="text-red-600">{error}</p>}
       {data?.warning && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-          {data.warning}
-        </div>
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{data.warning}</div>
       )}
       {data && !loading && (
         <>
@@ -279,8 +352,8 @@ export function SettlementPage() {
             ].map(([k, v]) => (
               <Card key={k}>
                 <CardContent className="p-4">
-                <div className="text-xs text-slate-500">{k}</div>
-                <div className="mt-2 text-xl font-semibold tabular-nums">{v}</div>
+                  <div className="text-xs text-slate-500">{k}</div>
+                  <div className="mt-2 text-xl font-semibold tabular-nums">{v}</div>
                 </CardContent>
               </Card>
             ))}
@@ -316,9 +389,7 @@ export function SettlementPage() {
                         <td className="px-4 py-3 text-right">
                           {data.locked ? (
                             <span className="tabular-nums">
-                              {row.key === 'cash'
-                                ? formatHKD(Number(setDoc?.cashCounted) || 0)
-                                : formatHKD(row.actual)}
+                              {row.key === 'cash' ? formatHKD(Number(setDoc?.cashCounted) || 0) : formatHKD(row.actual)}
                             </span>
                           ) : (
                             <input
@@ -330,7 +401,9 @@ export function SettlementPage() {
                             />
                           )}
                         </td>
-                        <td className={`px-4 py-3 text-right font-medium tabular-nums ${Math.abs(row.diff) < 0.01 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        <td
+                          className={`px-4 py-3 text-right font-medium tabular-nums ${Math.abs(row.diff) < 0.01 ? 'text-emerald-600' : 'text-red-600'}`}
+                        >
                           {row.diff > 0 ? '+' : ''}
                           {formatHKD(row.diff)}
                         </td>
@@ -340,7 +413,9 @@ export function SettlementPage() {
                       <td className="px-4 py-3">合計</td>
                       <td className="px-4 py-3 text-right tabular-nums">{formatHKD(totals.system)}</td>
                       <td className="px-4 py-3 text-right tabular-nums">{formatHKD(totals.actual)}</td>
-                      <td className={`px-4 py-3 text-right tabular-nums ${Math.abs(totals.diff) < 0.01 ? 'text-emerald-600' : 'text-red-600'}`}>
+                      <td
+                        className={`px-4 py-3 text-right tabular-nums ${Math.abs(totals.diff) < 0.01 ? 'text-emerald-600' : 'text-red-600'}`}
+                      >
                         {totals.diff > 0 ? '+' : ''}
                         {formatHKD(totals.diff)}
                       </td>
@@ -370,6 +445,51 @@ export function SettlementPage() {
                     />
                   </label>
 
+                  {!data.locked && (
+                    <div className="space-y-2">
+                      <label className="block text-slate-600">
+                        上傳附件憑證（可多選）
+                        <input
+                          type="file"
+                          multiple
+                          className={fieldClass('mt-1 cursor-pointer py-2')}
+                          onChange={(e) => {
+                            const files = Array.from(e.target.files || [])
+                            if (!files.length) return
+                            setPendingFiles((prev) => prev.concat(files))
+                            e.target.value = ''
+                          }}
+                        />
+                      </label>
+                      {pendingFiles.length ? (
+                        <ul className="space-y-1 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                          {pendingFiles.map((file, idx) => (
+                            <li key={`${file.name}-${idx}`} className="flex items-start justify-between gap-2 text-sm">
+                              <span className="break-all text-slate-700">{file.name}</span>
+                              <button
+                                type="button"
+                                className="shrink-0 text-xs text-red-600"
+                                onClick={() => setPendingFiles((prev) => prev.filter((_, i) => i !== idx))}
+                              >
+                                移除
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-xs text-slate-400">尚未選擇附件；可上傳截圖、PDF 等憑證。</p>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <div className="text-slate-600">已提交附件（{submittedAttachments.length}）</div>
+                    <SettlementAttachmentsList
+                      attachments={submittedAttachments}
+                      emptyText={data.locked ? '此日結沒有附件' : '提交後會顯示完整檔名與下載連結'}
+                    />
+                  </div>
+
                   {(data.canApprove || data.canReject) && (
                     <label className="block text-slate-600">
                       核對備註
@@ -384,8 +504,13 @@ export function SettlementPage() {
 
                   <div className="flex flex-wrap gap-2 pt-1">
                     {!data.locked && data.canSubmit && (
-                      <button type="button" onClick={() => void submit()} className={btnClass({ variant: 'primary' })}>
-                        提交日結
+                      <button
+                        type="button"
+                        disabled={uploading}
+                        onClick={() => void submit()}
+                        className={btnClass({ variant: 'primary' })}
+                      >
+                        {uploading ? '上傳／提交中…' : '提交日結'}
                       </button>
                     )}
                     {data.canApprove && (
@@ -446,6 +571,7 @@ export function SettlementPage() {
                     <div>提交時間：{formatDateTime(setDoc.submittedAt)}</div>
                     <div>提交人：{setDoc.submittedByName || '—'}</div>
                     <div>現金差額：{formatHKD(Number(setDoc.cashDiff) || 0)}</div>
+                    <div>附件數量：{submittedAttachments.length}</div>
                     {setDoc.reviewedAt ? <div>核對時間：{formatDateTime(setDoc.reviewedAt)}</div> : null}
                     {setDoc.reviewedByName ? <div>核對人：{setDoc.reviewedByName}</div> : null}
                   </CardContent>
