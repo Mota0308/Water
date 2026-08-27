@@ -562,6 +562,7 @@ app.get('/api/transfer/meta', requireAuth, async (_req, res) => {
       categories: TRANSFER_CATEGORIES,
       sizePresets: options.sizeOptions,
       brands: options.brands,
+      colors: options.colors,
       attributes: TRANSFER_PRODUCT_ATTR_DEFS,
     });
   } catch (e) {
@@ -611,6 +612,7 @@ app.get('/api/transfer/products', requireAuth, async (_req, res) => {
       products: await listTransferProducts(),
       attributes: TRANSFER_PRODUCT_ATTR_DEFS,
       brands: options.brands,
+      colors: options.colors,
       sizeOptions: options.sizeOptions,
     });
   } catch (e) {

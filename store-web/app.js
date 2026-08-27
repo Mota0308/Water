@@ -2874,6 +2874,17 @@ function getTransferBrandOptions(){
   });
   return out.sort(function(a,b){ return a.localeCompare(b,'zh-Hant'); });
 }
+function getTransferColorOptions(){
+  const fromCache = (transferProductOptionsCache && transferProductOptionsCache.colors) || [];
+  const fromProducts = (transferProductsCache||[]).map(function(p){ return String(p.color||'').trim(); }).filter(Boolean);
+  const out = [];
+  const seen = {};
+  fromCache.concat(fromProducts).forEach(function(c){
+    if(!c || seen[c]) return;
+    seen[c]=true; out.push(c);
+  });
+  return out.sort(function(a,b){ return a.localeCompare(b,'zh-Hant'); });
+}
 function getTransferSizeOptions(){
   const fromCache = (transferProductOptionsCache && transferProductOptionsCache.sizeOptions) || [];
   if(fromCache.length) return fromCache.slice();
@@ -2886,6 +2897,16 @@ function transferBrandSelectHtml(selected){
     +'<option value="">（未選品牌）</option>'
     +opts.map(function(b){
       return '<option value="'+escHtml(b)+'"'+(b===sel?' selected':'')+'>'+escHtml(b)+'</option>';
+    }).join('')
+    +'</select>';
+}
+function transferColorSelectHtml(selected){
+  const sel = String(selected||'');
+  const opts = getTransferColorOptions();
+  return '<select id="tp-color">'
+    +'<option value="">（未選顏色）</option>'
+    +opts.map(function(c){
+      return '<option value="'+escHtml(c)+'"'+(c===sel?' selected':'')+'>'+escHtml(c)+'</option>';
     }).join('')
     +'</select>';
 }
@@ -2990,10 +3011,11 @@ async function loadTransferProductOptions(force){
     const data = await apiFetch('/api/transfer/product-options');
     transferProductOptionsCache = {
       brands: Array.isArray(data.brands) ? data.brands : [],
+      colors: Array.isArray(data.colors) ? data.colors : [],
       sizeOptions: Array.isArray(data.sizeOptions) && data.sizeOptions.length ? data.sizeOptions : TRANSFER_SIZE_PRESETS.slice()
     };
   }catch(e){
-    transferProductOptionsCache = transferProductOptionsCache || { brands:[], sizeOptions: TRANSFER_SIZE_PRESETS.slice() };
+    transferProductOptionsCache = transferProductOptionsCache || { brands:[], colors:[], sizeOptions: TRANSFER_SIZE_PRESETS.slice() };
   }
   return transferProductOptionsCache;
 }
@@ -3001,9 +3023,9 @@ function openAddTransferProductOptionModal(){
   if(!currentUser){ alert2('請先登入。'); return; }
   showModal(
     '<h3>添加選項</h3>'
-    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">新增後可在「新增／編輯產品」的品牌、商品選項下拉中選擇。</p>'
-    +'<label>選項類型</label><select id="tp-opt-type"><option value="brand">品牌</option><option value="size">商品選項（尺碼）</option></select>'
-    +'<label>選項內容</label><input type="text" id="tp-opt-value" placeholder="例如 Arena 或 童 L">'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">新增後可在「新增／編輯產品」的品牌、顏色、商品選項下拉中選擇。</p>'
+    +'<label>選項類型</label><select id="tp-opt-type"><option value="brand">品牌</option><option value="color">顏色</option><option value="size">商品選項（尺碼）</option></select>'
+    +'<label>選項內容</label><input type="text" id="tp-opt-value" placeholder="例如 Arena、黑 或 童 L">'
     +'<div class="actions">'
     +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
     +'<button type="button" class="btn green" data-call="submitTransferProductOption">儲存選項</button>'
@@ -3022,10 +3044,12 @@ async function submitTransferProductOption(){
     });
     transferProductOptionsCache = {
       brands: Array.isArray(data.brands) ? data.brands : (transferProductOptionsCache&&transferProductOptionsCache.brands)||[],
+      colors: Array.isArray(data.colors) ? data.colors : (transferProductOptionsCache&&transferProductOptionsCache.colors)||[],
       sizeOptions: Array.isArray(data.sizeOptions) ? data.sizeOptions : (transferProductOptionsCache&&transferProductOptionsCache.sizeOptions)||TRANSFER_SIZE_PRESETS.slice()
     };
     closeModal();
-    alert2('已添加'+(type==='brand'?'品牌':'商品選項')+'：「'+value+'」');
+    const label = type==='brand'?'品牌':(type==='color'?'顏色':'商品選項');
+    alert2('已添加'+label+'：「'+value+'」');
   }catch(e){
     alert2('添加失敗：'+(e.message||e));
   }
@@ -3050,6 +3074,7 @@ async function loadTransferProducts(force){
     transferProductsCache = Array.isArray(data.products) ? data.products : [];
     transferProductOptionsCache = {
       brands: Array.isArray(data.brands) ? data.brands : [],
+      colors: Array.isArray(data.colors) ? data.colors : [],
       sizeOptions: Array.isArray(data.sizeOptions) && data.sizeOptions.length ? data.sizeOptions : TRANSFER_SIZE_PRESETS.slice()
     };
   }catch(e){
@@ -3109,7 +3134,7 @@ function openAddTransferProductModal(){
       +transferProductAttrFieldsHtml({})
       +'<label>產品分類</label><select id="tp-cat" onchange="onTransferProductCatChange()">'+transferCategoryOptionsHtml('其他')+'</select>'
       +'<div id="tp-cat-custom-wrap" style="display:none"><label>自訂產品分類</label><input type="text" id="tp-cat-custom" placeholder="輸入新分類"></div>'
-      +'<label>顏色（可留空）</label><input type="text" id="tp-color" placeholder="例如 黑">'
+      +'<label>顏色（可留空）</label>'+transferColorSelectHtml('')
       +'<label>商品選項（尺碼）</label>'+transferSizeSelectHtml([])
       +'<label>安全存量</label><input type="number" id="tp-safety" min="0" step="1" value="0">'
       +'<div class="actions">'
@@ -3165,7 +3190,7 @@ function openEditTransferProductModal(productId){
       +transferCategoryOptionsHtml(catKnown?cat:'__custom__')
       +'</select>'
       +'<div id="tp-cat-custom-wrap" style="'+(catKnown?'display:none':'')+'"><label>自訂產品分類</label><input type="text" id="tp-cat-custom" value="'+(catKnown?'':escHtml(cat))+'" placeholder="輸入新分類"></div>'
-      +'<label>顏色（可留空）</label><input type="text" id="tp-color" value="'+escHtml(p.color||'')+'">'
+      +'<label>顏色（可留空）</label>'+transferColorSelectHtml(p.color||'')
       +'<label>商品選項（尺碼）</label>'+transferSizeSelectHtml(sizes)
       +'<label>安全存量</label><input type="number" id="tp-safety" min="0" step="1" value="'+escHtml(String(p.safetyStock!=null?p.safetyStock:0))+'">'
       +'<div class="actions">'

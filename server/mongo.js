@@ -133,12 +133,16 @@ export async function getTransferProductOptions() {
   await connectMongo();
   const doc = await metaCol().findOne({ _id: 'transfer_product_options' });
   const brands = normalizeOptionList(doc?.brands, []);
+  const colors = normalizeOptionList(doc?.colors, []);
   const sizeOptions = normalizeOptionList(doc?.sizeOptions, DEFAULT_TRANSFER_SIZE_OPTIONS);
-  // Also include brands already used on products
   const usedBrands = await transferProductsCol()
     .distinct('brand', { brand: { $exists: true, $nin: [null, ''] } })
     .catch(() => []);
   const mergedBrands = normalizeOptionList([...brands, ...usedBrands], []);
+  const usedColors = await transferProductsCol()
+    .distinct('color', { color: { $exists: true, $nin: [null, ''] } })
+    .catch(() => []);
+  const mergedColors = normalizeOptionList([...colors, ...usedColors], []);
   const usedSizes = await transferProductsCol()
     .distinct('sizes')
     .catch(() => []);
@@ -148,7 +152,7 @@ export async function getTransferProductOptions() {
     else if (s) flatSizes.push(s);
   });
   const mergedSizes = normalizeOptionList([...sizeOptions, ...flatSizes], DEFAULT_TRANSFER_SIZE_OPTIONS);
-  return { brands: mergedBrands, sizeOptions: mergedSizes };
+  return { brands: mergedBrands, colors: mergedColors, sizeOptions: mergedSizes };
 }
 
 export async function saveTransferProductOptions(input) {
@@ -156,6 +160,8 @@ export async function saveTransferProductOptions(input) {
   const current = await getTransferProductOptions();
   const brands =
     input?.brands != null ? normalizeOptionList(input.brands, []) : current.brands;
+  const colors =
+    input?.colors != null ? normalizeOptionList(input.colors, []) : current.colors;
   const sizeOptions =
     input?.sizeOptions != null
       ? normalizeOptionList(input.sizeOptions, DEFAULT_TRANSFER_SIZE_OPTIONS)
@@ -166,12 +172,13 @@ export async function saveTransferProductOptions(input) {
     {
       _id: 'transfer_product_options',
       brands,
+      colors,
       sizeOptions,
       updatedAt: new Date(),
     },
     { upsert: true }
   );
-  return { brands, sizeOptions };
+  return { brands, colors, sizeOptions };
 }
 
 export async function addTransferProductOption(type, value) {
@@ -180,13 +187,29 @@ export async function addTransferProductOption(type, value) {
   const current = await getTransferProductOptions();
   if (type === 'brand') {
     if (current.brands.indexOf(v) >= 0) return current;
-    return saveTransferProductOptions({ brands: [...current.brands, v], sizeOptions: current.sizeOptions });
+    return saveTransferProductOptions({
+      brands: [...current.brands, v],
+      colors: current.colors,
+      sizeOptions: current.sizeOptions,
+    });
+  }
+  if (type === 'color') {
+    if (current.colors.indexOf(v) >= 0) return current;
+    return saveTransferProductOptions({
+      brands: current.brands,
+      colors: [...current.colors, v],
+      sizeOptions: current.sizeOptions,
+    });
   }
   if (type === 'size') {
     if (current.sizeOptions.indexOf(v) >= 0) return current;
-    return saveTransferProductOptions({ brands: current.brands, sizeOptions: [...current.sizeOptions, v] });
+    return saveTransferProductOptions({
+      brands: current.brands,
+      colors: current.colors,
+      sizeOptions: [...current.sizeOptions, v],
+    });
   }
-  throw new Error('type 須為 brand 或 size');
+  throw new Error('type 須為 brand、color 或 size');
 }
 
 
