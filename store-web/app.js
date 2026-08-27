@@ -3796,7 +3796,7 @@ function vTransferInventory(){
     +'<button type="button" class="btn gray sm" data-call="refreshTransferInventory">重新整理</button>'
     +'<button type="button" class="btn green sm" data-call="openTransferApplyPage">申請調動</button>'
     +'</div>'
-    +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 列 · 新增／編輯產品請到 POS「貨品」</p>'
+    +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 列 · 新增／編輯產品請到「貨品調動 → 貨品」</p>'
     +'</div>'
     +'<div class="card"><div class="table-wrap"><table>'+head+body+'</table></div></div>';
 }
@@ -3881,7 +3881,7 @@ function vTransferProductLog(){
     }).join('');
   return '<div class="card">'
     +'<h2>📑 主檔變更記錄</h2>'
-    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">建立／編輯貨品主檔的痕跡（含改款號、增刪尺碼）。主檔維護已移至 POS「貨品」。所有已登入可查看。</p>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">建立／編輯貨品主檔的痕跡（含改款號、增刪尺碼）。主檔維護請到「貨品調動 → 貨品」。所有已登入可查看。</p>'
     +'<div class="filters"><button type="button" class="btn gray sm" data-call="refreshTransferProductChanges">重新整理</button></div>'
     +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+rows.length+' 筆</p>'
     +'</div>'
@@ -4736,7 +4736,6 @@ function setModule(m){
 function getSidebarTree(){
   const features = [
     { mod:'daily', label:'今日工作' },
-    { mod:'transfer', label:'貨品調動' },
     { mod:'push', label:'推送通知' }
   ];
   if(canCreateEmployee()) features.push({ mod:'createStaff', label:'創建員工' });
@@ -4746,7 +4745,10 @@ function getSidebarTree(){
   products.push({ mod:'replenishment', label:'補貨' });
   return [
     { id:'features', label:'功能', children: features },
-    { id:'pos', label:'POS', children: [{ mod:'pos', label:'POS 收銀' }] },
+    { id:'pos', label:'POS', children: [
+      { mod:'pos', label:'POS 收銀' },
+      { mod:'transfer', label:'貨品調動' }
+    ] },
     { id:'products', label:'產品', children: products }
   ];
 }
@@ -4820,7 +4822,6 @@ function getSidebarItemsForModule(mod){
       ['posReport','銷售報表'],
       ['posMembers','會員管理'],
       ['posProducts','可售商品'],
-      ['transferProducts','貨品'],
       ['posReset','示範資料']
     ];
   }
@@ -4856,6 +4857,7 @@ function getSidebarItemsForModule(mod){
       ['transferInventory','庫存查詢'],
       ['transferHistory','調動記錄'],
       ['transferStockLog','庫存校正記錄'],
+      ['transferProducts','貨品'],
       ['transferProductLog','主檔變更記錄']
     ];
   }
@@ -5063,9 +5065,9 @@ function go(v){
   if(v==='pushNotify' || v==='pushAll' || v==='pushUnread' || v==='pushRead' || v==='pushEnded' || v==='pushMine' || v==='pushCreate' || v==='pushDetail' || v==='pushStats' || v==='pushLogs'){ currentModule='push'; }
   if(v==='createStaff'){ currentModule='createStaff'; }
   if(v==='settings'){ currentModule='settings'; }
-  if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProductLog'){ currentModule='transfer'; }
+  if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProductLog' || v==='transferProducts'){ currentModule='transfer'; }
   if(v==='dailyToday' || v==='dailyProgress' || v==='dailyUnit' || v==='dailyHistory' || v==='dailyRecords' || v==='dailyNew' || v==='dailyRecurring' || v==='dailyOpLogs'){ currentModule='daily'; }
-  if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posSettlement' || v==='posReport' || v==='posProducts' || v==='posReset' || v==='transferProducts'){ currentModule='pos'; }
+  if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posSettlement' || v==='posReport' || v==='posProducts' || v==='posReset'){ currentModule='pos'; }
   fCat='全部'; fStatus='全部'; fKw='';
   closeAppSidebar();
   render();
