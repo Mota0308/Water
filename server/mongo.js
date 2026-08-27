@@ -1237,6 +1237,7 @@ export function normalizeNotification(raw) {
   n.logs = Array.isArray(n.logs) ? n.logs : [];
   n.cta = normalizeNoticeCta(n.cta);
   n.systemSource = !!n.systemSource;
+  n.attachments = Array.isArray(n.attachments) ? n.attachments : [];
   if (!n.status) n.status = '進行中';
   const ids = recipientIdsOf(n);
   if (!n.readers || typeof n.readers !== 'object') n.readers = {};

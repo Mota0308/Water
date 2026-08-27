@@ -1132,7 +1132,7 @@ function refreshMailboxDetailUi(){
           confirmed: isRead,
           interactive: true
         }))
-    +notifAttachHtml(item.attachments)
+    +notifAttachHtml(noticeAttachmentsForDisplay(item))
     +(isSentView ? mailboxReceiptHtml(item) : '');
   if(isSentView){
     actionsEl.innerHTML = noticeCtaButtonHtml(item, { className: 'btn green sm' });
@@ -1508,6 +1508,43 @@ function notifAttachHtml(files){
     return `<a class="file-link" href="${href}" download="${name.replace(/"/g,'')}" target="_blank" rel="noopener" style="display:inline-block;margin:2px 8px 2px 0">📎 ${name}</a>`;
   }).join('')}
   </div>`;
+}
+/** 從「突發任務：標題」解析工作標題 */
+function extractAdhocTitleFromNotice(n){
+  var title = String((n && n.title) || '').trim();
+  var m = title.match(/^突發任務[：:]\s*(.+)$/);
+  if(m) return String(m[1] || '').trim();
+  if(String((n && n.category) || '') === '突發任務') return title;
+  return '';
+}
+/**
+ * 通知要顯示的附件：優先用通知本身的 attachments；
+ * 舊版突發通知若漏存附件，則回填對應突發工作的說明圖。
+ */
+function noticeAttachmentsForDisplay(n){
+  var own = Array.isArray(n && n.attachments) ? n.attachments.filter(Boolean) : [];
+  if(own.length) return own;
+  var workTitle = extractAdhocTitleFromNotice(n);
+  if(!workTitle) return [];
+  var seen = {};
+  var out = [];
+  var works = [];
+  try{ works = (loadDailyState().works || []); }catch(_e){ works = []; }
+  for(var i=0;i<works.length;i++){
+    var w = works[i];
+    if(!w || w.kind !== 'adhoc' || w.status === 'cancelled') continue;
+    if(String(w.title || '').trim() !== workTitle) continue;
+    var imgs = Array.isArray(w.descImages) ? w.descImages : [];
+    for(var j=0;j<imgs.length;j++){
+      var f = imgs[j];
+      if(!f) continue;
+      var key = (typeof fileStorageId === 'function' ? fileStorageId(f) : '') || String(f.dataUrl || '').slice(0, 80) || (String(f.name || '') + '#' + j);
+      if(seen[key]) continue;
+      seen[key] = true;
+      out.push(f);
+    }
+  }
+  return out;
 }
 function pushFileListHtml(){
   if(!pushDraftFiles.length) return '<p style="font-size:12px;color:#888;margin:6px 0">尚未添加附件。</p>';
@@ -1904,7 +1941,7 @@ function noticeCardHtml(n){
     +noticeCatTag(n)
     +(n.priority==='緊急'?'<span class="tag n-pri-urgent">緊急</span>':n.priority==='重要'?'<span class="tag n-pri-important">重要</span>':'')
     +'<span style="font-size:15px;flex:1;min-width:140px;'+(unread?'font-weight:bold':'')+'">'+(unread?'<span style="display:inline-block;width:8px;height:8px;background:#e53935;border-radius:50%;margin-right:6px"></span>':'')+escHtml(n.title||'（無標題）')+'</span>'
-    +((n.attachments&&n.attachments.length)?'<span>📎</span>':'')
+    +((noticeAttachmentsForDisplay(n).length)?'<span>📎</span>':'')
     +(isNoticeRecipient(n)?noticeReadStateTag(n):'<span class="tag">'+(escHtml(n.status||'進行中'))+'</span>')
     +'</div>'
     +'<div style="font-size:13px;color:#666;margin-bottom:6px">'+escHtml(n.summary||(n.content||'').slice(0,80))+'</div>'
@@ -2157,7 +2194,7 @@ function vPushDetail(){
     +(n.recipientDesc?'<span>接收：'+escHtml(n.recipientDesc)+'</span>':'')
     +'</div>'
     +noticeSegmentsReadHtml(n, { isRecipient:isRecip, confirmed:confirmed, interactive:true })
-    +notifAttachHtml(n.attachments)
+    +notifAttachHtml(noticeAttachmentsForDisplay(n))
     +(canAccessNoticeCta(n)
       ? '<div class="actions" style="margin-top:12px">'+noticeCtaButtonHtml(n, { className: 'btn green' })+'</div>'
       : '')
