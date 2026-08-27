@@ -2932,24 +2932,31 @@ function transferOptionFieldLabelHtml(label, type){
     +'<button type="button" class="btn gray sm" data-call="openAddTransferProductOptionModal" data-arg0="true" data-arg1="'+escHtml(String(type||''))+'">＋ 添加</button>'
     +'</div>';
 }
-function transferProductImageFieldHtml(p){
+function transferProductImageThumbHtml(p){
   p = p || {};
   const href = p.imageFileId
     ? (typeof withFileToken==='function' ? withFileToken(apiUrl('/api/files/'+p.imageFileId)) : (p.imageUrl||''))
     : (p.imageUrl||'');
   const preview = href
-    ? '<div id="tp-image-preview" style="margin:8px 0"><img src="'+escHtml(href)+'" alt="產品圖" style="max-width:100%;max-height:160px;border-radius:8px;border:1px solid #e0e0e0;object-fit:contain;background:#fafafa"></div>'
-    : '<div id="tp-image-preview" style="margin:8px 0;font-size:12px;color:#888">尚未選擇圖片</div>';
-  return '<label>圖片</label>'
-    +'<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:4px 0">'
-    +'<button type="button" class="btn green sm" onclick="document.getElementById(\'tp-image-file\').click()">選擇上傳檔案</button>'
-    +'<button type="button" class="btn gray sm" data-call="clearTransferProductImageDraft">清除圖片</button>'
-    +'<span id="tp-image-name" style="font-size:12px;color:#546e7a">'+(p.imageFileId||p.imageUrl?'已有圖片':'尚未選擇')+'</span>'
+    ? '<img src="'+escHtml(href)+'" alt="產品圖" style="width:100%;height:100%;object-fit:contain;display:block">'
+    : '<span style="font-size:11px;color:#90a4ae;text-align:center;padding:8px;line-height:1.35">尚未<br>選擇圖片</span>';
+  return '<div style="flex:0 0 108px;width:108px">'
+    +'<div id="tp-image-preview" style="width:108px;height:108px;border:1px solid #e0e0e0;border-radius:10px;background:#fafafa;display:flex;align-items:center;justify-content:center;overflow:hidden">'
+    +preview
     +'</div>'
+    +'<div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">'
+    +'<button type="button" class="btn green sm" style="width:100%" onclick="document.getElementById(\'tp-image-file\').click()">上傳圖片</button>'
+    +'<button type="button" class="btn gray sm" style="width:100%" data-call="clearTransferProductImageDraft">清除</button>'
+    +'</div>'
+    +'<div id="tp-image-name" style="font-size:11px;color:#78909c;margin-top:6px;word-break:break-all;line-height:1.35">'+(p.imageFileId||p.imageUrl?'已有圖片':'尚未選擇')+'</div>'
     +'<input type="file" id="tp-image-file" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" onchange="onTransferProductImagePick(this)" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none">'
     +'<input type="hidden" id="tp-image" value="'+escHtml(p.imageUrl||'')+'">'
     +'<input type="hidden" id="tp-image-file-id" value="'+escHtml(p.imageFileId||'')+'">'
-    +preview;
+    +'</div>';
+}
+function transferProductImageFieldHtml(p){
+  // 相容舊呼叫：改為縮圖欄（顯示於品牌左側）
+  return transferProductImageThumbHtml(p);
 }
 function onTransferProductImagePick(input){
   const file = input && input.files && input.files[0];
@@ -2964,9 +2971,9 @@ function onTransferProductImagePick(input){
     transferProductImageDraft = { name: file.name, dataUrl: String(reader.result||''), file: file };
     const nameEl = document.getElementById('tp-image-name');
     const preview = document.getElementById('tp-image-preview');
-    if(nameEl) nameEl.textContent = '已選：'+file.name+'（儲存時上傳）';
+    if(nameEl) nameEl.textContent = '已選：'+file.name;
     if(preview){
-      preview.innerHTML = '<img src="'+escHtml(String(reader.result||''))+'" alt="預覽" style="max-width:100%;max-height:160px;border-radius:8px;border:1px solid #e0e0e0;object-fit:contain;background:#fafafa">';
+      preview.innerHTML = '<img src="'+escHtml(String(reader.result||''))+'" alt="預覽" style="width:100%;height:100%;object-fit:contain;display:block">';
     }
   };
   reader.onerror = function(){ alert2('讀取圖片失敗。'); };
@@ -2983,7 +2990,7 @@ function clearTransferProductImageDraft(){
   if(urlInput) urlInput.value = '';
   if(idInput) idInput.value = '';
   if(nameEl) nameEl.textContent = '尚未選擇';
-  if(preview) preview.innerHTML = '<span style="font-size:12px;color:#888">尚未選擇圖片</span>';
+  if(preview) preview.innerHTML = '<span style="font-size:11px;color:#90a4ae;text-align:center;padding:8px;line-height:1.35">尚未<br>選擇圖片</span>';
 }
 async function ensureTransferProductImageUploaded(form){
   if(!transferProductImageDraft || !transferProductImageDraft.file) return form;
@@ -2996,7 +3003,9 @@ async function ensureTransferProductImageUploaded(form){
 function transferProductAttrFieldsHtml(p){
   p = p || {};
   function val(k){ return p[k]==null || p[k]==='' ? '' : String(p[k]); }
-  return ''
+  return '<div style="display:flex;gap:14px;align-items:flex-start;margin:8px 0 4px">'
+    +transferProductImageThumbHtml(p)
+    +'<div style="flex:1;min-width:0">'
     +transferOptionFieldLabelHtml('品牌', 'brand')
     +transferBrandSelectHtml(val('brand'))
     +'<label>SKU</label><input type="text" id="tp-sku" value="'+escHtml(val('sku'))+'" placeholder="可留空">'
@@ -3004,7 +3013,8 @@ function transferProductAttrFieldsHtml(p){
     +'<label>原價</label><input type="number" id="tp-price-original" min="0" step="0.01" value="'+escHtml(val('priceOriginal'))+'" placeholder="可留空">'
     +'<label>優惠價</label><input type="number" id="tp-price-sale" min="0" step="0.01" value="'+escHtml(val('priceSale'))+'" placeholder="可留空">'
     +'<label>剔剔積分類</label><input type="text" id="tp-tickie-cat" value="'+escHtml(val('tickieCategory'))+'" placeholder="可留空">'
-    +'<label>剔剔積分</label><input type="number" id="tp-tickie-points" min="0" step="0.5" value="'+escHtml(val('tickiePoints'))+'" placeholder="例如 2">';
+    +'<label>剔剔積分</label><input type="number" id="tp-tickie-points" min="0" step="0.5" value="'+escHtml(val('tickiePoints'))+'" placeholder="例如 2">'
+    +'</div></div>';
 }
 function transferProductSizeChecksHtml(selectedSizes){
   return transferSizeSelectHtml(selectedSizes);
@@ -3120,7 +3130,7 @@ function fillTransferProductFormFields(form){
   if(transferProductImageDraft && transferProductImageDraft.dataUrl){
     if(nameEl) nameEl.textContent = '已選：'+(transferProductImageDraft.name||'圖片')+'（儲存時上傳）';
     if(preview){
-      preview.innerHTML = '<img src="'+escHtml(transferProductImageDraft.dataUrl)+'" alt="預覽" style="max-width:100%;max-height:160px;border-radius:8px;border:1px solid #e0e0e0;object-fit:contain;background:#fafafa">';
+      preview.innerHTML = '<img src="'+escHtml(transferProductImageDraft.dataUrl)+'" alt="預覽" style="width:100%;height:100%;object-fit:contain;display:block">';
     }
   } else if(form.imageFileId || form.imageUrl){
     const href = form.imageFileId
@@ -3128,8 +3138,11 @@ function fillTransferProductFormFields(form){
       : (form.imageUrl||'');
     if(nameEl) nameEl.textContent = '已有圖片';
     if(preview && href){
-      preview.innerHTML = '<img src="'+escHtml(href)+'" alt="產品圖" style="max-width:100%;max-height:160px;border-radius:8px;border:1px solid #e0e0e0;object-fit:contain;background:#fafafa">';
+      preview.innerHTML = '<img src="'+escHtml(href)+'" alt="產品圖" style="width:100%;height:100%;object-fit:contain;display:block">';
     }
+  } else {
+    if(nameEl) nameEl.textContent = '尚未選擇';
+    if(preview) preview.innerHTML = '<span style="font-size:11px;color:#90a4ae;text-align:center;padding:8px;line-height:1.35">尚未<br>選擇圖片</span>';
   }
 }
 function reopenTransferProductModalAfterOptions(){
@@ -3242,8 +3255,7 @@ function openAddTransferProductModal(prefillForm){
   const open = function(){
     showModal(
       '<h3>新增產品</h3>'
-      +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">商品屬性依 Excel「18062026」。圖片請上傳檔案；品牌／顏色／商品選項可在各欄右側「＋ 添加」一次新增多個後再選。</p>'
-      +transferProductImageFieldHtml(prefillForm||{})
+      +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">商品屬性依 Excel「18062026」。圖片顯示在品牌左側；品牌／顏色／商品選項可在各欄右側「＋ 添加」一次新增多個後再選。</p>'
       +'<label>型號</label><input type="text" id="tp-id" placeholder="例如 WS-S002" maxlength="64">'
       +'<label>商品名</label><input type="text" id="tp-name" placeholder="商品名稱">'
       +'<label>英文</label><input type="text" id="tp-name-en" placeholder="English name">'
@@ -3299,8 +3311,7 @@ function openEditTransferProductModal(productId, prefillForm){
     showModal(
       '<h3>編輯產品</h3>'
       +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">可改型號與各商品屬性。改型號會一併更新庫存／調動／校正記錄中的編號。'
-      +'新增商品選項四店從 0；取消選取僅在該選項四店皆為 0 且無待審批調動時可刪。</p>'
-      +transferProductImageFieldHtml(prefillForm||p)
+      +'新增商品選項四店從 0；取消選取僅在該選項四店皆為 0 且無待審批調動時可刪。圖片顯示在品牌左側。</p>'
       +'<label>型號</label><input type="text" id="tp-id" value="'+escHtml(String(p.id))+'" maxlength="64">'
       +'<label>商品名</label><input type="text" id="tp-name" value="'+escHtml(p.name||'')+'">'
       +'<label>英文</label><input type="text" id="tp-name-en" value="'+escHtml(p.nameEn||'')+'" placeholder="English name">'
