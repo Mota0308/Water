@@ -115,6 +115,81 @@ function transferProductChangesCol() {
   return db.collection('transfer_product_changes');
 }
 
+const DEFAULT_TRANSFER_SIZE_OPTIONS = ['S', 'M', 'L', 'XL', 'XXL', '均碼'];
+
+function normalizeOptionList(list, fallback = []) {
+  const out = [];
+  const seen = new Set();
+  (Array.isArray(list) ? list : fallback).forEach((v) => {
+    const s = String(v || '').trim();
+    if (!s || seen.has(s)) return;
+    seen.add(s);
+    out.push(s);
+  });
+  return out;
+}
+
+export async function getTransferProductOptions() {
+  await connectMongo();
+  const doc = await metaCol().findOne({ _id: 'transfer_product_options' });
+  const brands = normalizeOptionList(doc?.brands, []);
+  const sizeOptions = normalizeOptionList(doc?.sizeOptions, DEFAULT_TRANSFER_SIZE_OPTIONS);
+  // Also include brands already used on products
+  const usedBrands = await transferProductsCol()
+    .distinct('brand', { brand: { $exists: true, $nin: [null, ''] } })
+    .catch(() => []);
+  const mergedBrands = normalizeOptionList([...brands, ...usedBrands], []);
+  const usedSizes = await transferProductsCol()
+    .distinct('sizes')
+    .catch(() => []);
+  const flatSizes = [];
+  (usedSizes || []).forEach((s) => {
+    if (Array.isArray(s)) flatSizes.push(...s);
+    else if (s) flatSizes.push(s);
+  });
+  const mergedSizes = normalizeOptionList([...sizeOptions, ...flatSizes], DEFAULT_TRANSFER_SIZE_OPTIONS);
+  return { brands: mergedBrands, sizeOptions: mergedSizes };
+}
+
+export async function saveTransferProductOptions(input) {
+  await connectMongo();
+  const current = await getTransferProductOptions();
+  const brands =
+    input?.brands != null ? normalizeOptionList(input.brands, []) : current.brands;
+  const sizeOptions =
+    input?.sizeOptions != null
+      ? normalizeOptionList(input.sizeOptions, DEFAULT_TRANSFER_SIZE_OPTIONS)
+      : current.sizeOptions;
+  if (!sizeOptions.length) throw new Error('請至少保留 1 個商品選項');
+  await metaCol().replaceOne(
+    { _id: 'transfer_product_options' },
+    {
+      _id: 'transfer_product_options',
+      brands,
+      sizeOptions,
+      updatedAt: new Date(),
+    },
+    { upsert: true }
+  );
+  return { brands, sizeOptions };
+}
+
+export async function addTransferProductOption(type, value) {
+  const v = String(value || '').trim();
+  if (!v) throw new Error('請輸入選項內容');
+  const current = await getTransferProductOptions();
+  if (type === 'brand') {
+    if (current.brands.indexOf(v) >= 0) return current;
+    return saveTransferProductOptions({ brands: [...current.brands, v], sizeOptions: current.sizeOptions });
+  }
+  if (type === 'size') {
+    if (current.sizeOptions.indexOf(v) >= 0) return current;
+    return saveTransferProductOptions({ brands: current.brands, sizeOptions: [...current.sizeOptions, v] });
+  }
+  throw new Error('type 須為 brand 或 size');
+}
+
+
 function formatHkDateTime(d = new Date()) {
   const now = d instanceof Date ? d : new Date(d);
   return `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -2128,6 +2203,9 @@ function normalizeTransferProductExtras(input, existing = {}) {
   const upc = String(input?.upc != null ? input.upc : existing.upc || '').trim();
   const nameEn = String(input?.nameEn != null ? input.nameEn : existing.nameEn || '').trim();
   const imageUrl = String(input?.imageUrl != null ? input.imageUrl : existing.imageUrl || '').trim();
+  const imageFileId = String(
+    input?.imageFileId != null ? input.imageFileId : existing.imageFileId || ''
+  ).trim();
   const tickieCategory = String(
     input?.tickieCategory != null ? input.tickieCategory : existing.tickieCategory || ''
   ).trim();
@@ -2149,6 +2227,7 @@ function normalizeTransferProductExtras(input, existing = {}) {
     upc,
     nameEn,
     imageUrl,
+    imageFileId,
     tickieCategory,
     priceOriginal,
     priceSale,
@@ -2339,6 +2418,7 @@ export async function updateTransferProduct(actor, oldProductId, input) {
     tickiePoints: '剔剔積分',
     nameEn: '英文',
     imageUrl: '圖片',
+    imageFileId: '圖片檔案',
   };
   Object.keys(extraLabels).forEach((key) => {
     const before = prevExtras[key];

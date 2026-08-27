@@ -50,6 +50,9 @@ import {
   TRANSFER_STORES,
   TRANSFER_CATEGORIES,
   TRANSFER_PRODUCT_ATTR_DEFS,
+  getTransferProductOptions,
+  addTransferProductOption,
+  saveTransferProductOptions,
   listPosProducts,
   listPosTransactions,
   getPosTransaction,
@@ -552,18 +555,63 @@ app.get('/api/transfer/stores', requireAuth, async (_req, res) => {
 });
 
 app.get('/api/transfer/meta', requireAuth, async (_req, res) => {
-  res.json({
-    stores: TRANSFER_STORES,
-    categories: TRANSFER_CATEGORIES,
-    sizePresets: ['S', 'M', 'L', 'XL', 'XXL', '均碼'],
-  });
+  try {
+    const options = await getTransferProductOptions();
+    res.json({
+      stores: TRANSFER_STORES,
+      categories: TRANSFER_CATEGORIES,
+      sizePresets: options.sizeOptions,
+      brands: options.brands,
+      attributes: TRANSFER_PRODUCT_ATTR_DEFS,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/transfer/product-options', requireAuth, async (_req, res) => {
+  try {
+    res.json(await getTransferProductOptions());
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/transfer/product-options', requireAuth, async (req, res) => {
+  try {
+    const type = String(req.body?.type || '').trim();
+    const value = String(req.body?.value || '').trim();
+    const options = await addTransferProductOption(type, value);
+    res.json(options);
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.put('/api/transfer/product-options', requireAuth, async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object') {
+      return res.status(400).json({ error: 'JSON body required' });
+    }
+    const options = await saveTransferProductOptions(req.body);
+    res.json(options);
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
 });
 
 app.get('/api/transfer/products', requireAuth, async (_req, res) => {
   try {
+    const options = await getTransferProductOptions();
     res.json({
       products: await listTransferProducts(),
       attributes: TRANSFER_PRODUCT_ATTR_DEFS,
+      brands: options.brands,
+      sizeOptions: options.sizeOptions,
     });
   } catch (e) {
     console.error(e);
