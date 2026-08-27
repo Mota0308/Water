@@ -1345,6 +1345,9 @@ function bindStaticChrome(){
   document.addEventListener('click', function(e){
     const t = e.target;
     if(!t || !t.closest) return;
+    if(!t.closest('.tp-combo')){
+      try{ transferComboCloseAll(); }catch(_e){}
+    }
     if(t.id==='mailbox-modal-bg'){ closeMailbox(); return; }
     if(t.id==='mailbox-detail-bg'){ closeMailboxDetail(); return; }
     const actionEl = t.closest('[data-action]');
@@ -2793,6 +2796,13 @@ function transferStoreOptions(selected, exclude){
   }).join('');
 }
 function transferCategoryOptionsHtml(selected){
+  const cats = getTransferCategoryOptions();
+  const sel = selected || (cats.indexOf('其他')>=0 ? '其他' : (cats[0] || '其他'));
+  return cats.map(function(c){
+    return '<option value="'+escHtml(c)+'"'+(c===sel?' selected':'')+'>'+escHtml(c)+'</option>';
+  }).join('') + '<option value="__custom__"'+(sel==='__custom__'?' selected':'')+'>自訂類別…</option>';
+}
+function getTransferCategoryOptions(){
   const cats = [];
   const seen = {};
   function push(c){
@@ -2805,10 +2815,7 @@ function transferCategoryOptionsHtml(selected){
   ((transferProductOptionsCache && transferProductOptionsCache.categories) || []).forEach(push);
   ((transferInvCache && transferInvCache.categories) || []).forEach(push);
   (transferProductsCache || []).forEach(function(p){ push(p.category); });
-  const sel = selected || (cats.indexOf('其他')>=0 ? '其他' : (cats[0] || '其他'));
-  return cats.map(function(c){
-    return '<option value="'+escHtml(c)+'"'+(c===sel?' selected':'')+'>'+escHtml(c)+'</option>';
-  }).join('') + '<option value="__custom__"'+(sel==='__custom__'?' selected':'')+'>自訂類別…</option>';
+  return cats;
 }
 function onTransferProductCatChange(){
   const sel = document.getElementById('tp-cat');
@@ -2895,74 +2902,252 @@ function getTransferSizeOptions(){
   if(fromCache.length) return fromCache.slice();
   return TRANSFER_SIZE_PRESETS.slice();
 }
-function transferSelectFilterHtml(selectId, placeholder){
-  return '<input type="search" autocomplete="off" data-filter-select="'+escHtml(String(selectId||''))+'" '
-    +'placeholder="'+escHtml(placeholder||'輸入篩選…')+'" '
-    +'oninput="filterTransferSelectOptions(this)" '
-    +'style="width:100%;margin:0 0 6px;padding:8px 10px;border:1px solid #cfd8dc;border-radius:8px;box-sizing:border-box;font-size:14px">';
+var transferComboStore = {};
+function transferComboInputStyle(){
+  return 'width:100%;padding:8px 10px;border:1px solid #cfd8dc;border-radius:8px;box-sizing:border-box;font-size:14px';
 }
-function filterTransferSelectOptions(input){
-  if(!input) return;
-  const selectId = input.getAttribute('data-filter-select') || '';
-  const sel = document.getElementById(selectId);
-  if(!sel) return;
-  const q = String(input.value||'').trim().toLowerCase();
+function transferComboListStyle(){
+  return 'display:none;position:absolute;left:0;right:0;top:100%;z-index:40;max-height:220px;overflow:auto;margin-top:4px;background:#fff;border:1px solid #cfd8dc;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.12)';
+}
+function transferComboSingleHtml(id, options, selected, cfg){
+  cfg = cfg || {};
+  const opts = (options || []).map(function(v){ return String(v); });
+  transferComboStore[id] = {
+    multi: false,
+    options: opts,
+    allowEmpty: !!cfg.allowEmpty,
+    emptyLabel: cfg.emptyLabel || '（未選）',
+    customValue: cfg.customValue || '',
+    customLabel: cfg.customLabel || '',
+    onChange: cfg.onChange || null,
+    placeholder: cfg.placeholder || '輸入關鍵字搜尋…'
+  };
+  const sel = String(selected == null ? '' : selected);
+  let display = '';
+  if(sel && cfg.customValue && sel===cfg.customValue) display = cfg.customLabel || '自訂類別…';
+  else if(sel) display = sel;
+  return '<div class="tp-combo" data-combo="'+escHtml(id)+'" style="position:relative;margin:0 0 2px">'
+    +'<input type="hidden" id="'+escHtml(id)+'" value="'+escHtml(sel)+'">'
+    +'<input type="text" id="'+escHtml(id)+'-q" value="'+escHtml(display)+'" placeholder="'+escHtml(cfg.placeholder||'輸入關鍵字搜尋…')+'" '
+    +'autocomplete="off" spellcheck="false" style="'+transferComboInputStyle()+'" '
+    +'onfocus="this.select();transferComboOpen(\''+escHtml(id)+'\')" '
+    +'oninput="transferComboOpen(\''+escHtml(id)+'\')" '
+    +'onkeydown="transferComboKey(event,\''+escHtml(id)+'\')">'
+    +'<div id="'+escHtml(id)+'-list" class="tp-combo-list" style="'+transferComboListStyle()+'"></div>'
+    +'</div>';
+}
+function transferComboMultiHtml(id, options, selected, cfg){
+  cfg = cfg || {};
+  const opts = (options || []).map(function(v){ return String(v); });
+  const selectedList = Array.isArray(selected) ? selected.map(String).filter(Boolean) : [];
+  transferComboStore[id] = {
+    multi: true,
+    options: opts,
+    selected: selectedList.slice(),
+    placeholder: cfg.placeholder || '輸入關鍵字搜尋並選擇…'
+  };
+  const hiddenOpts = opts.slice();
+  selectedList.forEach(function(s){ if(hiddenOpts.indexOf(s)<0) hiddenOpts.push(s); });
+  return '<div class="tp-combo" data-combo="'+escHtml(id)+'" style="position:relative;margin:0 0 2px">'
+    +'<select id="'+escHtml(id)+'" multiple style="display:none">'
+    +hiddenOpts.map(function(s){
+      return '<option value="'+escHtml(s)+'"'+(selectedList.indexOf(s)>=0?' selected':'')+'>'+escHtml(s)+'</option>';
+    }).join('')
+    +'</select>'
+    +'<div id="'+escHtml(id)+'-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px">'
+    +transferComboChipsHtml(id)
+    +'</div>'
+    +'<input type="text" id="'+escHtml(id)+'-q" value="" placeholder="'+escHtml(cfg.placeholder||'輸入關鍵字搜尋並選擇…')+'" '
+    +'autocomplete="off" spellcheck="false" style="'+transferComboInputStyle()+'" '
+    +'onfocus="transferComboOpen(\''+escHtml(id)+'\')" '
+    +'oninput="transferComboOpen(\''+escHtml(id)+'\')" '
+    +'onkeydown="transferComboKey(event,\''+escHtml(id)+'\')">'
+    +'<div id="'+escHtml(id)+'-list" class="tp-combo-list" style="'+transferComboListStyle()+'"></div>'
+    +'<p style="font-size:12px;color:#888;margin:4px 0 0">輸入關鍵字後點選加入；可選多個。</p>'
+    +'</div>';
+}
+function transferComboChipsHtml(id){
+  const st = transferComboStore[id];
+  const selected = (st && st.selected) || [];
+  if(!selected.length) return '<span style="font-size:12px;color:#90a4ae">尚未選擇</span>';
+  return selected.map(function(v){
+    return '<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid #e0e0e0;border-radius:999px;background:#f5f5f5;font-size:13px">'
+      +'<span>'+escHtml(v)+'</span>'
+      +'<button type="button" class="btn red sm" style="padding:0 6px;min-width:0;line-height:1.2" data-call="transferComboRemoveMulti" data-arg0="'+escHtml(id)+'" data-arg1="'+escHtml(v)+'">×</button>'
+      +'</span>';
+  }).join('');
+}
+function transferComboSyncMultiSelect(id){
+  const st = transferComboStore[id];
+  const sel = document.getElementById(id);
+  if(!st || !st.multi || !sel) return;
+  const want = {};
+  (st.selected||[]).forEach(function(v){ want[String(v)] = true; });
   Array.prototype.forEach.call(sel.options, function(opt){
-    if(!opt) return;
-    if(!q){
-      opt.hidden = false;
-      return;
+    opt.selected = !!want[opt.value];
+  });
+  (st.selected||[]).forEach(function(v){
+    if(!Array.prototype.some.call(sel.options, function(o){ return o.value===v; })){
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = v;
+      opt.selected = true;
+      sel.appendChild(opt);
     }
-    // 空值選項、自訂、已選取：篩選時仍顯示
-    if(!opt.value || opt.value==='__custom__' || opt.selected){
-      opt.hidden = false;
-      return;
-    }
-    const text = String(opt.textContent||'').toLowerCase();
-    opt.hidden = text.indexOf(q) < 0;
   });
 }
+function transferComboCloseAll(exceptId){
+  Object.keys(transferComboStore).forEach(function(id){
+    if(exceptId && id===exceptId) return;
+    const list = document.getElementById(id+'-list');
+    if(list) list.style.display = 'none';
+  });
+}
+function transferComboOpen(id){
+  const st = transferComboStore[id];
+  const qEl = document.getElementById(id+'-q');
+  const list = document.getElementById(id+'-list');
+  if(!st || !qEl || !list) return;
+  transferComboCloseAll(id);
+  const q = String(qEl.value||'').trim().toLowerCase();
+  let items = [];
+  if(st.multi){
+    const selectedSet = {};
+    (st.selected||[]).forEach(function(v){ selectedSet[String(v)] = true; });
+    items = (st.options||[]).filter(function(v){
+      if(selectedSet[v]) return false;
+      if(!q) return true;
+      return String(v).toLowerCase().indexOf(q)>=0;
+    }).map(function(v){ return { value:v, label:v }; });
+  } else {
+    if(st.allowEmpty && (!q || String(st.emptyLabel||'').toLowerCase().indexOf(q)>=0)){
+      items.push({ value:'', label: st.emptyLabel||'（未選）' });
+    }
+    (st.options||[]).forEach(function(v){
+      if(q && String(v).toLowerCase().indexOf(q)<0) return;
+      items.push({ value:v, label:v });
+    });
+    if(st.customValue){
+      const cl = st.customLabel || '自訂類別…';
+      if(!q || cl.toLowerCase().indexOf(q)>=0 || '自訂'.indexOf(q)>=0){
+        items.push({ value: st.customValue, label: cl });
+      }
+    }
+  }
+  if(!items.length){
+    list.innerHTML = '<div style="padding:10px 12px;color:#90a4ae;font-size:13px">沒有符合的選項</div>';
+    list.style.display = '';
+    return;
+  }
+  list.innerHTML = items.map(function(it, idx){
+    return '<button type="button" class="tp-combo-item" '
+      +'style="display:block;width:100%;text-align:left;border:0;background:'+(idx%2?'#fafafa':'#fff')+';padding:10px 12px;cursor:pointer;font-size:14px" '
+      +'onmousedown="event.preventDefault()" '
+      +'data-call="transferComboPick" data-arg0="'+escHtml(id)+'" data-arg1="'+escHtml(String(it.value))+'">'
+      +escHtml(it.label)
+      +'</button>';
+  }).join('');
+  list.style.display = '';
+}
+function transferComboPick(id, value){
+  const st = transferComboStore[id];
+  if(!st) return;
+  value = String(value==null?'':value);
+  if(st.multi){
+    if(!value) return;
+    if((st.selected||[]).indexOf(value)<0) st.selected.push(value);
+    const qEl = document.getElementById(id+'-q');
+    if(qEl) qEl.value = '';
+    const chips = document.getElementById(id+'-chips');
+    if(chips) chips.innerHTML = transferComboChipsHtml(id);
+    transferComboSyncMultiSelect(id);
+    transferComboOpen(id);
+    return;
+  }
+  const hidden = document.getElementById(id);
+  const qEl = document.getElementById(id+'-q');
+  if(hidden) hidden.value = value;
+  if(qEl){
+    if(value && st.customValue && value===st.customValue) qEl.value = st.customLabel || '自訂類別…';
+    else qEl.value = value;
+  }
+  transferComboCloseAll();
+  if(typeof st.onChange==='function') st.onChange();
+  else if(st.onChange && typeof window[st.onChange]==='function') window[st.onChange]();
+  else if(id==='tp-cat') onTransferProductCatChange();
+}
+function transferComboRemoveMulti(id, value){
+  const st = transferComboStore[id];
+  if(!st || !st.multi) return;
+  st.selected = (st.selected||[]).filter(function(v){ return v!==String(value); });
+  const chips = document.getElementById(id+'-chips');
+  if(chips) chips.innerHTML = transferComboChipsHtml(id);
+  transferComboSyncMultiSelect(id);
+}
+function transferComboKey(e, id){
+  if(!e) return;
+  if(e.key==='Escape'){
+    transferComboCloseAll();
+    return;
+  }
+  if(e.key==='Enter'){
+    e.preventDefault();
+    const list = document.getElementById(id+'-list');
+    const first = list && list.querySelector('.tp-combo-item');
+    if(first) first.click();
+  }
+}
+function transferComboSetSingle(id, value, display){
+  const hidden = document.getElementById(id);
+  const qEl = document.getElementById(id+'-q');
+  const st = transferComboStore[id];
+  value = value==null ? '' : String(value);
+  if(hidden) hidden.value = value;
+  if(qEl){
+    if(display!=null) qEl.value = String(display);
+    else if(st && st.customValue && value===st.customValue) qEl.value = st.customLabel || '自訂類別…';
+    else qEl.value = value;
+  }
+  if(id==='tp-cat') onTransferProductCatChange();
+}
+function transferComboSetMulti(id, values){
+  const st = transferComboStore[id];
+  if(!st || !st.multi) return;
+  st.selected = (Array.isArray(values)?values:[]).map(String).filter(Boolean);
+  const chips = document.getElementById(id+'-chips');
+  if(chips) chips.innerHTML = transferComboChipsHtml(id);
+  transferComboSyncMultiSelect(id);
+}
 function transferBrandSelectHtml(selected){
-  const sel = String(selected||'');
-  const opts = getTransferBrandOptions();
-  return transferSelectFilterHtml('tp-brand', '輸入篩選品牌…')
-    +'<select id="tp-brand">'
-    +'<option value="">（未選品牌）</option>'
-    +opts.map(function(b){
-      return '<option value="'+escHtml(b)+'"'+(b===sel?' selected':'')+'>'+escHtml(b)+'</option>';
-    }).join('')
-    +'</select>';
+  return transferComboSingleHtml('tp-brand', getTransferBrandOptions(), selected, {
+    allowEmpty: true,
+    emptyLabel: '（未選品牌）',
+    placeholder: '輸入關鍵字搜尋品牌…'
+  });
 }
 function transferColorSelectHtml(selected){
-  const sel = String(selected||'');
-  const opts = getTransferColorOptions();
-  return transferSelectFilterHtml('tp-color', '輸入篩選顏色…')
-    +'<select id="tp-color">'
-    +'<option value="">（未選顏色）</option>'
-    +opts.map(function(c){
-      return '<option value="'+escHtml(c)+'"'+(c===sel?' selected':'')+'>'+escHtml(c)+'</option>';
-    }).join('')
-    +'</select>';
+  return transferComboSingleHtml('tp-color', getTransferColorOptions(), selected, {
+    allowEmpty: true,
+    emptyLabel: '（未選顏色）',
+    placeholder: '輸入關鍵字搜尋顏色…'
+  });
 }
 function transferSizeSelectHtml(selectedSizes){
   const selected = Array.isArray(selectedSizes) ? selectedSizes : [];
-  const selectedSet = {};
-  selected.forEach(function(s){ selectedSet[String(s)] = true; });
   const opts = getTransferSizeOptions().slice();
-  selected.forEach(function(s){
-    if(s && opts.indexOf(s)<0) opts.push(s);
+  selected.forEach(function(s){ if(s && opts.indexOf(s)<0) opts.push(s); });
+  return transferComboMultiHtml('tp-sizes', opts, selected, {
+    placeholder: '輸入關鍵字搜尋商品選項…'
   });
-  return transferSelectFilterHtml('tp-sizes', '輸入篩選商品選項…')
-    +'<select id="tp-sizes" multiple size="'+Math.min(8, Math.max(4, opts.length))+'" style="min-height:96px;width:100%">'
-    +opts.map(function(s){
-      return '<option value="'+escHtml(s)+'"'+(selectedSet[s]?' selected':'')+'>'+escHtml(s)+'</option>';
-    }).join('')
-    +'</select>'
-    +'<p style="font-size:12px;color:#888;margin:4px 0 0">可輸入篩選；按住 Ctrl／⌘ 可多選商品選項。</p>';
 }
 function transferCategorySelectHtml(selected){
-  return transferSelectFilterHtml('tp-cat', '輸入篩選產品分類…')
-    +'<select id="tp-cat" onchange="onTransferProductCatChange()">'+transferCategoryOptionsHtml(selected)+'</select>';
+  return transferComboSingleHtml('tp-cat', getTransferCategoryOptions(), selected, {
+    allowEmpty: false,
+    customValue: '__custom__',
+    customLabel: '自訂類別…',
+    placeholder: '輸入關鍵字搜尋產品分類…',
+    onChange: 'onTransferProductCatChange'
+  });
 }
 function transferOptionFieldLabelHtml(label, type){
   return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;margin-bottom:4px">'
@@ -3199,37 +3384,27 @@ function fillTransferProductFormFields(form){
   setVal('tp-id', form.id);
   setVal('tp-name', form.name);
   setVal('tp-name-en', form.nameEn);
-  setVal('tp-brand', form.brand);
   setVal('tp-sku', form.sku);
   setVal('tp-upc', form.upc);
   setVal('tp-price-original', form.priceOriginal);
   setVal('tp-price-sale', form.priceSale);
   setVal('tp-tickie-cat', form.tickieCategory);
   setVal('tp-tickie-points', form.tickiePoints);
-  setVal('tp-color', form.color);
   setVal('tp-safety', form.safetyStock!=null?form.safetyStock:0);
   setVal('tp-image', form.imageUrl);
   setVal('tp-image-file-id', form.imageFileId);
-  const catSel = document.getElementById('tp-cat');
-  if(catSel && form.category){
-    const known = Array.prototype.some.call(catSel.options, function(o){ return o.value===form.category; });
+  transferComboSetSingle('tp-brand', form.brand||'');
+  transferComboSetSingle('tp-color', form.color||'');
+  if(form.category){
+    const known = getTransferCategoryOptions().indexOf(String(form.category))>=0;
     if(known){
-      catSel.value = form.category;
-      onTransferProductCatChange();
+      transferComboSetSingle('tp-cat', form.category);
     } else {
-      catSel.value = '__custom__';
-      onTransferProductCatChange();
+      transferComboSetSingle('tp-cat', '__custom__');
       setVal('tp-cat-custom', form.category);
     }
   }
-  const sizeSel = document.getElementById('tp-sizes');
-  if(sizeSel && Array.isArray(form.sizes)){
-    const want = {};
-    form.sizes.forEach(function(s){ want[String(s)] = true; });
-    Array.prototype.forEach.call(sizeSel.options, function(opt){
-      opt.selected = !!want[opt.value];
-    });
-  }
+  if(Array.isArray(form.sizes)) transferComboSetMulti('tp-sizes', form.sizes);
   const nameEl = document.getElementById('tp-image-name');
   const preview = document.getElementById('tp-image-preview');
   if(transferProductImageDraft && transferProductImageDraft.dataUrl){
@@ -3412,18 +3587,7 @@ function openEditTransferProductModal(productId, prefillForm){
   const sizes = Array.isArray(p.sizes) ? p.sizes : [];
   const cat = (prefillForm&&prefillForm.category)!=null ? String(prefillForm.category||'') : (p.category || '其他');
   const open = function(){
-    const knownCats = [];
-    const seenCat = {};
-    function pushCat(c){
-      c = String(c||'').trim();
-      if(!c || seenCat[c]) return;
-      seenCat[c] = true;
-      knownCats.push(c);
-    }
-    TRANSFER_CATEGORY_FALLBACK.forEach(pushCat);
-    ((transferProductOptionsCache&&transferProductOptionsCache.categories)||[]).forEach(pushCat);
-    ((transferInvCache&&transferInvCache.categories)||[]).forEach(pushCat);
-    const catKnown = knownCats.indexOf(cat)>=0 || cat==='';
+    const catKnown = !cat || getTransferCategoryOptions().indexOf(cat)>=0;
     showModal(
       '<h3>編輯產品</h3>'
       +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">可改型號與各商品屬性。改型號會一併更新庫存／調動／校正記錄中的編號。'
@@ -3445,11 +3609,7 @@ function openEditTransferProductModal(productId, prefillForm){
       +'<button type="button" class="btn green" data-action="submit-transfer-product-edit">儲存變更</button>'
       +'</div>'
     , { closeOnBackdrop: false });
-    const sel = document.getElementById('tp-cat');
-    if(sel && !catKnown){
-      sel.value = '__custom__';
-      onTransferProductCatChange();
-    }
+    if(!catKnown) onTransferProductCatChange();
     if(prefillForm) fillTransferProductFormFields(prefillForm);
   };
   loadTransferProductOptions(true).then(open).catch(open);
