@@ -2926,6 +2926,12 @@ function transferSizeSelectHtml(selectedSizes){
     +'</select>'
     +'<p style="font-size:12px;color:#888;margin:4px 0 0">按住 Ctrl／⌘ 可多選商品選項。</p>';
 }
+function transferOptionFieldLabelHtml(label, type){
+  return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:10px;margin-bottom:4px">'
+    +'<label style="margin:0">'+escHtml(label)+'</label>'
+    +'<button type="button" class="btn gray sm" data-call="openAddTransferProductOptionModal" data-arg0="true" data-arg1="'+escHtml(String(type||''))+'">＋ 添加</button>'
+    +'</div>';
+}
 function transferProductImageFieldHtml(p){
   p = p || {};
   const href = p.imageFileId
@@ -2991,7 +2997,8 @@ function transferProductAttrFieldsHtml(p){
   p = p || {};
   function val(k){ return p[k]==null || p[k]==='' ? '' : String(p[k]); }
   return ''
-    +'<label>品牌</label>'+transferBrandSelectHtml(val('brand'))
+    +transferOptionFieldLabelHtml('品牌', 'brand')
+    +transferBrandSelectHtml(val('brand'))
     +'<label>SKU</label><input type="text" id="tp-sku" value="'+escHtml(val('sku'))+'" placeholder="可留空">'
     +'<label>UPC</label><input type="text" id="tp-upc" value="'+escHtml(val('upc'))+'" placeholder="可留空">'
     +'<label>原價</label><input type="number" id="tp-price-original" min="0" step="0.01" value="'+escHtml(val('priceOriginal'))+'" placeholder="可留空">'
@@ -3020,7 +3027,7 @@ async function loadTransferProductOptions(force){
   }
   return transferProductOptionsCache;
 }
-function openAddTransferProductOptionModal(fromProductForm){
+function openAddTransferProductOptionModal(fromProductForm, optType){
   if(!currentUser){ alert2('請先登入。'); return; }
   if(fromProductForm){
     try{
@@ -3036,11 +3043,13 @@ function openAddTransferProductOptionModal(fromProductForm){
   } else {
     transferProductModalReturn = null;
   }
+  const type = String(optType||'brand');
+  const typeLabel = type==='color'?'顏色':(type==='size'?'商品選項（尺碼）':'品牌');
   showModal(
-    '<h3>添加選項</h3>'
+    '<h3>添加'+escHtml(typeLabel)+'</h3>'
     +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">可一次新增多個；用逗號、頓號或換行分隔。新增後可在產品表單下拉中選擇。</p>'
-    +'<label>選項類型</label><select id="tp-opt-type"><option value="brand">品牌</option><option value="color">顏色</option><option value="size">商品選項（尺碼）</option></select>'
-    +'<label>選項內容（可多個）</label><textarea id="tp-opt-value" rows="5" placeholder="例如：&#10;Arena&#10;Speedo&#10;黑, 白, 藍"></textarea>'
+    +'<input type="hidden" id="tp-opt-type" value="'+escHtml(type)+'">'
+    +'<label>選項內容（可多個）</label><textarea id="tp-opt-value" rows="5" placeholder="例如：&#10;Arena&#10;Speedo&#10;或 黑, 白, 藍"></textarea>'
     +'<div class="actions">'
     +(transferProductModalReturn
       ? '<button type="button" class="btn gray sm" data-call="cancelTransferProductOptionAndReturn">返回產品表單</button>'
@@ -3233,7 +3242,7 @@ function openAddTransferProductModal(prefillForm){
   const open = function(){
     showModal(
       '<h3>新增產品</h3>'
-      +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">商品屬性依 Excel「18062026」。圖片請上傳檔案；品牌／顏色／商品選項可用「添加選項」一次新增多個後再選。</p>'
+      +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">商品屬性依 Excel「18062026」。圖片請上傳檔案；品牌／顏色／商品選項可在各欄右側「＋ 添加」一次新增多個後再選。</p>'
       +transferProductImageFieldHtml(prefillForm||{})
       +'<label>型號</label><input type="text" id="tp-id" placeholder="例如 WS-S002" maxlength="64">'
       +'<label>商品名</label><input type="text" id="tp-name" placeholder="商品名稱">'
@@ -3241,11 +3250,12 @@ function openAddTransferProductModal(prefillForm){
       +transferProductAttrFieldsHtml(prefillForm||{})
       +'<label>產品分類</label><select id="tp-cat" onchange="onTransferProductCatChange()">'+transferCategoryOptionsHtml('其他')+'</select>'
       +'<div id="tp-cat-custom-wrap" style="display:none"><label>自訂產品分類</label><input type="text" id="tp-cat-custom" placeholder="輸入新分類"></div>'
-      +'<label>顏色（可留空）</label>'+transferColorSelectHtml((prefillForm&&prefillForm.color)||'')
-      +'<label>商品選項（尺碼）</label>'+transferSizeSelectHtml((prefillForm&&prefillForm.sizes)||[])
+      +transferOptionFieldLabelHtml('顏色（可留空）', 'color')
+      +transferColorSelectHtml((prefillForm&&prefillForm.color)||'')
+      +transferOptionFieldLabelHtml('商品選項（尺碼）', 'size')
+      +transferSizeSelectHtml((prefillForm&&prefillForm.sizes)||[])
       +'<label>安全存量</label><input type="number" id="tp-safety" min="0" step="1" value="0">'
       +'<div class="actions">'
-      +'<button type="button" class="btn sm" data-call="openAddTransferProductOptionModal" data-arg0="true">＋ 添加選項</button>'
       +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
       +'<button type="button" class="btn green" data-action="submit-transfer-product">建立產品</button>'
       +'</div>'
@@ -3299,11 +3309,12 @@ function openEditTransferProductModal(productId, prefillForm){
       +transferCategoryOptionsHtml(catKnown?cat:'__custom__')
       +'</select>'
       +'<div id="tp-cat-custom-wrap" style="'+(catKnown?'display:none':'')+'"><label>自訂產品分類</label><input type="text" id="tp-cat-custom" value="'+(catKnown?'':escHtml(cat))+'" placeholder="輸入新分類"></div>'
-      +'<label>顏色（可留空）</label>'+transferColorSelectHtml((prefillForm&&prefillForm.color)!=null?prefillForm.color:(p.color||''))
-      +'<label>商品選項（尺碼）</label>'+transferSizeSelectHtml((prefillForm&&prefillForm.sizes)||sizes)
+      +transferOptionFieldLabelHtml('顏色（可留空）', 'color')
+      +transferColorSelectHtml((prefillForm&&prefillForm.color)!=null?prefillForm.color:(p.color||''))
+      +transferOptionFieldLabelHtml('商品選項（尺碼）', 'size')
+      +transferSizeSelectHtml((prefillForm&&prefillForm.sizes)||sizes)
       +'<label>安全存量</label><input type="number" id="tp-safety" min="0" step="1" value="'+escHtml(String(p.safetyStock!=null?p.safetyStock:0))+'">'
       +'<div class="actions">'
-      +'<button type="button" class="btn sm" data-call="openAddTransferProductOptionModal" data-arg0="true">＋ 添加選項</button>'
       +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
       +'<button type="button" class="btn green" data-action="submit-transfer-product-edit">儲存變更</button>'
       +'</div>'
@@ -3816,7 +3827,6 @@ function vTransferProducts(){
     +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">商品屬性：品牌、型號、SKU、UPC、商品名、商品選項、原價、優惠價、產品分類、剔剔積分類、剔剔積分、英文、圖片（不含門市存貨位置、產品資料）。庫存請在「貨品調動 → 庫存查詢」調整。</p>'
     +'<div class="filters">'
     +'<button type="button" class="btn green sm" data-call="openAddTransferProductModal">＋ 新增產品</button>'
-    +'<button type="button" class="btn sm" data-call="openAddTransferProductOptionModal">＋ 添加選項</button>'
     +'<button type="button" class="btn gray sm" data-call="refreshTransferProducts">重新整理</button>'
     +'</div>'
     +'<p style="font-size:12px;color:#888;margin:8px 0 0">共 '+products.length+' 款</p>'
