@@ -2958,6 +2958,16 @@ function transferProductImageFieldHtml(p){
   // 相容舊呼叫：改為縮圖欄（顯示於品牌左側）
   return transferProductImageThumbHtml(p);
 }
+function transferProductListThumbHtml(p){
+  p = p || {};
+  const href = p.imageFileId
+    ? (typeof withFileToken==='function' ? withFileToken(apiUrl('/api/files/'+p.imageFileId)) : (p.imageUrl||''))
+    : (p.imageUrl||'');
+  if(href){
+    return '<img src="'+escHtml(href)+'" alt="" loading="lazy" style="width:48px;height:48px;object-fit:contain;border:1px solid #e0e0e0;border-radius:8px;background:#fafafa;display:block;flex:0 0 48px">';
+  }
+  return '<span style="display:inline-flex;width:48px;height:48px;flex:0 0 48px;align-items:center;justify-content:center;border:1px dashed #cfd8dc;border-radius:8px;background:#fafafa;color:#90a4ae;font-size:10px">無圖</span>';
+}
 function onTransferProductImagePick(input){
   const file = input && input.files && input.files[0];
   if(!file) return;
@@ -3271,7 +3281,7 @@ function openAddTransferProductModal(prefillForm){
       +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
       +'<button type="button" class="btn green" data-action="submit-transfer-product">建立產品</button>'
       +'</div>'
-    );
+    , { closeOnBackdrop: false });
     if(prefillForm) fillTransferProductFormFields(prefillForm);
   };
   loadTransferProductOptions(true).then(open).catch(open);
@@ -3815,12 +3825,13 @@ function vTransferProducts(){
     return '<div class="card"><h2>🏷️ 貨品</h2><p style="color:#888">正在載入…</p></div>';
   }
   const products = transferProductsCache || [];
-  const head = '<tr><th>品牌</th><th>型號</th><th>商品名</th><th>產品分類</th><th>商品選項</th><th>原價</th><th>剔剔積分</th><th>顏色</th><th>安全存量</th><th></th></tr>';
+  const head = '<tr><th style="width:56px">圖片</th><th>品牌</th><th>型號</th><th>商品名</th><th>產品分類</th><th>商品選項</th><th>原價</th><th>剔剔積分</th><th>顏色</th><th>安全存量</th><th></th></tr>';
   const body = !products.length
-    ? '<tr><td colspan="10" style="color:#888;text-align:center">尚未有產品，請按「新增產品」。</td></tr>'
+    ? '<tr><td colspan="11" style="color:#888;text-align:center">尚未有產品，請按「新增產品」。</td></tr>'
     : products.map(function(p){
       const sizes = Array.isArray(p.sizes) ? p.sizes.join('／') : '—';
       return '<tr>'
+        +'<td>'+transferProductListThumbHtml(p)+'</td>'
         +'<td>'+escHtml(p.brand||'—')+'</td>'
         +'<td><b>'+escHtml(p.id)+'</b></td>'
         +'<td>'+escHtml(p.name||'')+(p.nameEn?'<div style="font-size:11px;color:#888">'+escHtml(p.nameEn)+'</div>':'')+'</td>'
@@ -8311,15 +8322,22 @@ function vDailyOpLogs(user){
 
 
 /* ═══════════ Modal ═══════════ */
-function showModal(html){ document.getElementById('modal-content').innerHTML=html; document.getElementById('modal-bg').classList.remove('hidden'); }
+let modalCloseOnBackdrop = true;
+function showModal(html, opts){
+  opts = opts || {};
+  modalCloseOnBackdrop = opts.closeOnBackdrop !== false;
+  document.getElementById('modal-content').innerHTML=html;
+  document.getElementById('modal-bg').classList.remove('hidden');
+}
 function closeModal(){
+  modalCloseOnBackdrop = true;
   var el=document.getElementById('modal-content');
   if(el) el.classList.remove('modal-wide');
   document.getElementById('modal-bg').classList.add('hidden');
   try{ clearModalUploadDraft(); }catch(e){}
 }
 function alert2(msg){ showModal(`<h3>提示</h3><p style="font-size:14px">${msg}</p><div class="actions"><button class="btn sm" onclick="closeModal()">確定</button></div>`); }
-document.getElementById('modal-bg').addEventListener('click', e=>{ if(e.target.id==='modal-bg') closeModal(); });
+document.getElementById('modal-bg').addEventListener('click', e=>{ if(e.target.id==='modal-bg' && modalCloseOnBackdrop) closeModal(); });
 document.getElementById('login-pw').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
 document.addEventListener('keydown', function(e){
   if(e.key==='Escape' && mailboxOpen) closeMailbox();
