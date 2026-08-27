@@ -182,31 +182,37 @@ export async function saveTransferProductOptions(input) {
 }
 
 export async function addTransferProductOption(type, value) {
-  const v = String(value || '').trim();
-  if (!v) throw new Error('請輸入選項內容');
+  return addTransferProductOptionsBatch(type, [value]);
+}
+
+export async function addTransferProductOptionsBatch(type, values) {
+  const items = normalizeOptionList(
+    Array.isArray(values)
+      ? values
+      : String(values == null ? '' : values).split(/[,，、\n\r;；]+/),
+    []
+  );
+  if (!items.length) throw new Error('請輸入至少 1 個選項');
   const current = await getTransferProductOptions();
   if (type === 'brand') {
-    if (current.brands.indexOf(v) >= 0) return current;
     return saveTransferProductOptions({
-      brands: [...current.brands, v],
+      brands: [...current.brands, ...items],
       colors: current.colors,
       sizeOptions: current.sizeOptions,
     });
   }
   if (type === 'color') {
-    if (current.colors.indexOf(v) >= 0) return current;
     return saveTransferProductOptions({
       brands: current.brands,
-      colors: [...current.colors, v],
+      colors: [...current.colors, ...items],
       sizeOptions: current.sizeOptions,
     });
   }
   if (type === 'size') {
-    if (current.sizeOptions.indexOf(v) >= 0) return current;
     return saveTransferProductOptions({
       brands: current.brands,
       colors: current.colors,
-      sizeOptions: [...current.sizeOptions, v],
+      sizeOptions: [...current.sizeOptions, ...items],
     });
   }
   throw new Error('type 須為 brand、color 或 size');

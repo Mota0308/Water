@@ -52,6 +52,7 @@ import {
   TRANSFER_PRODUCT_ATTR_DEFS,
   getTransferProductOptions,
   addTransferProductOption,
+  addTransferProductOptionsBatch,
   saveTransferProductOptions,
   listPosProducts,
   listPosTransactions,
@@ -583,8 +584,8 @@ app.get('/api/transfer/product-options', requireAuth, async (_req, res) => {
 app.post('/api/transfer/product-options', requireAuth, async (req, res) => {
   try {
     const type = String(req.body?.type || '').trim();
-    const value = String(req.body?.value || '').trim();
-    const options = await addTransferProductOption(type, value);
+    const values = req.body?.values != null ? req.body.values : req.body?.value;
+    const options = await addTransferProductOptionsBatch(type, values);
     res.json(options);
   } catch (e) {
     console.error(e);
