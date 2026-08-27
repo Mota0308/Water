@@ -3003,7 +3003,7 @@ function transferProductSizeChecksHtml(selectedSizes){
 }
 async function loadTransferProductOptions(force){
   if(!apiEnabled || !authToken){
-    transferProductOptionsCache = { brands:[], sizeOptions: TRANSFER_SIZE_PRESETS.slice() };
+    transferProductOptionsCache = { brands:[], colors:[], sizeOptions: TRANSFER_SIZE_PRESETS.slice() };
     return transferProductOptionsCache;
   }
   if(transferProductOptionsCache && !force) return transferProductOptionsCache;
