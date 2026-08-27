@@ -2213,6 +2213,9 @@ export async function createTransferProduct(actor, input) {
 
   const safetyStock = parseNonNegInt(input?.safetyStock, '安全存量');
   const extras = normalizeTransferProductExtras(input, {});
+  const skus = buildTransferSkusMap(id, color, sizes);
+  extras.sku = (sizes.length ? skus[sizes[0]] : '') || Object.values(skus)[0] || '';
+  extras.upc = await allocateUniqueTransferUpc(extras.upc);
 
   const existing = await transferProductsCol().findOne({
     $or: [{ _id: id }, { id }],
@@ -2233,6 +2236,7 @@ export async function createTransferProduct(actor, input) {
     color,
     sizes,
     safetyStock,
+    skus,
     ...extras,
     active: true,
     createdAt: now,
@@ -2282,7 +2286,7 @@ export async function createTransferProduct(actor, input) {
       { field: '商品名', before: '', after: name },
       { field: '產品分類', before: '', after: category },
       { field: '品牌', before: '', after: extras.brand || '—' },
-      { field: 'SKU', before: '', after: extras.sku || '—' },
+      { field: 'SKU', before: '', after: Object.values(skus).join('、') || '—' },
       { field: 'UPC', before: '', after: extras.upc || '—' },
       { field: '原價', before: '', after: fmtAttrChange(extras.priceOriginal) },
       { field: '優惠價', before: '', after: fmtAttrChange(extras.priceSale) },
@@ -2319,6 +2323,138 @@ export const TRANSFER_PRODUCT_ATTR_DEFS = [
   { key: 'nameEn', label: '英文', type: 'text', excel: '英文' },
   { key: 'imageUrl', label: '圖片', type: 'text', excel: '圖片' },
 ];
+
+/** 顏色中文／英文 → SKU 縮寫（例：粉色 PK、黑色 BK） */
+export const TRANSFER_COLOR_ABBR = {
+  黑: 'BK',
+  黑色: 'BK',
+  black: 'BK',
+  白: 'WH',
+  白色: 'WH',
+  white: 'WH',
+  粉: 'PK',
+  粉色: 'PK',
+  粉紅: 'PK',
+  粉紅色: 'PK',
+  pink: 'PK',
+  紅: 'RD',
+  紅色: 'RD',
+  red: 'RD',
+  藍: 'BU',
+  藍色: 'BU',
+  blue: 'BU',
+  綠: 'GN',
+  綠色: 'GN',
+  green: 'GN',
+  黃: 'YE',
+  黃色: 'YE',
+  yellow: 'YE',
+  灰: 'GY',
+  灰色: 'GY',
+  gray: 'GY',
+  grey: 'GY',
+  橙: 'OG',
+  橙色: 'OG',
+  橘: 'OG',
+  橘色: 'OG',
+  orange: 'OG',
+  紫: 'VT',
+  紫色: 'VT',
+  purple: 'VT',
+  棕: 'BN',
+  棕色: 'BN',
+  褐: 'BN',
+  褐色: 'BN',
+  brown: 'BN',
+  金: 'GD',
+  金色: 'GD',
+  gold: 'GD',
+  銀: 'SR',
+  銀色: 'SR',
+  silver: 'SR',
+  米: 'BE',
+  米色: 'BE',
+  beige: 'BE',
+  藏青: 'NV',
+  海軍藍: 'NV',
+  navy: 'NV',
+  透明: 'CL',
+  clear: 'CL',
+};
+
+export function transferColorAbbr(color) {
+  const c = String(color || '').trim();
+  if (!c) return 'NA';
+  if (TRANSFER_COLOR_ABBR[c]) return TRANSFER_COLOR_ABBR[c];
+  const lower = c.toLowerCase();
+  if (TRANSFER_COLOR_ABBR[lower]) return TRANSFER_COLOR_ABBR[lower];
+  const keys = Object.keys(TRANSFER_COLOR_ABBR).sort((a, b) => b.length - a.length);
+  for (const k of keys) {
+    if (c.includes(k) || lower.includes(String(k).toLowerCase())) return TRANSFER_COLOR_ABBR[k];
+  }
+  if (/^[A-Za-z]{2,4}$/.test(c)) return c.toUpperCase();
+  const latin = c.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  if (latin.length >= 2) return latin.slice(0, 2);
+  return 'XX';
+}
+
+export function transferSizeAbbr(size) {
+  const s = String(size || '').trim();
+  if (!s) return 'OS';
+  if (s === '均碼' || /^one\s*size$/i.test(s) || /^free$/i.test(s) || s.toUpperCase() === 'F') return 'OS';
+  return s.replace(/\s+/g, '').toUpperCase();
+}
+
+/** SKU＝型號＋顏色縮寫＋尺寸縮寫（例：WS-S002 + PK + L → WS-S002PKL） */
+export function buildTransferSku(productId, color, size) {
+  const id = String(productId || '').trim();
+  if (!id) return '';
+  return id + transferColorAbbr(color) + transferSizeAbbr(size);
+}
+
+export function buildTransferSkusMap(productId, color, sizes) {
+  const out = {};
+  (Array.isArray(sizes) ? sizes : []).forEach((sz) => {
+    const s = String(sz || '').trim();
+    if (!s) return;
+    out[s] = buildTransferSku(productId, color, s);
+  });
+  return out;
+}
+
+function ean13CheckDigit(digits12) {
+  const s = String(digits12 || '')
+    .replace(/\D/g, '')
+    .slice(0, 12)
+    .padStart(12, '0');
+  let sum = 0;
+  for (let i = 0; i < 12; i++) sum += Number(s.charAt(i)) * (i % 2 === 0 ? 1 : 3);
+  return String((10 - (sum % 10)) % 10);
+}
+
+/** 店內 UPC（EAN-13，2 開頭），與 SKU 規則獨立 */
+export function buildTransferUpc() {
+  const now = Date.now().toString();
+  const rand = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+  const body = ('2' + now.slice(-9) + rand).slice(0, 12);
+  return body + ean13CheckDigit(body);
+}
+
+async function allocateUniqueTransferUpc(preferred, excludeProductId) {
+  const want = String(preferred || '').trim();
+  if (want) return want;
+  const exclude = String(excludeProductId || '').trim();
+  for (let i = 0; i < 24; i++) {
+    const upc = buildTransferUpc();
+    const hit = await transferProductsCol().findOne({
+      upc,
+      active: { $ne: false },
+      ...(exclude ? { id: { $ne: exclude } } : {}),
+    });
+    if (!hit) return upc;
+  }
+  return buildTransferUpc() + String(Date.now()).slice(-4);
+}
 
 function parseOptionalNonNegNumber(v, label) {
   if (v == null || v === '') return null;
@@ -2374,13 +2510,19 @@ function stripTransferProduct(doc) {
   if (!doc) return null;
   const { _id, ...rest } = doc;
   const extras = normalizeTransferProductExtras(rest, rest);
+  const sizes = Array.isArray(rest.sizes) && rest.sizes.length ? rest.sizes.slice() : ['均碼'];
+  const id = rest.id || String(_id);
+  const color = rest.color || '';
+  const skus = buildTransferSkusMap(id, color, sizes);
+  extras.sku = Object.values(skus)[0] || extras.sku || '';
   return {
-    id: rest.id || String(_id),
+    id,
     name: rest.name || '',
     category: rest.category || '其他',
-    color: rest.color || '',
-    sizes: Array.isArray(rest.sizes) && rest.sizes.length ? rest.sizes.slice() : ['均碼'],
+    color,
+    sizes,
     safetyStock: Number(rest.safetyStock) || 0,
+    skus,
     ...extras,
     active: rest.active !== false,
     createdAt: rest.createdAt || null,
@@ -2492,6 +2634,10 @@ export async function updateTransferProduct(actor, oldProductId, input) {
   if (!nextSizes.length) throw new Error('請至少保留 1 個尺碼');
   const extras = normalizeTransferProductExtras(input, product);
   const prevExtras = normalizeTransferProductExtras({}, product);
+  const skus = buildTransferSkusMap(nextId, color, nextSizes);
+  extras.sku = (nextSizes.length ? skus[nextSizes[0]] : '') || Object.values(skus)[0] || '';
+  extras.upc = await allocateUniqueTransferUpc(extras.upc, nextId);
+  const prevSkus = buildTransferSkusMap(currentId, product.color || '', Array.isArray(product.sizes) && product.sizes.length ? product.sizes : ['均碼']);
 
   const prevSizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes.map(String) : ['均碼'];
   const prevSet = new Set(prevSizes);
@@ -2538,9 +2684,13 @@ export async function updateTransferProduct(actor, oldProductId, input) {
       after: nextSizes.join('、'),
     });
   }
+  const beforeSkuStr = Object.values(prevSkus).join('、') || '—';
+  const afterSkuStr = Object.values(skus).join('、') || '—';
+  if (beforeSkuStr !== afterSkuStr) {
+    changes.push({ field: 'SKU', before: beforeSkuStr, after: afterSkuStr });
+  }
   const extraLabels = {
     brand: '品牌',
-    sku: 'SKU',
     upc: 'UPC',
     priceOriginal: '原價',
     priceSale: '優惠價',
@@ -2594,6 +2744,7 @@ export async function updateTransferProduct(actor, oldProductId, input) {
       color,
       sizes: nextSizes,
       safetyStock,
+      skus,
       ...extras,
       active: true,
       createdAt: product.createdAt || now,
@@ -2615,6 +2766,7 @@ export async function updateTransferProduct(actor, oldProductId, input) {
           color,
           sizes: nextSizes,
           safetyStock,
+          skus,
           ...extras,
           updatedAt: now,
         },
@@ -3396,7 +3548,7 @@ export async function listPosCatalogOptions(user) {
         category: p.category || '',
         color: p.color || '',
         size,
-        suggestedSku: `${p.id}-${size}`,
+        suggestedSku: buildTransferSku(p.id, p.color, size),
       });
     }
   }
@@ -3421,7 +3573,7 @@ export async function addPosSellable(user, input = {}) {
   if (dup) throw new Error('此貨品尺碼已在可售目錄');
   const price = Number(input.price);
   if (!isFinite(price) || price < 0) throw new Error('請填寫有效售價');
-  const sku = String(input.sku || `${transferProductId}-${size}`).trim();
+  const sku = String(input.sku || buildTransferSku(transferProductId, tp.color, size)).trim();
   if (!sku) throw new Error('請填寫條碼／SKU');
   const id = `sell_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   const now = formatHkDateTime();
