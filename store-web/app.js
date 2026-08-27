@@ -1492,11 +1492,22 @@ async function decideTransferFromMailbox(transferId, decision){
 }
 function notifAttachHtml(files){
   if(!Array.isArray(files) || !files.length) return '';
-  return `<div style="margin-top:4px;font-size:12px">${files.map(function(f,i){
+  return `<div style="margin-top:10px;padding-top:10px;border-top:1px solid #eceff1">
+    <div style="font-size:12px;color:#546e7a;margin-bottom:6px">附件（${files.length}）</div>
+    ${files.map(function(f,i){
     const href = (typeof fileHref==='function') ? fileHref(f) : (f.dataUrl||'#');
     const name = escHtml(f.name||('附件'+(i+1)));
+    const mime = String(f.mimeType||'').toLowerCase();
+    const isImg = mime.indexOf('image/')===0 || /\.(jpe?g|png|gif|webp|bmp)$/i.test(String(f.name||''));
+    if(isImg && href && href!=='#'){
+      return `<div style="margin:6px 0 10px"><a class="file-link" href="${href}" target="_blank" rel="noopener" style="display:block">
+        <img src="${href}" alt="${name}" style="max-width:100%;max-height:220px;border-radius:8px;border:1px solid #e0e0e0;display:block;object-fit:contain;background:#fafafa">
+        <span style="display:inline-block;margin-top:4px;font-size:12px">📎 ${name}</span>
+      </a></div>`;
+    }
     return `<a class="file-link" href="${href}" download="${name.replace(/"/g,'')}" target="_blank" rel="noopener" style="display:inline-block;margin:2px 8px 2px 0">📎 ${name}</a>`;
-  }).join('')}</div>`;
+  }).join('')}
+  </div>`;
 }
 function pushFileListHtml(){
   if(!pushDraftFiles.length) return '<p style="font-size:12px;color:#888;margin:6px 0">尚未添加附件。</p>';
@@ -6116,7 +6127,8 @@ function isStoreUnit(unit){ return FIXED_UNITS.indexOf(unit)>=0; }
 function isActiveWork(w){ return w&&w.status!=='cancelled'; }
 /**
  * 今日清單：
- * - 未完成：期限為今天，或更早（跨日延續／逾期）
+ * - 未完成：期限為今天或更早（跨日延續／逾期）
+ * - 突發未完成：自建立日起至期限日都顯示（避免設未來期限後「前往今日工作」找不到）
  * - 已完成：期限為今天，或今日才剔選完成（含逾期後今日完成）
  */
 function isDailyTodayWork(w){
@@ -6129,7 +6141,13 @@ function isDailyTodayWork(w){
     var completedDay=dailyParseDateYmd(w.completedAt);
     return completedDay===today;
   }
-  return due<=today;
+  if(due<=today) return true;
+  // 突發：建立日≦今天≦期限 → 仍進今日清單（恆常「延期」不受影響）
+  if(w.kind==='adhoc'){
+    var created=workCreatedDate(w) || due;
+    return created<=today;
+  }
+  return false;
 }
 function isOverdue(w){
   if(!isActiveWork(w)||w.status==='done') return false;
@@ -7136,6 +7154,20 @@ async function notifyAdhocWorkCreated(workMeta){
     +(workMeta.requireAttachment?'完成時需要上傳附件。\n':'')
     +'\n'+(workMeta.content||'');
   var summary = '突發任務｜'+(workMeta.units||[]).join('、')+'｜期限 '+(workMeta.dueDate||'');
+  var attachments = [];
+  var desc = Array.isArray(workMeta.descImages) ? workMeta.descImages : [];
+  for(var i=0;i<desc.length;i++){
+    var f = desc[i];
+    if(!f) continue;
+    attachments.push({
+      name: f.name || ('說明圖'+(i+1)),
+      driveFileId: f.driveFileId || f.id || f.fileId || undefined,
+      dataUrl: f.dataUrl,
+      mimeType: f.mimeType,
+      by: f.by,
+      time: f.time
+    });
+  }
   try{
     await apiFetch('/api/notifications', {
       method:'POST',
@@ -7148,6 +7180,7 @@ async function notifyAdhocWorkCreated(workMeta){
         summary: summary,
         content: body,
         contentSegments: [body],
+        attachments: attachments,
         recipientIds: recipientIds,
         recipientDesc: workMeta.assigneeIds && workMeta.assigneeIds.length
           ? ('指定員工 '+recipientIds.length+' 人')
@@ -7194,7 +7227,7 @@ async function dailySubmitAdhoc(){
   closeModal();
   try{
     await flushCloudSaves();
-    await notifyAdhocWorkCreated({ title:title, content:content, dueDate:due, priority:priority, units:units, assigneeIds:assigneeIds, requireAttachment:requireAttachment });
+    await notifyAdhocWorkCreated({ title:title, content:content, dueDate:due, priority:priority, units:units, assigneeIds:assigneeIds, requireAttachment:requireAttachment, descImages:descImages });
     render();
   }catch(e){
     render();
@@ -7760,7 +7793,7 @@ function vDailyNew(user){
       }).join('')+
       '</tbody></table></div>');
   return '<div class="card"><h2>➕ 新增突發工作</h2>'+
-    '<p style="color:#666;font-size:13px;margin-bottom:10px">可指定多個單位、員工、期限與優先級；建立後即出現在下方清單，並進入對應單位今日／期限日清單。</p>'+
+    '<p style="color:#666;font-size:13px;margin-bottom:10px">可指定多個單位、員工、期限與優先級；建立後即出現在下方清單，並自建立日起出現在對應單位「今日工作」（直至期限／完成）。說明圖會一併帶入信箱通知。</p>'+
     '<button class="btn" onclick="dailyCreateAdhoc()">🛠️ 建立突發工作</button> '+
     '<button class="btn gray" data-call="goDailyView" data-arg0="recurring">前往恆常任務</button></div>'+
     '<div class="card"><h3>已建立的突發工作（'+list.length+'）</h3>'+rows+'</div>';
