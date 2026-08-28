@@ -3512,11 +3512,27 @@ export async function listPosProducts(user) {
   }
   const docs = await posProductsCol().find({ active: { $ne: false } }).sort({ sku: 1, name: 1 }).toArray();
   const qtyMap = await buildTransferQtyMap();
+  const transferIds = [...new Set(docs.map((d) => String(d.transferProductId || '')).filter(Boolean))];
+  const transferDocs = transferIds.length
+    ? await transferProductsCol()
+        .find({ id: { $in: transferIds } })
+        .toArray()
+    : [];
+  const transferById = new Map(transferDocs.map((p) => [String(p.id), p]));
   const products = docs.map((d) => {
     const base = stripPosProduct(d);
+    const tp = transferById.get(String(d.transferProductId || '')) || {};
     return {
       ...base,
       stock: stockFromMap(qtyMap, d.transferProductId, d.size),
+      brand: tp.brand || '',
+      nameEn: tp.nameEn || '',
+      imageUrl: tp.imageUrl || '',
+      imageFileId: tp.imageFileId || '',
+      priceOriginal: tp.priceOriginal != null ? tp.priceOriginal : null,
+      tickiePoints: tp.tickiePoints != null ? tp.tickiePoints : null,
+      safetyStock: Number(tp.safetyStock) || 0,
+      sizes: Array.isArray(tp.sizes) && tp.sizes.length ? tp.sizes.slice() : [d.size].filter(Boolean),
     };
   });
   return {

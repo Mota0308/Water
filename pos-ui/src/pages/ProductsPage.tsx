@@ -1,6 +1,6 @@
 ﻿import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import { apiJson } from '@/lib/api'
+import { apiJson, fileUrl } from '@/lib/api'
 import { formatHKD } from '@/lib/format'
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, btnClass, fieldClass } from '@/components/ui'
 import { cn } from '@/lib/utils'
@@ -20,15 +20,55 @@ type ViewMode = 'table' | 'grid'
 type ProductGroup = {
   id: string
   name: string
+  nameEn: string
   category: string
   color: string
+  brand: string
   transferProductId?: string
+  imageUrl?: string
+  imageFileId?: string
+  priceOriginal?: number | null
+  tickiePoints?: number | null
+  safetyStock: number
+  sizes: string[]
   activeCount: number
   totalStock: number
   items: PosProduct[]
 }
 
 const STORE_ORDER = ['觀塘', '荔枝角', '灣仔', '屯門']
+
+function dash(v: unknown) {
+  if (v == null || v === '') return '—'
+  return String(v)
+}
+
+function groupThumbSrc(group: { imageFileId?: string; imageUrl?: string }) {
+  if (group.imageFileId) return fileUrl(group.imageFileId)
+  return group.imageUrl || ''
+}
+
+function GroupThumb({ group, size = 48 }: { group: { imageFileId?: string; imageUrl?: string; name?: string }; size?: number }) {
+  const src = groupThumbSrc(group)
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt={group.name || ''}
+        className="rounded-lg border border-slate-200 bg-slate-50 object-contain"
+        style={{ width: size, height: size }}
+      />
+    )
+  }
+  return (
+    <span
+      className="inline-flex items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 text-[10px] text-slate-400"
+      style={{ width: size, height: size }}
+    >
+      無圖
+    </span>
+  )
+}
 
 function groupProducts(products: PosProduct[]): ProductGroup[] {
   const map = new Map<string, ProductGroup>()
@@ -37,9 +77,17 @@ function groupProducts(products: PosProduct[]): ProductGroup[] {
     const current = map.get(groupId) || {
       id: groupId,
       name: product.name,
+      nameEn: product.nameEn || '',
       category: product.category || '未分類',
       color: product.color || '',
+      brand: product.brand || '',
       transferProductId: product.transferProductId,
+      imageUrl: product.imageUrl || '',
+      imageFileId: product.imageFileId || '',
+      priceOriginal: product.priceOriginal ?? null,
+      tickiePoints: product.tickiePoints ?? null,
+      safetyStock: Number(product.safetyStock) || 0,
+      sizes: Array.isArray(product.sizes) ? product.sizes.slice() : [],
       activeCount: 0,
       totalStock: 0,
       items: [],
@@ -47,9 +95,23 @@ function groupProducts(products: PosProduct[]): ProductGroup[] {
     current.items.push(product)
     if (product.active !== false) current.activeCount += 1
     current.totalStock += Object.values(product.stock || {}).reduce((sum, qty) => sum + (Number(qty) || 0), 0)
+    if (!current.imageFileId && product.imageFileId) current.imageFileId = product.imageFileId
+    if (!current.imageUrl && product.imageUrl) current.imageUrl = product.imageUrl
+    if (!current.brand && product.brand) current.brand = product.brand
+    if (!current.nameEn && product.nameEn) current.nameEn = product.nameEn
+    if (current.priceOriginal == null && product.priceOriginal != null) current.priceOriginal = product.priceOriginal
+    if (current.tickiePoints == null && product.tickiePoints != null) current.tickiePoints = product.tickiePoints
+    if (Array.isArray(product.sizes) && product.sizes.length) current.sizes = product.sizes.slice()
     map.set(groupId, current)
   }
-  return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, 'zh-HK'))
+  return Array.from(map.values())
+    .map((group) => {
+      if (!group.sizes.length) {
+        group.sizes = Array.from(new Set(group.items.map((item) => item.size).filter(Boolean)))
+      }
+      return group
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-HK'))
 }
 
 export function ProductsPage() {
@@ -140,7 +202,16 @@ export function ProductsPage() {
       const matchesCategory = categoryFilter === 'all' || group.category === categoryFilter
       const matchesSearch =
         !q ||
-        [group.name, group.transferProductId, group.category, ...group.items.flatMap((item) => [item.sku, item.size])]
+        [
+          group.name,
+          group.nameEn,
+          group.brand,
+          group.transferProductId,
+          group.category,
+          group.color,
+          ...group.sizes,
+          ...group.items.flatMap((item) => [item.sku, item.size]),
+        ]
           .filter(Boolean)
           .join(' ')
           .toLowerCase()
@@ -270,10 +341,16 @@ export function ProductsPage() {
             <table className="min-w-full text-left text-sm">
               <thead className="bg-slate-50 text-slate-500">
                 <tr>
-                  <th className="px-4 py-3 font-medium">貨品</th>
-                  <th className="px-4 py-3 font-medium">分類</th>
-                  <th className="px-4 py-3 font-medium">調動貨號</th>
-                  <th className="px-4 py-3 font-medium text-right">尺碼數</th>
+                  <th className="px-4 py-3 font-medium">圖片</th>
+                  <th className="px-4 py-3 font-medium">品牌</th>
+                  <th className="px-4 py-3 font-medium">型號</th>
+                  <th className="px-4 py-3 font-medium">商品名</th>
+                  <th className="px-4 py-3 font-medium">產品分類</th>
+                  <th className="px-4 py-3 font-medium">商品選項</th>
+                  <th className="px-4 py-3 font-medium">原價</th>
+                  <th className="px-4 py-3 font-medium">剔剔積分</th>
+                  <th className="px-4 py-3 font-medium">顏色</th>
+                  <th className="px-4 py-3 font-medium">安全存量</th>
                   <th className="px-4 py-3 font-medium text-right">總庫存</th>
                   <th className="px-4 py-3 font-medium">狀態</th>
                 </tr>
@@ -286,13 +363,24 @@ export function ProductsPage() {
                       className="cursor-pointer hover:bg-slate-50"
                     >
                       <td className="px-4 py-3">
-                        <div className="font-medium text-slate-900">{group.name}</div>
-                        <div className="mt-1 text-xs text-slate-400">{group.color || '—'}</div>
+                        <GroupThumb group={group} />
                       </td>
-                      <td className="px-4 py-3">{group.category}</td>
-                      <td className="px-4 py-3 font-mono text-xs text-slate-500">{group.transferProductId || '—'}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{group.items.length}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{group.totalStock}</td>
+                      <td className="px-4 py-3">{dash(group.brand)}</td>
+                      <td className="px-4 py-3 font-medium text-slate-900">
+                        {expanded[group.id] ? '▾ ' : '▸ '}
+                        {dash(group.transferProductId)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-slate-900">{group.name}</div>
+                        {group.nameEn ? <div className="mt-0.5 text-xs text-slate-400">{group.nameEn}</div> : null}
+                      </td>
+                      <td className="px-4 py-3">{dash(group.category)}</td>
+                      <td className="px-4 py-3">{group.sizes.length ? group.sizes.join('／') : '—'}</td>
+                      <td className="px-4 py-3">{dash(group.priceOriginal)}</td>
+                      <td className="px-4 py-3">{dash(group.tickiePoints)}</td>
+                      <td className="px-4 py-3">{dash(group.color)}</td>
+                      <td className="px-4 py-3">{group.safetyStock}</td>
+                      <td className="px-4 py-3 text-right tabular-nums font-medium">{group.totalStock}</td>
                       <td className="px-4 py-3">
                         <Badge tone={group.activeCount === group.items.length ? 'emerald' : group.activeCount === 0 ? 'red' : 'amber'}>
                           {group.activeCount === group.items.length ? '全部上架' : group.activeCount === 0 ? '全部停用' : '部分上架'}
@@ -301,7 +389,7 @@ export function ProductsPage() {
                     </tr>
                     {expanded[group.id] && (
                       <tr className="bg-slate-50/70">
-                        <td colSpan={6} className="px-4 py-4">
+                        <td colSpan={12} className="px-4 py-4">
                           <div className="space-y-3">
                             {group.items.map((item) => (
                               <div key={item.id} className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -328,11 +416,15 @@ export function ProductsPage() {
                                         step="0.01"
                                         value={draftPrice[item.id] ?? String(item.price ?? '')}
                                         onChange={(e) => setDraftPrice((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                                        onClick={(e) => e.stopPropagation()}
                                         className={fieldClass('h-9')}
                                       />
                                       <button
                                         type="button"
-                                        onClick={() => void updateProduct(item, { price: Number(draftPrice[item.id] ?? item.price ?? 0) })}
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          void updateProduct(item, { price: Number(draftPrice[item.id] ?? item.price ?? 0) })
+                                        }}
                                         className={btnClass({ variant: 'outline', size: 'sm' })}
                                       >
                                         儲存
@@ -344,7 +436,10 @@ export function ProductsPage() {
                                     {canManage && (
                                       <button
                                         type="button"
-                                        onClick={() => void updateProduct(item, { active: item.active === false })}
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          void updateProduct(item, { active: item.active === false })
+                                        }}
                                         className={btnClass({ variant: item.active === false ? 'success' : 'danger', size: 'sm' })}
                                       >
                                         {item.active === false ? '重新上架' : '停用'}
@@ -362,7 +457,7 @@ export function ProductsPage() {
                 ))}
                 {!filteredGroups.length && !loading && (
                   <tr>
-                    <td colSpan={6} className="px-4 py-12 text-center text-slate-500">
+                    <td colSpan={12} className="px-4 py-12 text-center text-slate-500">
                       沒有符合條件的商品
                     </td>
                   </tr>
@@ -376,12 +471,25 @@ export function ProductsPage() {
           {filteredGroups.map((group) => (
             <Card key={group.id}>
               <CardHeader>
-                <CardTitle>{group.name}</CardTitle>
-                <CardDescription>
-                  {group.category} | {group.transferProductId || '無調動貨號'}
-                </CardDescription>
+                <div className="flex items-start gap-3">
+                  <GroupThumb group={group} size={56} />
+                  <div className="min-w-0">
+                    <CardTitle>{group.name}</CardTitle>
+                    <CardDescription>
+                      {dash(group.brand)}｜{dash(group.transferProductId)}｜{dash(group.category)}
+                    </CardDescription>
+                    {group.nameEn ? <p className="mt-1 text-xs text-slate-400">{group.nameEn}</p> : null}
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="space-y-3">
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+                  <span>選項 {group.sizes.length ? group.sizes.join('／') : '—'}</span>
+                  <span>原價 {dash(group.priceOriginal)}</span>
+                  <span>剔剔積分 {dash(group.tickiePoints)}</span>
+                  <span>顏色 {dash(group.color)}</span>
+                  <span>安全存量 {group.safetyStock}</span>
+                </div>
                 <div className="flex items-center justify-between text-sm">
                   <Badge tone={group.activeCount === group.items.length ? 'emerald' : group.activeCount === 0 ? 'red' : 'amber'}>
                     {group.items.length} 個尺碼

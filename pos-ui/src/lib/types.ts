@@ -24,6 +24,14 @@ export interface PosProduct {
   stock?: Record<string, number>
   category?: string
   color?: string
+  brand?: string
+  nameEn?: string
+  imageUrl?: string
+  imageFileId?: string
+  priceOriginal?: number | null
+  tickiePoints?: number | null
+  safetyStock?: number
+  sizes?: string[]
   createdAt?: string
   updatedAt?: string
 }
