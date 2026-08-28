@@ -66,9 +66,6 @@ export function SettingsPage() {
         <Link to="/members" className="rounded-md border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50">
           會員／積分設定 →
         </Link>
-        <Link to="/products" className="rounded-md border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50">
-          可售商品 →
-        </Link>
         <Link to="/pos" className="rounded-md bg-sky-600 px-3 py-2 text-center text-sm text-white">
           返回收銀
         </Link>

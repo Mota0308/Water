@@ -921,7 +921,6 @@ function posUiHashForView(view) {
   if (view === 'posMembers') return '#/members';
   if (view === 'posSettlement') return '#/settlement';
   if (view === 'posReport') return '#/reports';
-  if (view === 'posProducts') return '#/products';
   if (view === 'posSettings') return '#/settings';
   if (view === 'posReceipt') {
     var rid = encodeURIComponent(String(posReceiptFocusId || ''));
@@ -1139,9 +1138,6 @@ function vPosReceipt() {
 }
 function vPosMembers() {
   return vPosReactEmbed('posMembers');
-}
-function vPosProducts() {
-  return vPosReactEmbed('posProducts');
 }
 function vPosReset() {
   posKickLoad();

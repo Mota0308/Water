@@ -1493,7 +1493,7 @@ async function decideTransferFromMailbox(transferId, decision){
     transferOrdersCache = null;
     transferInvCache = null;
     await loadNotifications();
-    if(currentView==='transferInventory' || currentView==='transferHistory' || currentView==='transferStockLog' || currentView==='transferProducts' || currentView==='transferProductLog' || currentView==='transferApply' || currentView==='posProducts' || currentView==='posCashier'){
+    if(currentView==='transferInventory' || currentView==='transferHistory' || currentView==='transferStockLog' || currentView==='transferProducts' || currentView==='transferProductLog' || currentView==='transferApply' || currentView==='posCashier'){
       try{ await loadTransferInventory(true); }catch(_e){}
       try{ await loadTransferOrders(true); }catch(_e){}
       render();
@@ -3159,7 +3159,7 @@ var TRANSFER_COLOR_ABBR_FE = {
 };
 function transferColorAbbrFe(color){
   const c = String(color||'').trim();
-  if(!c) return 'NA';
+  if(!c) return '';
   if(TRANSFER_COLOR_ABBR_FE[c]) return TRANSFER_COLOR_ABBR_FE[c];
   const lower = c.toLowerCase();
   if(TRANSFER_COLOR_ABBR_FE[lower]) return TRANSFER_COLOR_ABBR_FE[lower];
@@ -3175,7 +3175,7 @@ function transferColorAbbrFe(color){
 }
 function transferSizeAbbrFe(size){
   const s = String(size||'').trim();
-  if(!s) return 'OS';
+  if(!s) return '';
   if(s==='均碼' || /^one\s*size$/i.test(s) || /^free$/i.test(s) || s.toUpperCase()==='F') return 'OS';
   return s.replace(/\s+/g,'').toUpperCase();
 }
@@ -3239,11 +3239,17 @@ function refreshTransferProductSkuPreview(){
   const id = ((document.getElementById('tp-id')||{}).value||'').trim();
   const color = ((document.getElementById('tp-color')||{}).value||'').trim();
   const sizes = getTransferProductFormSizes();
-  const previewSizes = sizes.length ? sizes : ['均碼'];
-  const skus = buildTransferSkusMapFe(id, color, previewSizes);
   const preview = document.getElementById('tp-sku-preview');
   const skuInput = document.getElementById('tp-sku');
-  const first = id ? (skus[previewSizes[0]] || Object.values(skus)[0] || '') : '';
+  let first = '';
+  if(id){
+    if(sizes.length){
+      const skus = buildTransferSkusMapFe(id, color, sizes);
+      first = skus[sizes[0]] || Object.values(skus)[0] || '';
+    } else {
+      first = buildTransferSkuFe(id, color, '');
+    }
+  }
   if(skuInput) skuInput.value = first || '';
   ensureAutoTransferUpc();
   if(!preview) return;
@@ -3252,11 +3258,17 @@ function refreshTransferProductSkuPreview(){
     preview.innerHTML = '';
     return;
   }
-  const colorHint = color ? (transferColorAbbrFe(color)+'＝'+escHtml(color)) : '未選顏色→NA';
-  const sizeHint = sizes.length ? '主 SKU＝首個尺碼' : '尚未選尺碼，暫以均碼 OS 預顯示';
+  const colorHint = color ? (transferColorAbbrFe(color)+'＝'+escHtml(color)) : '尚未選顏色';
+  const sizeHint = sizes.length ? '主 SKU＝首個尺碼' : '尚未選尺碼';
   preview.style.display = '';
+  if(!sizes.length){
+    preview.innerHTML = '<div style="font-size:11px;color:#78909c;margin:0 0 6px">'+colorHint+' · '+sizeHint+'</div>'
+      +'<div><code style="font-size:13px">'+escHtml(first)+'</code></div>';
+    return;
+  }
+  const skus = buildTransferSkusMapFe(id, color, sizes);
   preview.innerHTML = '<div style="font-size:11px;color:#78909c;margin:0 0 6px">'+colorHint+' · '+sizeHint+'</div>'
-    +previewSizes.map(function(sz, idx){
+    +sizes.map(function(sz, idx){
       const mark = idx===0 ? ' <span style="color:#546e7a;font-size:11px">(主)</span>' : '';
       return '<div><b>'+escHtml(sz)+'</b>'+mark+' → <code style="font-size:13px">'+escHtml(skus[sz]||'')+'</code></div>';
     }).join('');
@@ -3607,7 +3619,7 @@ function transferProductAttrFieldsHtml(p){
     +'<label>SKU（自動生成）</label>'
     +'<input type="text" id="tp-sku" value="'+escHtml(val('sku'))+'" readonly placeholder="填寫型號後自動顯示" style="background:#fafafa;color:#37474f">'
     +'<div id="tp-sku-preview" style="border:1px solid #e0e0e0;border-radius:8px;background:#fafafa;padding:10px 12px;font-size:13px;line-height:1.55;min-height:0;margin-top:8px;color:#37474f"></div>'
-    +'<p style="font-size:12px;color:#888;margin:4px 0 0">格式：型號＋顏色縮寫＋尺碼縮寫（未選顏色為 NA、未選尺碼先以均碼 OS 預顯示；主 SKU 取首個尺碼）</p>'
+    +'<p style="font-size:12px;color:#888;margin:4px 0 0">格式：型號＋顏色縮寫＋尺碼縮寫；選好顏色／尺碼後才會接上縮寫（主 SKU 取首個尺碼）。</p>'
     +'<label>UPC（自動生成，可修改）</label>'
     +'<input type="text" id="tp-upc" value="'+escHtml(val('upc'))+'" placeholder="自動產生條碼，可手動修改" oninput="markTransferUpcManual()">'
     +'<p style="font-size:12px;color:#888;margin:4px 0 0">系統自動產生店內條碼；手動改過後不會覆蓋（清空後會重新產生）。</p>'
@@ -5604,7 +5616,6 @@ function getSidebarItemsForModule(mod){
       ['posSettlement','每日結算'],
       ['posReport','銷售報表'],
       ['posMembers','會員管理'],
-      ['posProducts','可售商品'],
       ['posReset','示範資料']
     ];
   }
@@ -5813,7 +5824,6 @@ function render(){
     posMembers: typeof vPosMembers==='function' ? vPosMembers : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
     posSettlement: typeof vPosSettlement==='function' ? vPosSettlement : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
     posReport: typeof vPosReport==='function' ? vPosReport : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
-    posProducts: typeof vPosProducts==='function' ? vPosProducts : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; },
     posReset: typeof vPosReset==='function' ? vPosReset : function(){ return '<div class="card"><p>POS 模組載入中…</p></div>'; }
   };
   document.getElementById('main').innerHTML = (views[currentView]||views.home)();
@@ -5839,6 +5849,7 @@ function goInModule(mod, v){
 }
 function go(v){
   if(v==='transferInventory') v='transferProducts';
+  if(v==='posProducts') v='posCashier';
   currentView=v; currentProject=null;
   sidebarNavManual = false;
   if(v==='devList'){
@@ -5851,7 +5862,7 @@ function go(v){
   if(v==='settings'){ currentModule='settings'; }
   if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProductLog' || v==='transferProducts'){ currentModule='transfer'; }
   if(v==='dailyToday' || v==='dailyProgress' || v==='dailyUnit' || v==='dailyHistory' || v==='dailyRecords' || v==='dailyNew' || v==='dailyRecurring' || v==='dailyOpLogs'){ currentModule='daily'; }
-  if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posSettlement' || v==='posReport' || v==='posProducts' || v==='posReset'){ currentModule='pos'; }
+  if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posSettlement' || v==='posReport' || v==='posReset'){ currentModule='pos'; }
   fCat='全部'; fStatus='全部'; fKw='';
   closeAppSidebar();
   render();

@@ -2569,7 +2569,7 @@ export const TRANSFER_COLOR_ABBR = {
 
 export function transferColorAbbr(color) {
   const c = String(color || '').trim();
-  if (!c) return 'NA';
+  if (!c) return '';
   if (TRANSFER_COLOR_ABBR[c]) return TRANSFER_COLOR_ABBR[c];
   const lower = c.toLowerCase();
   if (TRANSFER_COLOR_ABBR[lower]) return TRANSFER_COLOR_ABBR[lower];
@@ -2585,7 +2585,7 @@ export function transferColorAbbr(color) {
 
 export function transferSizeAbbr(size) {
   const s = String(size || '').trim();
-  if (!s) return 'OS';
+  if (!s) return '';
   if (s === '均碼' || /^one\s*size$/i.test(s) || /^free$/i.test(s) || s.toUpperCase() === 'F') return 'OS';
   return s.replace(/\s+/g, '').toUpperCase();
 }

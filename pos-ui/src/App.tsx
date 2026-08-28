@@ -3,7 +3,6 @@ import { Toaster } from 'sonner'
 import { PosShell } from '@/components/PosShell'
 import { MembersPage } from '@/pages/MembersPage'
 import { PosPage } from '@/pages/PosPage'
-import { ProductsPage } from '@/pages/ProductsPage'
 import { ReceiptPage } from '@/pages/ReceiptPage'
 import { ReportsPage } from '@/pages/ReportsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
@@ -24,7 +23,7 @@ export default function App() {
             <Route path="/settlement" element={<SettlementPage />} />
             <Route path="/reports" element={<ReportsPage />} />
             <Route path="/receipt/:id" element={<ReceiptPage />} />
-            <Route path="/products" element={<ProductsPage />} />
+            <Route path="/products" element={<Navigate to="/pos" replace />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </PosShell>
