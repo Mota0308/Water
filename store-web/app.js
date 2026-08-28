@@ -2459,7 +2459,7 @@ function pushSegmentsEditorHtml(){
 function pushRenderSegmentsEditor(){
   const host = document.getElementById('push-segments-wrap');
   if(!host) return;
-  pushSyncSegmentsFromDom();
+  // 不要在此再 sync：新增／刪除後 DOM 仍是舊段落數，會把剛改的 pushDraftSegments 蓋掉
   host.innerHTML = pushSegmentsEditorHtml();
 }
 function pushAddSegment(){
@@ -5312,17 +5312,8 @@ function toggleSidebarL2(mod){
   sidebarNavManual = true;
   mod = String(mod||'');
   sidebarOpenL1 = sidebarL1ForModule(mod);
-  if(sidebarOpenL2===mod){
-    sidebarOpenL2 = '';
-    render();
-    return;
-  }
-  sidebarOpenL2 = mod;
-  // 進入該模組預設頁（若尚未在此模組）
-  if(currentModule!==mod){
-    goInModule(mod, getDefaultViewForModule(mod));
-    return;
-  }
+  // 二等分類只展開／收合三級項目，不跳轉、不關閉選單
+  sidebarOpenL2 = (sidebarOpenL2===mod) ? '' : mod;
   render();
 }
 /** 某模組下的第三層子頁 */
