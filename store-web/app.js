@@ -5364,6 +5364,7 @@ function getSidebarItemsForModule(mod){
   if(mod==='transfer'){
     return [
       ['transferProducts','貨品'],
+      ['transferApply','申請調動'],
       ['transferHistory','調動記錄'],
       ['transferStockLog','庫存校正記錄'],
       ['transferProductLog','主檔變更記錄']
@@ -5386,7 +5387,6 @@ function isSidebarItemActive(mod, viewKey){
   }
   if(currentView==='dailyUnit' && viewKey==='dailyProgress') return true;
   if((currentView==='pushDetail' || currentView==='pushStats') && viewKey==='pushAll') return true;
-  if(currentView==='transferApply' && viewKey==='transferProducts') return true;
   if(currentView==='transferInventory' && viewKey==='transferProducts') return true;
   if(currentView==='posReceipt' && mod==='pos' && viewKey==='posTransactions') return true;
   return false;
