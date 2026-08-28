@@ -269,6 +269,7 @@ let mailboxDetailTab = 'inbox'; // which tab opened the detail
 let mailboxSearchKw = '';
 let pushDraftFiles = []; // {name, dataUrl} draft attachments for compose
 let pushDraftSegments = ['']; // 新增通知：詳細內容分段
+let pushDraftPoll = { enabled: false, question: '', options: ['', ''], multiple: false };
 
 let currentUser = null, currentModule = 'production', currentView = 'home', currentProject = null, currentTab = 'overview', commentFilter = '全部';
 /** 三層側欄展開狀態（空字串＝依目前模組自動展開） */
@@ -1016,7 +1017,9 @@ function mailboxNoticeSearchBlob(n){
   const cat = (NOTICE_CAT_META[noticeCatKey(n)]||{}).name || '';
   return [
     n.title, n.summary, n.content, segs, n.fromName, n.priority, cat,
-    n.category, n.actionType, n.id
+    n.category, n.actionType, n.id,
+    n.poll && n.poll.question,
+    n.poll && Array.isArray(n.poll.options) ? n.poll.options.map(function(o){ return o.text || o; }).join(' ') : ''
   ].map(function(x){ return String(x||''); }).join(' ');
 }
 function filterMailboxItems(list, kw){
@@ -1132,6 +1135,7 @@ function refreshMailboxDetailUi(){
           confirmed: isRead,
           interactive: true
         }))
+    +noticePollHtml(item, { canVote: !isSentView && !!rec })
     +notifAttachHtml(noticeAttachmentsForDisplay(item))
     +(isSentView ? mailboxReceiptHtml(item) : '');
   if(isSentView){
@@ -1287,6 +1291,7 @@ function refreshMailboxUi(){
         +'<div class="mailbox-row-main"><div class="mailbox-row-line">'
         +statusHtml
         +notifPriorityTag(item.priority)
+        +(item.poll && item.poll.question?'<span class="tag" style="background:#f3e5f5;color:#6a1b9a">投票</span>':'')
         +'<span class="mb-date">'+escHtml(item.createdAt||'')+'</span>'
         +'<span class="mb-title">'+escHtml(title)+'</span>'
         +who
@@ -1952,6 +1957,7 @@ function noticeCardHtml(n){
     +(n.pinned&&n.status==='進行中'?'<span class="tag" style="background:#c62828;color:#fff">置頂</span>':'')
     +noticeCatTag(n)
     +(n.priority==='緊急'?'<span class="tag n-pri-urgent">緊急</span>':n.priority==='重要'?'<span class="tag n-pri-important">重要</span>':'')
+    +(n.poll && n.poll.question?'<span class="tag" style="background:#f3e5f5;color:#6a1b9a">投票</span>':'')
     +'<span style="font-size:15px;flex:1;min-width:140px;'+(unread?'font-weight:bold':'')+'">'+(unread?'<span style="display:inline-block;width:8px;height:8px;background:#e53935;border-radius:50%;margin-right:6px"></span>':'')+escHtml(n.title||'（無標題）')+'</span>'
     +((noticeAttachmentsForDisplay(n).length)?'<span>📎</span>':'')
     +(isNoticeRecipient(n)?noticeReadStateTag(n):'<span class="tag">'+(escHtml(n.status||'進行中'))+'</span>')
@@ -2129,6 +2135,7 @@ function vPushStats(){
       return '<tr><td>'+escHtml(userName(r.userId)||r.userId)+'</td><td>'+tag+'</td><td>'+escHtml(r.openTime||'—')+'</td><td>'+escHtml(r.confirmTime||r.readAt||'—')+'</td></tr>';
     }).join('')
     +'</table></div>'
+    +noticePollStatsHtml(n)
     +'<h3>🏪 按單位統計</h3><div class="table-wrap"><table><tr><th>單位</th><th>接收</th><th>已讀</th><th>已開啟</th><th>未讀</th><th>%</th></tr>'
     +Object.keys(unitMap).map(function(u){
       const d = unitMap[u];
@@ -2196,6 +2203,7 @@ function vPushDetail(){
     +'<button type="button" class="btn gray sm" data-call="go" data-arg0="pushAll">← 返回通知列表</button>'
     +'<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+noticeCatTag(n)
     +(n.priority==='緊急'?'<span class="tag n-pri-urgent">緊急</span>':n.priority==='重要'?'<span class="tag n-pri-important">重要</span>':'')
+    +(n.poll && n.poll.question?'<span class="tag" style="background:#f3e5f5;color:#6a1b9a">投票</span>':'')
     +'<span class="tag">'+escHtml(n.status||'')+'</span></div>'
     +'<h2 style="font-size:19px;margin-top:8px">'+escHtml(n.title||'（無標題）')+'</h2>'
     +'<div style="margin-top:8px;font-size:13px;color:#777;display:flex;gap:14px;flex-wrap:wrap">'
@@ -2206,6 +2214,7 @@ function vPushDetail(){
     +(n.recipientDesc?'<span>接收：'+escHtml(n.recipientDesc)+'</span>':'')
     +'</div>'
     +noticeSegmentsReadHtml(n, { isRecipient:isRecip, confirmed:confirmed, interactive:true })
+    +noticePollHtml(n, { canVote: isRecip })
     +notifAttachHtml(noticeAttachmentsForDisplay(n))
     +(canAccessNoticeCta(n)
       ? '<div class="actions" style="margin-top:12px">'+noticeCtaButtonHtml(n, { className: 'btn green' })+'</div>'
@@ -2380,6 +2389,105 @@ function noticeSegmentsReadHtml(n, opts){
       +'</div>';
   }).join('');
 }
+function noticePollOf(n){
+  if(!n || !n.poll || typeof n.poll!=='object') return null;
+  const question = String(n.poll.question||'').trim();
+  const options = Array.isArray(n.poll.options) ? n.poll.options : [];
+  if(!question || options.length<2) return null;
+  return n.poll;
+}
+function noticePollHtml(n, opts){
+  opts = opts || {};
+  const poll = noticePollOf(n);
+  if(!poll) return '';
+  const nid = escHtml(String(n.id||''));
+  const my = Array.isArray(poll.myOptionIds) ? poll.myOptionIds.map(String) : [];
+  const showResults = Array.isArray(poll.counts);
+  const counts = showResults ? poll.counts : [];
+  const totalVoters = showResults ? Number(poll.totalVoters||0) : 0;
+  const canVote = !!opts.canVote && n.status==='進行中' && isNoticeRecipient(n);
+  const inputType = poll.multiple ? 'checkbox' : 'radio';
+  const rows = poll.options.map(function(o, i){
+    const oid = String(o.id || i);
+    const text = String(o.text || o.label || '');
+    const count = Number(counts[i]||0);
+    const pct = totalVoters ? Math.round(count/totalVoters*100) : 0;
+    const mine = my.indexOf(oid)>=0;
+    const result = showResults
+      ? '<div class="notice-poll-bar"><div style="width:'+pct+'%"></div></div>'
+        +'<div class="notice-poll-count">'+count+' 票（'+pct+'%）'+(mine?' · 你的選擇':'')+'</div>'
+      : (mine?'<div class="notice-poll-count">已選</div>':'');
+    if(canVote){
+      return '<label class="notice-poll-opt">'
+        +'<input type="'+inputType+'" name="notice-poll-'+nid+'" value="'+escHtml(oid)+'"'+(mine?' checked':'')+'>'
+        +'<span class="notice-poll-opt-body"><span class="notice-poll-opt-text">'+escHtml(text)+'</span>'+result+'</span></label>';
+    }
+    return '<div class="notice-poll-opt is-static">'
+      +'<span class="notice-poll-opt-body"><span class="notice-poll-opt-text">'+(mine?'✓ ':'')+escHtml(text)+'</span>'+result+'</span></div>';
+  }).join('');
+  const hint = poll.multiple ? '可選擇多個選項' : '只能選擇一個選項';
+  const voteBtn = canVote
+    ? '<button type="button" class="btn green sm" data-call="submitNoticePollVote" data-arg0="'+nid+'">'+(my.length?'更改投票':'提交投票')+'</button>'
+    : '';
+  const resultHint = showResults
+    ? '<div class="notice-poll-meta">已有 '+totalVoters+' 人投票'+(n.status!=='進行中'?'（已完結）':'')+'</div>'
+    : (canVote && !my.length ? '<div class="notice-poll-meta">投票後可查看結果</div>' : '');
+  return '<div class="notice-poll" id="notice-poll-'+nid+'">'
+    +'<div class="notice-poll-q">投票：'+escHtml(poll.question)+'</div>'
+    +'<div class="notice-poll-meta">'+hint+'</div>'
+    +rows
+    +resultHint
+    +voteBtn
+    +'</div>';
+}
+function noticePollStatsHtml(n){
+  const poll = noticePollOf(n);
+  if(!poll) return '';
+  const counts = Array.isArray(poll.counts) ? poll.counts : [];
+  const totalVoters = Number(poll.totalVoters||0);
+  const roster = Array.isArray(poll.voteRoster) ? poll.voteRoster : [];
+  return '<h3>🗳 投票結果｜'+escHtml(poll.question)+'</h3>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 8px">'+(poll.multiple?'可複選':'單選')+'｜已有 '+totalVoters+' 人投票</p>'
+    +'<div class="table-wrap"><table><tr><th>選項</th><th>票數</th><th>%</th>'+(roster.length?'<th>投票人</th>':'')+'</tr>'
+    +poll.options.map(function(o, i){
+      const count = Number(counts[i]||0);
+      const pct = totalVoters ? Math.round(count/totalVoters*100) : 0;
+      const hit = roster.find(function(r){ return String(r.id)===String(o.id); });
+      const names = hit && Array.isArray(hit.userIds)
+        ? hit.userIds.map(function(uid){ return userName(uid)||uid; }).join('、')
+        : '';
+      return '<tr><td>'+escHtml(o.text||'')+'</td><td>'+count+'</td><td>'+pct+'%</td>'
+        +(roster.length?'<td style="font-size:12px">'+escHtml(names||'—')+'</td>':'')
+        +'</tr>';
+    }).join('')
+    +'</table></div>';
+}
+async function submitNoticePollVote(id){
+  if(!requireCloud('投票')) return;
+  if(!id || !currentUser) return;
+  const host = document.getElementById('notice-poll-'+id);
+  if(!host) return;
+  const optionIds = Array.from(host.querySelectorAll('input[name="notice-poll-'+id+'"]:checked')).map(function(el){
+    return String(el.value||'');
+  }).filter(Boolean);
+  if(!optionIds.length){
+    alert2('請至少選擇一個選項。');
+    return;
+  }
+  try{
+    await apiFetch('/api/notifications/'+encodeURIComponent(id)+'/poll-vote', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ optionIds: optionIds })
+    });
+    await loadNotifications();
+    if(mailboxDetailId && String(mailboxDetailId)===String(id)) refreshMailboxDetailUi();
+    if(currentView==='pushDetail' || currentView==='pushStats') render();
+    else refreshMailboxUi();
+  }catch(e){
+    alert2('投票失敗：'+(e.message||e));
+  }
+}
 function updatePushFinalReadGate(nid){
   const n = findMailboxItem(nid) || (notifications||[]).find(function(x){ return String(x.id)===String(nid); });
   const finalChk = document.getElementById('push-read-chk');
@@ -2482,6 +2590,94 @@ function collectPushSegmentsForPublish(){
   pushSyncSegmentsFromDom();
   return pushDraftSegments.map(function(s){ return String(s||'').trim(); }).filter(Boolean);
 }
+function resetPushDraftPoll(){
+  pushDraftPoll = { enabled: false, question: '', options: ['', ''], multiple: false };
+}
+function pushSyncPollFromDom(){
+  const q = document.getElementById('push-poll-question');
+  const multi = document.getElementById('push-poll-multiple');
+  const enable = document.getElementById('push-poll-enable');
+  const opts = document.querySelectorAll('.push-poll-opt-input');
+  if(enable) pushDraftPoll.enabled = !!enable.checked;
+  if(q) pushDraftPoll.question = String(q.value||'');
+  if(multi) pushDraftPoll.multiple = !!multi.checked;
+  if(opts.length){
+    pushDraftPoll.options = Array.from(opts).map(function(el){ return String(el.value||''); });
+  }
+  if(!Array.isArray(pushDraftPoll.options) || pushDraftPoll.options.length<2){
+    pushDraftPoll.options = (pushDraftPoll.options||[]).concat(['','']).slice(0, Math.max(2, (pushDraftPoll.options||[]).length));
+    while(pushDraftPoll.options.length<2) pushDraftPoll.options.push('');
+  }
+  return pushDraftPoll;
+}
+function pushPollOptionsEditorHtml(){
+  if(!Array.isArray(pushDraftPoll.options) || pushDraftPoll.options.length<2){
+    pushDraftPoll.options = ['', ''];
+  }
+  return pushDraftPoll.options.map(function(text, i){
+    return '<div class="push-poll-opt-row" style="display:flex;gap:8px;align-items:center;margin:6px 0">'
+      +'<span style="font-size:12px;color:#888;min-width:48px">選項 '+(i+1)+'</span>'
+      +'<input type="text" class="push-poll-opt-input" value="'+escHtml(text)+'" placeholder="輸入選項">'
+      +'<button type="button" class="btn red sm" data-call="pushRemovePollOption" data-arg0="'+i+'" '+(pushDraftPoll.options.length<=2?'disabled':'')+'>刪除</button>'
+      +'</div>';
+  }).join('')
+    +'<button type="button" class="btn sm" data-call="pushAddPollOption">＋ 新增選項</button>';
+}
+function pushPollEditorInnerHtml(){
+  return '<label>投票問題</label>'
+    +'<input type="text" id="push-poll-question" value="'+escHtml(pushDraftPoll.question||'')+'" placeholder="例如：本週例會你方便哪天？">'
+    +'<label>選項</label>'
+    +'<div id="push-poll-options">'+pushPollOptionsEditorHtml()+'</div>'
+    +'<label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;font-size:14px;color:#37474f"><input type="checkbox" id="push-poll-multiple" style="width:18px;height:18px"'+(pushDraftPoll.multiple?' checked':'')+'> 可選擇多個選項</label>'
+    +'<p style="font-size:12px;color:#888;margin:8px 0 0">至少兩個選項。發布後收件人可在通知內投票。</p>';
+}
+function pushRenderPollOptions(){
+  const host = document.getElementById('push-poll-options');
+  if(!host) return;
+  host.innerHTML = pushPollOptionsEditorHtml();
+}
+function onPushPollEnableChange(){
+  pushSyncPollFromDom();
+  const el = document.getElementById('push-poll-enable');
+  pushDraftPoll.enabled = !!(el && el.checked);
+  const wrap = document.getElementById('push-poll-wrap');
+  if(wrap) wrap.style.display = pushDraftPoll.enabled ? '' : 'none';
+}
+function pushAddPollOption(){
+  pushSyncPollFromDom();
+  if(pushDraftPoll.options.length>=20){
+    alert2('最多 20 個選項。');
+    return;
+  }
+  pushDraftPoll.options.push('');
+  pushRenderPollOptions();
+}
+function pushRemovePollOption(idx){
+  pushSyncPollFromDom();
+  const i = Number(idx);
+  if(!Number.isInteger(i) || i<0 || i>=pushDraftPoll.options.length) return;
+  if(pushDraftPoll.options.length<=2){
+    alert2('至少保留兩個選項。');
+    return;
+  }
+  pushDraftPoll.options.splice(i, 1);
+  pushRenderPollOptions();
+}
+function collectPushPollForPublish(){
+  pushSyncPollFromDom();
+  if(!pushDraftPoll.enabled) return { poll: null };
+  const question = String(pushDraftPoll.question||'').trim();
+  const options = (pushDraftPoll.options||[]).map(function(s){ return String(s||'').trim(); }).filter(Boolean);
+  if(!question) return { error: '請填寫投票問題。' };
+  if(options.length<2) return { error: '投票請至少填寫兩個選項。' };
+  return {
+    poll: {
+      question: question,
+      options: options,
+      multiple: !!pushDraftPoll.multiple
+    }
+  };
+}
 function confirmSendPush(){
   if(!requireCloud('推送通知')) return;
   const cat = (document.getElementById('push-cat')||{}).value || 'general';
@@ -2493,11 +2689,14 @@ function confirmSendPush(){
   const endDate = (document.getElementById('push-end')||{}).value || '';
   const resolved = resolvePushRecipients();
   const cta = readPushCtaFromForm();
+  const pollPack = collectPushPollForPublish();
   if(!title){ alert2('請填寫通知標題。'); return; }
+  if(pollPack.error){ alert2(pollPack.error); return; }
   if(!segments.length && !pushDraftFiles.length){ alert2('請至少填寫一段詳細內容，或添加 1 個附件。'); return; }
   if(!resolved.ids.length){ alert2('請至少選擇一位收件人。'); return; }
   if(!endDate){ alert2('請選擇完結日期。'); return; }
   const catName = (NOTICE_CAT_META[cat]||NOTICE_CAT_META.general).name;
+  const poll = pollPack.poll;
   showModal('<h3>確認發布</h3>'
     +'<p style="font-size:14px;line-height:1.7">類別：<b>'+escHtml(catName)+'</b>｜優先：<b>'+escHtml(priority)+'</b><br>'
     +'標題：<b>'+escHtml(title)+'</b><br>'
@@ -2505,6 +2704,9 @@ function confirmSendPush(){
     +'接收：'+escHtml(resolved.desc)+'（'+resolved.ids.length+' 人）<br>'
     +'生效：'+escHtml(startDate)+'｜完結：'+escHtml(endDate)+'<br>'
     +'前往：'+(cta?escHtml(noticeCtaLabel(cta)):'無')+'<br>'
+    +(poll
+      ? '投票：<b>'+escHtml(poll.question)+'</b>（'+poll.options.length+' 個選項，'+(poll.multiple?'可複選':'單選')+'）<br>'
+      : '投票：無<br>')
     +'附件：'+pushDraftFiles.length+' 個</p>'
     +'<div class="actions"><button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
     +'<button type="button" class="btn green sm" data-action="submit-push-publish">確定發布</button></div>');
@@ -2526,6 +2728,8 @@ async function sendPushNotification(){
   catch(_e){ return; }
   const category = (NOTICE_CAT_META[cat]||NOTICE_CAT_META.general).name;
   const cta = readPushCtaFromForm();
+  const pollPack = collectPushPollForPublish();
+  if(pollPack.error){ alert2(pollPack.error); return; }
   const payload = {
     cat, category, priority, title, summary,
     content: content || (attachments.length?'（見附件）':''),
@@ -2534,6 +2738,7 @@ async function sendPushNotification(){
     startDate, endDate, pinned: cat==='urgent' || priority==='緊急'
   };
   if(cta) payload.cta = cta;
+  if(pollPack.poll) payload.poll = pollPack.poll;
   try{
     const item = await apiFetch('/api/notifications', {
       method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
@@ -2541,6 +2746,7 @@ async function sendPushNotification(){
     await loadNotifications();
     pushDraftFiles = [];
     pushDraftSegments = [''];
+    resetPushDraftPoll();
     currentView = 'pushMine';
     render();
     const id = item && item.id ? item.id : '';
@@ -2594,6 +2800,10 @@ function vPushCreate(){
     +'<label>生效日期</label><input type="date" id="push-start" value="'+ymd+'">'
     +'<label>完結日期</label><input type="date" id="push-end" value="'+endYmd+'">'
     +pushCtaSelectHtml()
+    +'<label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer;font-size:14px;color:#37474f"><input type="checkbox" id="push-poll-enable" style="width:18px;height:18px"'+(pushDraftPoll.enabled?' checked':'')+' onchange="onPushPollEnableChange()"> 加入投票</label>'
+    +'<div id="push-poll-wrap" style="'+(pushDraftPoll.enabled?'':'display:none;')+'margin-top:8px;padding:12px;background:#f8f6fb;border:1px solid #e0d6ee;border-radius:8px">'
+    +pushPollEditorInnerHtml()
+    +'</div>'
     +'<label>附件</label><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0">'
     +'<button type="button" class="btn green sm" onclick="document.getElementById(\'push-files\').click()">📎 添加附件</button>'
     +'<span style="font-size:12px;color:#888">可多次添加、可刪除；數量不限</span></div>'

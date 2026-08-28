@@ -1448,6 +1448,88 @@ function normalizeContentSegmentsInput(input, fallbackContent) {
   return c ? [c] : [];
 }
 
+const POLL_OPTION_ID_RE = /^[a-zA-Z0-9_-]{1,20}$/;
+
+function pollOptionIdAt(i) {
+  return 'o' + String(i + 1);
+}
+
+/** 通知投票：問題 + 至少兩個選項；votes 為 userId → optionId[] */
+export function normalizeNoticePoll(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const question = String(raw.question || '').trim().slice(0, 200);
+  const src = Array.isArray(raw.options) ? raw.options : [];
+  const options = [];
+  const seenIds = new Set();
+  for (const opt of src) {
+    if (options.length >= 20) break;
+    let text = '';
+    let id = '';
+    if (typeof opt === 'string') {
+      text = opt.trim().slice(0, 80);
+    } else if (opt && typeof opt === 'object') {
+      text = String(opt.text || opt.label || '').trim().slice(0, 80);
+      id = String(opt.id || '').trim();
+    }
+    if (!text) continue;
+    if (!id || !POLL_OPTION_ID_RE.test(id) || seenIds.has(id)) {
+      id = pollOptionIdAt(options.length);
+      while (seenIds.has(id)) id = pollOptionIdAt(options.length + seenIds.size);
+    }
+    seenIds.add(id);
+    options.push({ id, text });
+  }
+  if (!question || options.length < 2) return null;
+  const validIds = new Set(options.map((o) => o.id));
+  const multiple = !!raw.multiple;
+  const votes = {};
+  if (raw.votes && typeof raw.votes === 'object' && !Array.isArray(raw.votes)) {
+    for (const [uid, ids] of Object.entries(raw.votes)) {
+      const key = String(uid || '').trim();
+      if (!key) continue;
+      const picked = [...new Set((Array.isArray(ids) ? ids : [ids]).map(String).filter((oid) => validIds.has(oid)))];
+      const next = multiple ? picked : picked.slice(0, 1);
+      if (next.length) votes[key] = next;
+    }
+  }
+  return { question, options, multiple, votes };
+}
+
+function filterPollForViewer(n, viewerId, full) {
+  const poll = normalizeNoticePoll(n?.poll);
+  if (!poll) return null;
+  const vid = String(viewerId || '');
+  const votes = poll.votes || {};
+  const myOptionIds = Array.isArray(votes[vid]) ? votes[vid].slice() : [];
+  const counts = poll.options.map((o) => {
+    let c = 0;
+    for (const ids of Object.values(votes)) {
+      if (Array.isArray(ids) && ids.includes(o.id)) c += 1;
+    }
+    return c;
+  });
+  const totalVoters = Object.values(votes).filter((ids) => Array.isArray(ids) && ids.length).length;
+  const ended = n.status && n.status !== '進行中';
+  const out = {
+    question: poll.question,
+    options: poll.options.map((o) => ({ id: o.id, text: o.text })),
+    multiple: !!poll.multiple,
+    myOptionIds,
+    voted: myOptionIds.length > 0,
+  };
+  if (full || out.voted || ended) {
+    out.counts = counts;
+    out.totalVoters = totalVoters;
+  }
+  if (full) {
+    out.voteRoster = poll.options.map((o) => ({
+      id: o.id,
+      userIds: Object.keys(votes).filter((uid) => (votes[uid] || []).includes(o.id)),
+    }));
+  }
+  return out;
+}
+
 function ensureReaderSegmentTicks(reader, segmentCount) {
   const prev = Array.isArray(reader?.segmentTicks) ? reader.segmentTicks.slice() : [];
   const ticks = [];
@@ -1484,6 +1566,9 @@ export function normalizeNotification(raw) {
   n.cta = normalizeNoticeCta(n.cta);
   n.systemSource = !!n.systemSource;
   n.attachments = Array.isArray(n.attachments) ? n.attachments : [];
+  const poll = normalizeNoticePoll(n.poll);
+  if (poll) n.poll = poll;
+  else delete n.poll;
   if (!n.status) n.status = '進行中';
   const ids = recipientIdsOf(n);
   if (!n.readers || typeof n.readers !== 'object') n.readers = {};
@@ -1584,9 +1669,10 @@ export function filterNotificationForViewer(item, viewerId) {
   const isRecip = ids.includes(vid);
   const isAdmin = false; // admin still needs membership; elevated views handled by caller with full list if needed
   if (!isSender && !isRecip && !isAdmin) return null;
-  const { recipients: _r, readers: _readers, ...rest } = n;
+  const { recipients: _r, readers: _readers, poll: _poll, ...rest } = n;
   return {
     ...rest,
+    poll: filterPollForViewer(n, vid, isSender),
     readers: isSender ? n.readers : { [vid]: n.readers?.[vid] || { status: 'unopen' } },
     recipients: viewerReaderSlice(n, vid, isSender),
   };
@@ -1608,9 +1694,10 @@ export function filterNotificationForViewerWithRole(item, user) {
   }
   if (!isSender && !isRecip && !isMgr) return null;
   const full = isSender || isMgr;
-  const { recipients: _r, ...rest } = n;
+  const { recipients: _r, poll: _poll, ...rest } = n;
   return {
     ...rest,
+    poll: filterPollForViewer(n, vid, full),
     readers: full ? n.readers : { [vid]: n.readers?.[vid] || { status: 'unopen' } },
     recipients: viewerReaderSlice(n, vid, full),
   };
@@ -1716,6 +1803,18 @@ export async function createNotification(input) {
       },
     ],
   });
+  const wantsPoll = !!(input?.poll && (input.poll.question || input.poll.options));
+  if (wantsPoll) {
+    const poll = normalizeNoticePoll(input.poll);
+    if (!poll) throw new Error('投票須填寫問題，並至少兩個選項');
+    item.poll = {
+      question: poll.question,
+      options: poll.options,
+      multiple: poll.multiple,
+      votes: {},
+    };
+    item.logs[0].detail += `｜投票：${poll.question}（${poll.options.length} 項${poll.multiple ? '，可複選' : ''}）`;
+  }
   if (input?.actionType) item.actionType = String(input.actionType);
   if (input?.transferId) item.transferId = String(input.transferId);
   if (input?.transferResolved != null) item.transferResolved = !!input.transferResolved;
@@ -1837,6 +1936,46 @@ export async function tickNotificationSegment(id, user, { index, checked } = {})
     segmentTicks: ticks,
   };
   syncRecipientReadFlags(item);
+  await saveNotificationsState(state);
+  return item;
+}
+
+export async function voteNotificationPoll(id, user, { optionIds } = {}) {
+  const me = publicUser(user);
+  const uid = String(me?.id || '');
+  if (!uid) throw new Error('未登入');
+  await connectMongo();
+  const state = await getNotificationsState();
+  const { item } = findNoticeInState(state, id);
+  if (!item) throw new Error('Notification not found');
+  const poll = normalizeNoticePoll(item.poll);
+  if (!poll) throw new Error('此通知沒有投票');
+  if (item.status !== '進行中') throw new Error('此通知已完結，無法再投票');
+  if (!recipientIdsOf(item).includes(uid)) throw new Error('僅收件人可投票');
+  const valid = new Set(poll.options.map((o) => o.id));
+  const picked = [
+    ...new Set((Array.isArray(optionIds) ? optionIds : []).map(String).filter((oid) => valid.has(oid))),
+  ];
+  if (!picked.length) throw new Error('請至少選擇一個選項');
+  if (!poll.multiple && picked.length !== 1) throw new Error('此投票只能選擇一個選項');
+  const time = formatHkDateTime(new Date());
+  const prev = poll.votes[uid] || [];
+  poll.votes[uid] = picked;
+  item.poll = poll;
+  const labels = poll.options
+    .filter((o) => picked.includes(o.id))
+    .map((o) => o.text)
+    .join('、');
+  item.logs = [
+    {
+      time,
+      user: String(me.name || me.login || uid),
+      userId: uid,
+      action: prev.length ? '更改投票' : '投票',
+      detail: `${item.title || item.id}｜${poll.question}｜${labels}`,
+    },
+    ...(item.logs || []),
+  ];
   await saveNotificationsState(state);
   return item;
 }

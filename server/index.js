@@ -18,6 +18,7 @@ import {
   openNotification,
   confirmNotificationRead,
   tickNotificationSegment,
+  voteNotificationPoll,
   endNotification,
   toggleNotificationPin,
   filterNotificationForViewerWithRole,
@@ -1196,6 +1197,19 @@ app.post('/api/notifications/:id/segment-tick', requireAuth, async (req, res) =>
     const item = await tickNotificationSegment(req.params.id, req.user, {
       index: req.body?.index,
       checked: req.body?.checked,
+    });
+    res.json(filterNotificationForViewerWithRole(item, req.user) || item);
+  } catch (e) {
+    console.error(e);
+    const msg = String(e.message || e);
+    res.status(msg === 'Notification not found' ? 404 : 400).json({ error: msg });
+  }
+});
+
+app.post('/api/notifications/:id/poll-vote', requireAuth, async (req, res) => {
+  try {
+    const item = await voteNotificationPoll(req.params.id, req.user, {
+      optionIds: req.body?.optionIds,
     });
     res.json(filterNotificationForViewerWithRole(item, req.user) || item);
   } catch (e) {
