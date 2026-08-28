@@ -3013,24 +3013,24 @@ function refreshTransferProductSkuPreview(){
   const id = ((document.getElementById('tp-id')||{}).value||'').trim();
   const color = ((document.getElementById('tp-color')||{}).value||'').trim();
   const sizes = getTransferProductFormSizes();
-  const skus = buildTransferSkusMapFe(id, color, sizes);
+  const previewSizes = sizes.length ? sizes : ['均碼'];
+  const skus = buildTransferSkusMapFe(id, color, previewSizes);
   const preview = document.getElementById('tp-sku-preview');
-  const hidden = document.getElementById('tp-sku');
-  const first = sizes.length ? skus[sizes[0]] : '';
-  if(hidden) hidden.value = first || '';
+  const skuInput = document.getElementById('tp-sku');
+  const first = id ? (skus[previewSizes[0]] || Object.values(skus)[0] || '') : '';
+  if(skuInput) skuInput.value = first || '';
   ensureAutoTransferUpc();
   if(!preview) return;
   if(!id){
-    preview.innerHTML = '<span style="color:#90a4ae">請先填寫型號</span>';
-    return;
-  }
-  if(!sizes.length){
-    preview.innerHTML = '<span style="color:#90a4ae">請選擇至少 1 個尺碼後自動生成</span>';
+    preview.style.display = 'none';
+    preview.innerHTML = '';
     return;
   }
   const colorHint = color ? (transferColorAbbrFe(color)+'＝'+escHtml(color)) : '未選顏色→NA';
-  preview.innerHTML = '<div style="font-size:11px;color:#78909c;margin:0 0 6px">'+colorHint+' · 主 SKU＝首個尺碼</div>'
-    +sizes.map(function(sz, idx){
+  const sizeHint = sizes.length ? '主 SKU＝首個尺碼' : '尚未選尺碼，暫以均碼 OS 預顯示';
+  preview.style.display = '';
+  preview.innerHTML = '<div style="font-size:11px;color:#78909c;margin:0 0 6px">'+colorHint+' · '+sizeHint+'</div>'
+    +previewSizes.map(function(sz, idx){
       const mark = idx===0 ? ' <span style="color:#546e7a;font-size:11px">(主)</span>' : '';
       return '<div><b>'+escHtml(sz)+'</b>'+mark+' → <code style="font-size:13px">'+escHtml(skus[sz]||'')+'</code></div>';
     }).join('');
@@ -3378,9 +3378,9 @@ function transferProductAttrFieldsHtml(p){
     +transferOptionFieldLabelHtml('品牌', 'brand')
     +transferBrandSelectHtml(val('brand'))
     +'<label>SKU（自動生成）</label>'
-    +'<input type="hidden" id="tp-sku" value="'+escHtml(val('sku'))+'">'
-    +'<div id="tp-sku-preview" style="border:1px solid #e0e0e0;border-radius:8px;background:#fafafa;padding:10px 12px;font-size:13px;line-height:1.55;min-height:42px;color:#37474f">—</div>'
-    +'<p style="font-size:12px;color:#888;margin:4px 0 0">格式：型號＋顏色縮寫＋尺碼縮寫；主 SKU 取首個尺碼（例如粉色 PK、黑色 BK；均碼 OS）</p>'
+    +'<input type="text" id="tp-sku" value="'+escHtml(val('sku'))+'" readonly placeholder="填寫型號後自動顯示" style="background:#fafafa;color:#37474f">'
+    +'<div id="tp-sku-preview" style="border:1px solid #e0e0e0;border-radius:8px;background:#fafafa;padding:10px 12px;font-size:13px;line-height:1.55;min-height:0;margin-top:8px;color:#37474f"></div>'
+    +'<p style="font-size:12px;color:#888;margin:4px 0 0">格式：型號＋顏色縮寫＋尺碼縮寫（未選顏色為 NA、未選尺碼先以均碼 OS 預顯示；主 SKU 取首個尺碼）</p>'
     +'<label>UPC（自動生成，可修改）</label>'
     +'<input type="text" id="tp-upc" value="'+escHtml(val('upc'))+'" placeholder="自動產生條碼，可手動修改" oninput="markTransferUpcManual()">'
     +'<p style="font-size:12px;color:#888;margin:4px 0 0">系統自動產生店內條碼；手動改過後不會覆蓋（清空後會重新產生）。</p>'
