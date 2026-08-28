@@ -15,7 +15,7 @@ import {
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { apiJson } from '@/lib/api'
+import { apiJson, fileUrl } from '@/lib/api'
 import { formatHKD } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { PosCartLine, PosMember, PosProduct, PointsSettings } from '@/lib/types'
@@ -52,6 +52,54 @@ function stockOf(p: PosProduct, store: string) {
   return Number(p.stock?.[store] || 0)
 }
 
+type PosProductGroup = {
+  id: string
+  name: string
+  color: string
+  brand: string
+  category: string
+  imageUrl?: string
+  imageFileId?: string
+  items: PosProduct[]
+}
+
+function productGroupId(p: PosProduct) {
+  return String(p.transferProductId || p.name || p.id)
+}
+
+function groupPosProducts(products: PosProduct[]): PosProductGroup[] {
+  const map = new Map<string, PosProductGroup>()
+  for (const product of products) {
+    if (product.active === false) continue
+    const id = productGroupId(product)
+    const current = map.get(id) || {
+      id,
+      name: product.name,
+      color: product.color || '',
+      brand: product.brand || '',
+      category: product.category || '',
+      imageUrl: product.imageUrl || '',
+      imageFileId: product.imageFileId || '',
+      items: [],
+    }
+    current.items.push(product)
+    if (!current.imageFileId && product.imageFileId) current.imageFileId = product.imageFileId
+    if (!current.imageUrl && product.imageUrl) current.imageUrl = product.imageUrl
+    if (!current.color && product.color) current.color = product.color
+    if (!current.brand && product.brand) current.brand = product.brand
+    map.set(id, current)
+  }
+  return Array.from(map.values()).map((group) => {
+    group.items.sort((a, b) => String(a.size || '').localeCompare(String(b.size || ''), 'zh-Hant'))
+    return group
+  })
+}
+
+function groupThumbSrc(group: { imageFileId?: string; imageUrl?: string }) {
+  if (group.imageFileId) return fileUrl(group.imageFileId)
+  return group.imageUrl || ''
+}
+
 export function PosPage() {
   const navigate = useNavigate()
   const barcodeRef = useRef<HTMLInputElement>(null)
@@ -73,6 +121,7 @@ export function PosPage() {
   const [pointsToRedeem, setPointsToRedeem] = useState(0)
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const [remark, setRemark] = useState('')
+  const [skuPickGroup, setSkuPickGroup] = useState<PosProductGroup | null>(null)
   const [showPayDialog, setShowPayDialog] = useState(false)
   const [cashReceived, setCashReceived] = useState('')
   const [checkingOut, setCheckingOut] = useState(false)
@@ -150,20 +199,27 @@ export function PosPage() {
     void loadDrafts(store)
   }, [store, loadDrafts])
 
-  const filtered = useMemo(() => {
+  const grouped = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
-    return products.filter((p) => {
-      if (p.active === false) return false
-      if (!q) return true
-      return (
-        p.name.toLowerCase().includes(q) ||
-        String(p.sku).toLowerCase().includes(q) ||
-        String(p.size).toLowerCase().includes(q) ||
-        String(p.transferProductId || '')
-          .toLowerCase()
-          .includes(q)
-      )
-    })
+    const active = products.filter((p) => p.active !== false)
+    const matchedIds = new Set(
+      active
+        .filter((p) => {
+          if (!q) return true
+          return (
+            p.name.toLowerCase().includes(q) ||
+            String(p.sku).toLowerCase().includes(q) ||
+            String(p.size).toLowerCase().includes(q) ||
+            String(p.color || '').toLowerCase().includes(q) ||
+            String(p.brand || '').toLowerCase().includes(q) ||
+            String(p.transferProductId || '')
+              .toLowerCase()
+              .includes(q)
+          )
+        })
+        .map(productGroupId),
+    )
+    return groupPosProducts(active.filter((p) => matchedIds.has(productGroupId(p))))
   }, [products, searchQuery])
 
   const subtotal = useMemo(
@@ -184,19 +240,18 @@ export function PosPage() {
   const addProduct = (p: PosProduct, qty = 1) => {
     if (!store) {
       toast.error('請先選擇店舖')
-      return
+      return false
     }
     const avail = stockOf(p, store)
+    const existing = cart.find((x) => x.productId === p.id)
+    const nextQty = (existing?.qty || 0) + qty
+    if (nextQty > avail) {
+      toast.error(`庫存不足，${store}僅剩 ${avail}`)
+      return false
+    }
     setCart((prev) => {
-      const existing = prev.find((x) => x.productId === p.id)
-      const nextQty = (existing?.qty || 0) + qty
-      if (nextQty > avail) {
-        toast.error(`庫存不足，${store}僅剩 ${avail}`)
-        return prev
-      }
-      if (existing) {
-        return prev.map((x) => (x.productId === p.id ? { ...x, qty: nextQty } : x))
-      }
+      const hit = prev.find((x) => x.productId === p.id)
+      if (hit) return prev.map((x) => (x.productId === p.id ? { ...x, qty: nextQty } : x))
       return [
         ...prev,
         {
@@ -209,6 +264,7 @@ export function PosPage() {
         },
       ]
     })
+    return true
   }
 
   const handleBarcode = (e: React.FormEvent) => {
@@ -220,8 +276,7 @@ export function PosPage() {
       products.find((p) => String(p.sku).toLowerCase().includes(code.toLowerCase()))
     if (!hit || hit.active === false) {
       toast.error('找不到商品，請檢查條碼／SKU')
-    } else {
-      addProduct(hit)
+    } else if (addProduct(hit)) {
       toast.success(`已加入：${hit.name} ${hit.size}`)
     }
     setBarcodeInput('')
@@ -514,29 +569,35 @@ export function PosPage() {
         </div>
         <div className="flex-1 overflow-y-auto p-3">
           <div className="grid grid-cols-2 gap-2">
-            {filtered.map((p) => {
-              const avail = stockOf(p, store)
+            {grouped.map((group) => {
+              const avail = group.items.reduce((sum, item) => sum + stockOf(item, store), 0)
+              const thumb = groupThumbSrc(group)
+              const prices = group.items.map((item) => Number(item.price) || 0)
+              const minPrice = prices.length ? Math.min(...prices) : 0
+              const maxPrice = prices.length ? Math.max(...prices) : 0
+              const priceLabel = minPrice === maxPrice ? formatHKD(minPrice) : `${formatHKD(minPrice)}起`
               return (
                 <button
-                  key={p.id}
+                  key={group.id}
                   type="button"
                   disabled={avail <= 0}
-                  onClick={() => {
-                    addProduct(p)
-                    toast.success(`已加入：${p.name}`)
-                  }}
+                  onClick={() => setSkuPickGroup(group)}
                   className={cn(
                     'group flex flex-col overflow-hidden rounded-md border border-slate-200 bg-white text-left transition-colors hover:border-sky-400',
                     avail <= 0 && 'cursor-not-allowed opacity-50',
                   )}
                 >
-                  <div className="flex aspect-[4/3] items-center justify-center bg-slate-100 text-xs text-slate-400">
-                    {p.size}
+                  <div className="flex aspect-[4/3] items-center justify-center overflow-hidden bg-slate-100 text-xs text-slate-400">
+                    {thumb ? (
+                      <img src={thumb} alt="" className="h-full w-full object-contain" />
+                    ) : (
+                      <span>{group.items.length} 個 SKU</span>
+                    )}
                   </div>
                   <div className="space-y-1 p-2">
-                    <p className="line-clamp-2 h-8 text-xs leading-tight font-medium">{p.name}</p>
+                    <p className="line-clamp-2 h-8 text-xs leading-tight font-medium">{group.name}</p>
                     <div className="flex items-center justify-between gap-1">
-                      <span className="text-sm font-bold text-sky-700">{formatHKD(p.price)}</span>
+                      <span className="text-sm font-bold text-sky-700">{priceLabel}</span>
                       <span
                         className={cn(
                           'text-[10px] tabular-nums',
@@ -546,13 +607,15 @@ export function PosPage() {
                         庫存 {avail}
                       </span>
                     </div>
-                    <p className="truncate text-[10px] text-slate-400">{p.sku}</p>
+                    <p className="truncate text-[10px] text-slate-400">
+                      {group.color || '—'} · {group.items.length} 個選項
+                    </p>
                   </div>
                 </button>
               )
             })}
           </div>
-          {!filtered.length && (
+          {!grouped.length && (
             <div className="py-12 text-center text-sm text-slate-500">找不到符合的商品</div>
           )}
         </div>
@@ -589,7 +652,7 @@ export function PosPage() {
             <div className="flex h-full flex-col items-center justify-center text-slate-400">
               <ShoppingCart className="mb-3 size-16 opacity-20" />
               <p className="text-sm">購物車為空</p>
-              <p className="text-xs">掃描條碼或點擊商品加入</p>
+              <p className="text-xs">掃描條碼，或點擊商品後選擇 SKU 加入</p>
             </div>
           ) : (
             <div className="divide-y divide-slate-100">
@@ -779,6 +842,64 @@ export function PosPage() {
           )}
         </div>
       </div>
+
+      {/* SKU picker */}
+      {skuPickGroup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-4 shadow-xl">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="font-semibold">{skuPickGroup.name}</h3>
+                <p className="mt-1 text-xs text-slate-500">
+                  {[skuPickGroup.brand, skuPickGroup.color, skuPickGroup.category].filter(Boolean).join(' · ') || '選擇 SKU 加入購物清單'}
+                </p>
+              </div>
+              <button type="button" onClick={() => setSkuPickGroup(null)}>
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="max-h-[60vh] space-y-2 overflow-y-auto">
+              {skuPickGroup.items.map((item) => {
+                const avail = stockOf(item, store)
+                const inCart = cart.find((line) => line.productId === item.id)?.qty || 0
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    disabled={avail <= 0}
+                    onClick={() => {
+                      if (!addProduct(item)) return
+                      toast.success(`已加入：${item.name} ${item.size}`)
+                      setSkuPickGroup(null)
+                    }}
+                    className={cn(
+                      'flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 px-3 py-3 text-left hover:border-sky-400 hover:bg-sky-50',
+                      avail <= 0 && 'cursor-not-allowed opacity-50 hover:border-slate-200 hover:bg-white',
+                    )}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">
+                        {item.size || '均碼'}
+                        <span className="ml-2 font-mono text-xs text-slate-500">{item.sku}</span>
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {store}庫存 {avail}
+                        {inCart ? ` · 購物車 ${inCart}` : ''}
+                      </p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <p className="text-sm font-semibold text-sky-700">{formatHKD(Number(item.price) || 0)}</p>
+                      <p className={cn('text-[11px]', avail <= 0 ? 'text-red-600' : 'text-slate-400')}>
+                        {avail <= 0 ? '缺貨' : '點擊加入'}
+                      </p>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Member dialog */}
       {showMemberDialog && (

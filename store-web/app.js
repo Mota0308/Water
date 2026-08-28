@@ -4292,8 +4292,8 @@ function vTransferProducts(){
   const catOpts = ['全部'].concat(cats).map(function(c){
     return '<option value="'+escHtml(c)+'"'+(transferInvCat===c?' selected':'')+'>'+escHtml(c)+'</option>';
   }).join('');
-  const colSpan = 12;
-  const head = '<tr><th style="width:56px">圖片</th><th>品牌</th><th>型號</th><th>商品名</th><th>產品分類</th><th>商品選項</th><th>原價</th><th>剔剔積分</th><th>顏色</th><th>安全存量</th><th>總庫存</th><th></th></tr>';
+  const colSpan = 13;
+  const head = '<tr><th style="width:56px">圖片</th><th>品牌</th><th>型號</th><th>商品名</th><th>產品分類</th><th>商品選項</th><th>原價</th><th>優惠價</th><th>剔剔積分</th><th>顏色</th><th>安全存量</th><th>總庫存</th><th></th></tr>';
   const body = !products.length
     ? '<tr><td colspan="'+colSpan+'" style="color:#888;text-align:center">'+((transferProductsCache||[]).length?'沒有符合條件的商品。':'尚未有產品，請按「新增產品」。')+'</td></tr>'
     : products.map(function(p){
@@ -4309,6 +4309,7 @@ function vTransferProducts(){
         +'<td>'+escHtml(p.category||'')+'</td>'
         +'<td>'+escHtml(sizes)+'</td>'
         +'<td>'+escHtml(transferProductTableVal(p.priceOriginal))+'</td>'
+        +'<td>'+escHtml(transferProductTableVal(p.priceSale))+'</td>'
         +'<td>'+escHtml(transferProductTableVal(p.tickiePoints))+'</td>'
         +'<td>'+escHtml(p.color||'—')+'</td>'
         +'<td>'+escHtml(String(p.safetyStock!=null?p.safetyStock:0))+'</td>'
