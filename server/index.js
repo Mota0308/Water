@@ -123,9 +123,14 @@ loadEnvFile(path.join(root, '.env'));
 loadEnvFile(path.join(__dirname, '.env'));
 
 const port = Number(process.env.PORT || 8080);
+const maxUploadMb = Number(process.env.MAX_UPLOAD_MB);
+const uploadLimits =
+  Number.isFinite(maxUploadMb) && maxUploadMb > 0
+    ? { fileSize: maxUploadMb * 1024 * 1024 }
+    : undefined;
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: Number(process.env.MAX_UPLOAD_MB || 15) * 1024 * 1024 },
+  ...(uploadLimits ? { limits: uploadLimits } : {}),
 });
 
 function driveFolderConfigured() {

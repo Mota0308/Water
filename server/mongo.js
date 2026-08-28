@@ -135,7 +135,11 @@ export async function getTransferProductOptions() {
   const brands = normalizeOptionList(doc?.brands, []);
   const colors = normalizeOptionList(doc?.colors, []);
   const sizeOptions = normalizeOptionList(doc?.sizeOptions, DEFAULT_TRANSFER_SIZE_OPTIONS);
-  const categories = normalizeOptionList(doc?.categories, TRANSFER_CATEGORIES);
+  const storedCategories = normalizeOptionList(doc?.categories, []);
+  const categories = normalizeOptionList(
+    [...TRANSFER_CATEGORIES, ...storedCategories],
+    TRANSFER_CATEGORIES
+  );
   const usedBrands = await transferProductsCol()
     .distinct('brand', { brand: { $exists: true, $nin: [null, ''] } })
     .catch(() => []);
@@ -334,6 +338,48 @@ async function nextTransferOrderId() {
 /** 貨品調動：四間港店（與員工地區同名，無「店」字） */
 export const TRANSFER_STORES = ['觀塘', '荔枝角', '灣仔', '屯門'];
 export const TRANSFER_CATEGORIES = [
+  '男士及膝泳褲',
+  '男士平腳泳褲',
+  '男士三角泳褲',
+  '男士沙灘褲',
+  '女士比基尼｜坦基尼',
+  '女士連體泳衣',
+  '女士有袖泳衣',
+  '女士泳褲',
+  '成人防曬泳裝',
+  '成人抓毛保暖泳裝',
+  '成人潛水料防寒膠衣',
+  '成人競賽泳裝',
+  '男童泳褲',
+  '女童泳衣',
+  '兒童防曬泳裝',
+  '兒童抓毛保暖泳裝',
+  '兒童潛水料防寒膠衣',
+  '兒童競賽泳裝',
+  '上水褸',
+  '嬰幼兒尿片褲',
+  '嬰兒保暖泳裝',
+  '嬰兒非充氣浮力泳圈',
+  '兒童泳鏡 (0-6歲)',
+  '中童泳鏡 (6-14歲)',
+  '成人泳鏡',
+  '近視泳鏡',
+  '中童競賽訓練泳鏡',
+  '成人競賽訓練泳鏡',
+  '兒童泳帽',
+  '成人泳帽',
+  '防曬帽子',
+  '防水袋｜防水背囊',
+  '手機防水套',
+  '吸水毛巾｜速乾巾',
+  '洗髮水｜沐浴乳｜防曬乳',
+  '充氣浮力用品',
+  '輔助泳具',
+  '戲水玩具',
+  '鞋類',
+  '其他配件',
+  '兒童潛水裝備',
+  '成人潛水裝備',
   '成人保暖衣',
   '兒童保暖衣',
   '成人抓毛',
