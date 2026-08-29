@@ -433,6 +433,8 @@ function persistProjects(){
 }
 async function persistProjectsNow(){
   if(!apiEnabled) return;
+  // 空列表不得整包覆寫雲端，否則登入 flush／載入失敗會清掉所有項目
+  if(!(projects||[]).length) return;
   await apiFetch('/api/projects', {
     method:'PUT',
     headers:{'Content-Type':'application/json'},
@@ -5477,7 +5479,8 @@ async function doLogin(){
     await loadCloudAppData();
     err.style.display='none'; err.style.color='';
     enterAppAs(result.user);
-    try{ await flushCloudSaves(); }catch(e){ noteCloudError(e); }
+    // 登入後不再整包回寫項目：載入失敗時的空列表 PUT 曾清掉全部項目
+    try{ await persistDailyNow(); }catch(e){ noteCloudError(e); }
   }catch(e){
     clearAuthToken();
     err.style.color='#c62828';

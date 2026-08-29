@@ -403,7 +403,9 @@ async function listDocsFromCol(col) {
 
 async function replaceProjectCollection(col, list, forceType) {
   const items = (Array.isArray(list) ? list : []).filter((p) => p && p.id);
-  const keepIds = new Set(items.map((p) => String(p.id)));
+  // 只 upsert，永不依「沒出現在這次 payload」刪除。
+  // 空列表／載入失敗後的整包 PUT 曾把所有項目清掉；關閉項目改走暫停／取消／封存。
+  if (!items.length) return;
   for (const p of items) {
     const id = String(p.id);
     const { users: _u, _id, ...rest } = p;
@@ -417,9 +419,6 @@ async function replaceProjectCollection(col, list, forceType) {
     if (forceType) doc.type = forceType;
     await col.replaceOne({ _id: id }, doc, { upsert: true });
   }
-  const existing = await col.find({ _id: { $ne: 'main' } }).project({ _id: 1 }).toArray();
-  const toDelete = existing.map((d) => d._id).filter((id) => !keepIds.has(String(id)));
-  if (toDelete.length) await col.deleteMany({ _id: { $in: toDelete } });
   await col.deleteOne({ _id: 'main' });
 }
 
@@ -1330,22 +1329,51 @@ export async function saveProjectsState(data) {
     productionProjects = data.projects.filter((p) => p && p.type !== 'rep');
   }
 
-  await replaceProjectCollection(projectsCol(), productionProjects, 'dev');
-  await replaceProjectCollection(replenishmentProjectsCol(), replenishmentProjects, 'rep');
+  // 拒絕用空陣列覆蓋現有項目（登入／登出 flush 若載入失敗會把整庫清掉）
+  const existingProdCount = await projectsCol().countDocuments({ _id: { $ne: 'main' } });
+  const existingRepCount = await replenishmentProjectsCol().countDocuments({ _id: { $ne: 'main' } });
+  const skipEmptyProd = productionProjects.length === 0 && existingProdCount > 0;
+  const skipEmptyRep = replenishmentProjects.length === 0 && existingRepCount > 0;
+  if (skipEmptyProd) {
+    console.warn('[projects] refused empty production overwrite; keeping', existingProdCount, 'docs');
+  } else {
+    await replaceProjectCollection(projectsCol(), productionProjects, 'dev');
+  }
+  if (skipEmptyRep) {
+    console.warn('[projects] refused empty replenishment overwrite; keeping', existingRepCount, 'docs');
+  } else {
+    await replaceProjectCollection(replenishmentProjectsCol(), replenishmentProjects, 'rep');
+  }
 
-  const projSeq = typeof data?.projSeq === 'number' ? data.projSeq : 1;
-  const repProjSeq = typeof data?.repProjSeq === 'number' ? data.repProjSeq : 1;
-  await metaCol().updateOne(
-    { _id: 'projects' },
-    {
-      $set: { projSeq, repProjSeq, updatedAt: new Date() },
-      $unset: { moduleLogs: '' },
-    },
-    { upsert: true }
-  );
+  // 任一邊因空列表被拒時，不要把流水號重設成 1
+  if (!(skipEmptyProd || skipEmptyRep)) {
+    const projSeq = typeof data?.projSeq === 'number' ? data.projSeq : 1;
+    const repProjSeq = typeof data?.repProjSeq === 'number' ? data.repProjSeq : 1;
+    await metaCol().updateOne(
+      { _id: 'projects' },
+      {
+        $set: { projSeq, repProjSeq, updatedAt: new Date() },
+        $unset: { moduleLogs: '' },
+      },
+      { upsert: true }
+    );
+  }
 
   if (data?.moduleLogs && typeof data.moduleLogs === 'object') {
-    await replaceModuleLogsFromBlob(data.moduleLogs);
+    const incomingEmpty = MODULE_LOG_KEYS.every((mod) => {
+      const arr = data.moduleLogs[mod];
+      return !Array.isArray(arr) || arr.length === 0;
+    });
+    if (incomingEmpty) {
+      const existingLogCount = await moduleLogsCol().countDocuments({});
+      if (existingLogCount > 0) {
+        console.warn('[projects] refused empty moduleLogs overwrite; keeping', existingLogCount, 'docs');
+      } else {
+        await replaceModuleLogsFromBlob(data.moduleLogs);
+      }
+    } else {
+      await replaceModuleLogsFromBlob(data.moduleLogs);
+    }
   }
   return { ok: true };
 }
