@@ -182,6 +182,7 @@ function mkStage(name, handlerOrHandlers, status, opts={}){
   };
 }
 let projects = [];
+let projectsHydrated = false;
 let projSeq = 1;
 let repProjSeq = 1;
 let moduleLogs = { daily: [], production: [], replenishment: [], push: [] };
@@ -433,7 +434,8 @@ function persistProjects(){
 }
 async function persistProjectsNow(){
   if(!apiEnabled) return;
-  // 空列表不得整包覆寫雲端，否則登入 flush／載入失敗會清掉所有項目
+  // 尚未從雲端載入完成、或記憶體是空列表時，不得 PUT（登入／切頁／pagehide 曾因此把整庫清掉）
+  if(!projectsHydrated) return;
   if(!(projects||[]).length) return;
   await apiFetch('/api/projects', {
     method:'PUT',
@@ -580,13 +582,19 @@ async function loadCloudAppData(){
   }
 
   const ps = await apiFetch('/api/projects');
+  let incoming = [];
   if(Array.isArray(ps.productionProjects) || Array.isArray(ps.replenishmentProjects)){
-    projects = [].concat(ps.productionProjects||[], ps.replenishmentProjects||[]);
-  } else if(Array.isArray(ps.projects)){
-    projects = ps.projects;
-  } else {
-    projects = [];
+    incoming = [].concat(ps.productionProjects||[], ps.replenishmentProjects||[]);
   }
+  // 拆欄位若為空陣列，仍要讀舊版混陣列，避免把真實項目當成「沒有資料」
+  if(!incoming.length && Array.isArray(ps.projects) && ps.projects.length){
+    incoming = ps.projects;
+  }
+  // 已載入過的列表，不要被一次空的 GET 蓋掉（畫面會空、接著 flush 曾清雲端）
+  if(incoming.length || !projectsHydrated){
+    projects = incoming;
+  }
+  projectsHydrated = true;
   // 正規化階段經手人：舊 handler 單值 → handlers[]
   projects.forEach(function(p){
     if(!p) return;
@@ -5428,9 +5436,9 @@ function enterAppAs(user, opts){
   ensureDailySeed(); generateRecurringForToday();
   if(!opts.silent) addDailyOpLog('登入系統','進入每日工作流程');
   render();
-  // 登入／恢復工作階段後立刻把「今日恆常實例」寫回雲端，避免只留在本機快取
-  if(typeof flushCloudSaves==='function'){
-    flushCloudSaves().catch(function(e){ if(typeof noteCloudError==='function') noteCloudError(e); });
+  // 只同步每日工作。不可 flush 項目：載入為空時整包 PUT 曾清掉全部項目
+  if(typeof persistDailyNow==='function'){
+    persistDailyNow().catch(function(e){ if(typeof noteCloudError==='function') noteCloudError(e); });
   }
   setTimeout(function(){
     try{
@@ -5495,6 +5503,8 @@ async function logout(){
     addModuleLog(currentModule||'daily','登出系統','');
   }
   try{ await flushCloudSaves(); }catch(e){}
+  projects = [];
+  projectsHydrated = false;
   try{
     if(apiEnabled) await apiFetch('/api/auth/logout', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
   }catch(e){}
