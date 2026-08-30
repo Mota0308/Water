@@ -6,7 +6,7 @@ var POS_PAYMENTS = [
   { id: 'octopus', name: '八達通' },
   { id: 'fps', name: 'FPS' }
 ];
-var POS_STORES_FALLBACK = ['觀塘', '荔枝角', '灣仔', '屯門'];
+var POS_STORES_FALLBACK = ['觀塘', '荔枝角', '灣仔', '屯門', '屯門中轉倉', '觀塘中轉倉', '國內倉(秋冬)', '國內倉(春夏)'];
 
 var posCart = [];
 var posSelectedStore = '';
@@ -1094,7 +1094,7 @@ function posReceiptHtml(tx) {
     '<div style="text-align:center;margin-bottom:12px">' +
     '<div style="font-size:18px;font-weight:bold;letter-spacing:.04em">Water Sports S.H.</div>' +
     '<div style="font-size:14px;font-weight:bold;margin-top:2px">SHAREmall</div>' +
-    '<div style="font-size:12px;color:#666;margin-top:6px">灣仔｜荔枝角｜屯門｜觀塘</div>' +
+    '<div style="font-size:12px;color:#666;margin-top:6px">灣仔｜荔枝角｜屯門｜觀塘｜中轉倉｜國內倉</div>' +
     '<div style="font-size:12px;color:#666">生活用品專賣店</div>' +
     '<div style="font-size:11px;color:#888;margin-top:6px;line-height:1.5">WhatsApp: 61231104<br>watersports0227@gmail.com<br>https://www.sharemall.hk</div></div>' +
     '<div style="border-top:1px dashed #bbb;border-bottom:1px dashed #bbb;padding:10px 0;margin-bottom:10px">' +

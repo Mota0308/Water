@@ -1,4 +1,4 @@
-export type PosStore = '觀塘' | '荔枝角' | '灣仔' | '屯門'
+export type PosStore = string
 export type PosPaymentMethod = 'cash' | 'credit_card' | 'octopus' | 'fps' | string
 
 export interface PosTransactionItem {

@@ -10,7 +10,7 @@ import {
 import { apiJson } from '@/lib/api'
 
 const STORAGE_KEY = 'store-web-pos-current-store-v1'
-const FALLBACK_STORES = ['觀塘', '荔枝角', '灣仔', '屯門']
+const FALLBACK_STORES = ['觀塘', '荔枝角', '灣仔', '屯門', '屯門中轉倉', '觀塘中轉倉', '國內倉(秋冬)', '國內倉(春夏)']
 
 type PosStoreContextValue = {
   stores: string[]

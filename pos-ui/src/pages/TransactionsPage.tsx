@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import { PAYMENT_METHODS, type PosStore, type PosTransaction } from '@/lib/types'
 import { usePosStore } from '@/store/PosStoreContext'
 
-const STORES: PosStore[] = ['觀塘', '荔枝角', '灣仔', '屯門']
+const STORES: PosStore[] = ['觀塘', '荔枝角', '灣仔', '屯門', '屯門中轉倉', '觀塘中轉倉', '國內倉(秋冬)', '國內倉(春夏)']
 const QUICK_DATES = [
   { id: 'all', label: '全部' },
   { id: 'today', label: '今日' },

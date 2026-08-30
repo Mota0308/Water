@@ -5,7 +5,7 @@ const CATEGORIES = ['成人保暖衣','兒童保暖衣','成人抓毛','兒童�
 
 const USERS_KEY = 'store-web-users-v1';
 const AUTH_TOKEN_KEY = 'store-web-auth-token-v1';
-const STAFF_REGIONS = ['觀塘','荔枝角','灣仔','屯門','國內倉'];
+const STAFF_REGIONS = ['觀塘','荔枝角','灣仔','屯門','國內倉','屯門中轉倉','觀塘中轉倉','國內倉(秋冬)','國內倉(春夏)'];
 const SEED_ADMIN = {id:'adm', login:'admin', pw:'admin', name:'系統管理員', dept:'管理層', role:'system_admin', position:'系統管理員', unit:null, units:[], active:true};
 let users = [Object.assign({}, SEED_ADMIN)];
 let userSeq = 1;
@@ -1423,8 +1423,7 @@ function bindStaticChrome(){
     if(action==='submit-push-publish'){ closeModal(); sendPushNotification(); return; }
     if(action==='submit-transfer-stock'){
       const pid = actionEl.getAttribute('data-pid');
-      const size = actionEl.getAttribute('data-size');
-      if(pid!=null && size!=null) submitTransferStockEdit(pid, size);
+      if(pid!=null) submitTransferStockEdit(pid);
       return;
     }
     const callEl = t.closest('[data-call]');
@@ -2318,7 +2317,7 @@ async function togglePushPin(id){
 }
 function resolvePushRecipients(){
   const target = (document.getElementById('push-target')||{}).value || 'all';
-  const stores = ['觀塘','荔枝角','灣仔','屯門'];
+  const stores = STORE_UNITS.slice();
   let ids = [];
   let desc = '';
   function activeUsers(){ return users.filter(function(u){ return u && u.active!==false; }); }
@@ -2883,7 +2882,7 @@ async function maybePromptUrgentNotices(){
 }
 
 /* ═══════════ 貨品調動｜貨品（含庫存）／調動記錄／庫存校正 ═══════════ */
-const TRANSFER_STORES_FE = ['觀塘','荔枝角','灣仔','屯門'];
+const TRANSFER_STORES_FE = ['觀塘','荔枝角','灣仔','屯門','屯門中轉倉','觀塘中轉倉','國內倉(秋冬)','國內倉(春夏)'];
 const TRANSFER_SIZE_PRESETS = ['S','M','L','XL','XXL','均碼'];
 const TRANSFER_CATEGORY_FALLBACK = [
   '男士及膝泳褲','男士平腳泳褲','男士三角泳褲','男士沙灘褲',
@@ -3031,9 +3030,26 @@ function refreshTransferAdjustments(){
     render();
   });
 }
+function transferSizeSortValue(sz){
+  const s = String(sz==null?'':sz).trim();
+  if(/^\d+(\.\d+)?$/.test(s)) return { n: Number(s), t: s };
+  const m = s.match(/^(\d+(\.\d+)?)/);
+  if(m) return { n: Number(m[1]), t: s };
+  return { n: Number.POSITIVE_INFINITY, t: s };
+}
+function compareTransferSizes(a, b){
+  const ka = transferSizeSortValue(a), kb = transferSizeSortValue(b);
+  if(ka.n!==kb.n) return ka.n - kb.n;
+  return String(ka.t).localeCompare(String(kb.t), 'zh-Hant', { numeric: true });
+}
+function sortTransferSizeValues(list){
+  return (Array.isArray(list)?list:[]).slice().sort(compareTransferSizes);
+}
 function findTransferInvRow(productId, size){
   const rows = (transferInvCache && transferInvCache.rows) || [];
-  return rows.find(function(r){ return r.productId===productId && r.size===size; }) || null;
+  const pid = String(productId||'');
+  const sz = String(size||'');
+  return rows.find(function(r){ return String(r.productId)===pid && String(r.size)===sz; }) || null;
 }
 function transferStoreOptions(selected, exclude){
   return TRANSFER_STORES_FE.map(function(s){
@@ -3090,9 +3106,8 @@ function collectTransferProductForm(){
   const tickiePointsRaw = ((document.getElementById('tp-tickie-points')||{}).value||'').trim();
   const sizes = getTransferProductFormSizes();
   const skus = buildTransferSkusMapFe(id, color, sizes);
-  const sku = sizes.length ? (skus[sizes[0]] || Object.values(skus)[0] || '') : '';
-  const skuHidden = document.getElementById('tp-sku');
-  if(skuHidden) skuHidden.value = sku;
+  const skuTyped = ((document.getElementById('tp-sku')||{}).value||'').trim();
+  const sku = skuTyped || (sizes.length ? (skus[sizes[0]] || Object.values(skus)[0] || '') : '');
   const upcFinal = upc || buildTransferUpcFe();
   const upcEl = document.getElementById('tp-upc');
   if(upcEl && !upc) upcEl.value = upcFinal;
@@ -3187,7 +3202,10 @@ function transferSizeAbbrFe(size){
   const s = String(size||'').trim();
   if(!s) return '';
   if(s==='均碼' || /^one\s*size$/i.test(s) || /^free$/i.test(s) || s.toUpperCase()==='F') return 'OS';
-  return s.replace(/\s+/g,'').toUpperCase();
+  const compact = s.replace(/\s+/g,'');
+  const num = compact.match(/^(\d+)(.*)$/);
+  if(num) return num[1].padStart(2,'0') + String(num[2]||'').toUpperCase();
+  return compact.toUpperCase();
 }
 function buildTransferSkuFe(productId, color, size){
   const id = String(productId||'').trim();
@@ -3232,10 +3250,19 @@ function getTransferProductFormSizes(){
   return sizes;
 }
 var transferUpcManual = false;
+var transferSkuManual = false;
 function markTransferUpcManual(){
   const el = document.getElementById('tp-upc');
   const v = el ? String(el.value||'').trim() : '';
   transferUpcManual = !!v;
+}
+function markTransferSkuManual(){
+  const el = document.getElementById('tp-sku');
+  const v = el ? String(el.value||'').trim() : '';
+  transferSkuManual = !!v;
+}
+function resetTransferSkuManual(manual){
+  transferSkuManual = !!manual;
 }
 function resetTransferUpcManual(manual){
   transferUpcManual = !!manual;
@@ -3260,7 +3287,7 @@ function refreshTransferProductSkuPreview(){
       first = buildTransferSkuFe(id, color, '');
     }
   }
-  if(skuInput) skuInput.value = first || '';
+  if(skuInput && !transferSkuManual) skuInput.value = first || '';
   ensureAutoTransferUpc();
   if(!preview) return;
   if(!id){
@@ -3626,10 +3653,10 @@ function transferProductAttrFieldsHtml(p){
     +'<div style="flex:1;min-width:0">'
     +transferOptionFieldLabelHtml('品牌', 'brand')
     +transferBrandSelectHtml(val('brand'))
-    +'<label>SKU（自動生成）</label>'
-    +'<input type="text" id="tp-sku" value="'+escHtml(val('sku'))+'" readonly placeholder="填寫型號後自動顯示" style="background:#fafafa;color:#37474f">'
+    +'<label>SKU（自動生成，可修改）</label>'
+    +'<input type="text" id="tp-sku" value="'+escHtml(val('sku'))+'" placeholder="填寫型號後自動顯示，可手動修改" oninput="markTransferSkuManual()">'
     +'<div id="tp-sku-preview" style="border:1px solid #e0e0e0;border-radius:8px;background:#fafafa;padding:10px 12px;font-size:13px;line-height:1.55;min-height:0;margin-top:8px;color:#37474f"></div>'
-    +'<p style="font-size:12px;color:#888;margin:4px 0 0">格式：型號＋顏色縮寫＋尺碼縮寫；選好顏色／尺碼後才會接上縮寫（主 SKU 取首個尺碼）。</p>'
+    +'<p style="font-size:12px;color:#888;margin:4px 0 0">格式：型號＋顏色縮寫＋尺碼。尺碼若為數字會顯示兩位（1→01）。手動改過主 SKU 後不會覆蓋（清空後恢復自動）。</p>'
     +'<label>UPC（自動生成，可修改）</label>'
     +'<input type="text" id="tp-upc" value="'+escHtml(val('upc'))+'" placeholder="自動產生條碼，可手動修改" oninput="markTransferUpcManual()">'
     +'<p style="font-size:12px;color:#888;margin:4px 0 0">系統自動產生店內條碼；手動改過後不會覆蓋（清空後會重新產生）。</p>'
@@ -3795,9 +3822,11 @@ function fillTransferProductFormFields(form){
     }
   }
   if(Array.isArray(form.sizes)) transferComboSetMulti('tp-sizes', form.sizes);
-  // 已有 UPC 視為手動鎖定，避免重整預覽時覆蓋
+  // 已有 UPC／手動 SKU 視為鎖定，避免重整預覽時覆蓋
   resetTransferUpcManual(!!(form.upc && String(form.upc).trim()));
+  resetTransferSkuManual(!!(form.sku && String(form.sku).trim()));
   refreshTransferProductSkuPreview();
+  if(transferSkuManual && form.sku) setVal('tp-sku', form.sku);
   if(form.upc && String(form.upc).trim()){
     setVal('tp-upc', form.upc);
   } else {
@@ -3936,6 +3965,7 @@ function openAddTransferProductModal(prefillForm){
   transferEditOriginalId = null;
   if(!prefillForm) transferProductImageDraft = null;
   resetTransferUpcManual(!!(prefillForm && prefillForm.upc && String(prefillForm.upc).trim()));
+  resetTransferSkuManual(!!(prefillForm && prefillForm.sku && String(prefillForm.sku).trim()));
   const open = function(){
     showModal(
       '<h3>新增產品</h3>'
@@ -3993,6 +4023,11 @@ function openEditTransferProductModal(productId, prefillForm){
   if(!prefillForm) transferProductImageDraft = null;
   const existingUpc = (prefillForm && prefillForm.upc != null) ? prefillForm.upc : p.upc;
   resetTransferUpcManual(!!(existingUpc && String(existingUpc).trim()));
+  const existingSku = (prefillForm && prefillForm.sku != null) ? prefillForm.sku : p.sku;
+  const autoSku = (Array.isArray(p.sizes) && p.sizes.length)
+    ? buildTransferSkuFe(p.id, p.color, p.sizes[0])
+    : buildTransferSkuFe(p.id, p.color, '');
+  resetTransferSkuManual(!!(existingSku && String(existingSku).trim() && String(existingSku)!==autoSku));
   const sizes = Array.isArray(p.sizes) ? p.sizes : [];
   const cat = (prefillForm&&prefillForm.category)!=null ? String(prefillForm.category||'') : (p.category || '其他');
   const open = function(){
@@ -4069,53 +4104,84 @@ async function deleteTransferProductRow(productId){
 }
 function openTransferStockEditModal(productId, size){
   if(!currentUser){ alert2('請先登入。'); return; }
-  const row = findTransferInvRow(productId, size);
-  if(!row){ alert2('找不到該庫存列，請重新整理後再試。'); return; }
-  const pidAttr = escHtml(String(productId));
-  const szAttr = escHtml(String(size));
-  const fields = TRANSFER_STORES_FE.map(function(s){
-    const q = (row.qty && row.qty[s]!=null) ? row.qty[s] : 0;
-    return '<label>'+escHtml(s)+'</label>'
-      +'<input type="number" class="tf-stock-qty" data-store="'+escHtml(s)+'" min="0" step="1" value="'+escHtml(String(q))+'">';
+  productId = String(productId||'');
+  const p = (transferProductsCache||[]).find(function(x){ return String(x.id)===productId; });
+  if(!p){ alert2('找不到該產品，請重新整理後再試。'); return; }
+  const g = transferInvGroupForProduct(p);
+  const sizes = sortTransferSizeValues((g.sizes||[]).map(function(r){ return r.size; }));
+  if(!sizes.length){ alert2('此產品尚未設定尺碼。'); return; }
+  const stores = (transferInvCache && transferInvCache.stores && transferInvCache.stores.length)
+    ? transferInvCache.stores : TRANSFER_STORES_FE;
+  const qtyBySize = {};
+  (g.sizes||[]).forEach(function(r){ qtyBySize[String(r.size)] = r.qty || {}; });
+  const focusSize = size!=null && size!=='' ? String(size) : '';
+  const pidAttr = escHtml(productId);
+  const storeBlocks = stores.map(function(store){
+    const cells = sizes.map(function(sz){
+      const q = (qtyBySize[sz] && qtyBySize[sz][store]!=null) ? qtyBySize[sz][store] : 0;
+      const focus = focusSize && String(sz)===focusSize;
+      return '<div style="flex:0 0 auto;min-width:72px'+(focus?';outline:2px solid #4fc3f7;border-radius:8px;padding:2px':'')+'">'
+        +'<div style="font-size:11px;color:#607d8b;margin-bottom:4px">尺碼 '+escHtml(String(sz))+'</div>'
+        +'<input type="number" class="tf-stock-qty" data-store="'+escHtml(store)+'" data-size="'+escHtml(String(sz))+'" min="0" step="1" value="'+escHtml(String(q))+'" style="width:100%;box-sizing:border-box">'
+        +'</div>';
+    }).join('');
+    return '<div style="border:1px solid #e0e0e0;border-radius:10px;padding:10px 12px;margin:0 0 10px;background:#fff">'
+      +'<div style="font-weight:700;margin:0 0 8px">'+escHtml(store)+'</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">'+cells+'</div>'
+      +'</div>';
   }).join('');
   showModal(
     '<h3>改庫存</h3>'
     +'<p style="font-size:13px;line-height:1.55;margin:0 0 10px">'
-    +'<b>'+escHtml(row.productId)+'</b> '+escHtml(row.name||'')
-    +'｜尺碼 <b>'+escHtml(row.size)+'</b>'
-    +(row.color?'｜'+escHtml(row.color):'')
-    +'<br><span style="color:#78909c;font-size:12px">一次設定此列四店數量（整數 ≥ 0）。儲存後會寫入庫存校正記錄。</span></p>'
-    +fields
+    +'<b>'+escHtml(p.id)+'</b> '+escHtml(p.name||'')
+    +(p.color?'｜'+escHtml(p.color):'')
+    +'<br><span style="color:#78909c;font-size:12px">按門市分類，尺碼由小到大由左至右。數量為整數 ≥ 0，儲存後寫入庫存校正記錄。</span></p>'
+    +storeBlocks
     +'<div class="actions">'
     +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
-    +'<button type="button" class="btn green" data-action="submit-transfer-stock" data-pid="'+pidAttr+'" data-size="'+szAttr+'">儲存</button>'
+    +'<button type="button" class="btn green" data-action="submit-transfer-stock" data-pid="'+pidAttr+'">儲存</button>'
     +'</div>'
-  );
+  , { closeOnBackdrop: false });
 }
-async function submitTransferStockEdit(productId, size){
-  const qty = {};
+async function submitTransferStockEdit(productId){
+  productId = String(productId||'');
+  const bySize = {};
   let ok = true;
   document.querySelectorAll('.tf-stock-qty').forEach(function(inp){
     const store = inp.getAttribute('data-store');
+    const size = inp.getAttribute('data-size');
     const n = Number(inp.value);
-    if(!store) return;
+    if(!store || !size) return;
     if(!Number.isFinite(n) || n<0 || Math.floor(n)!==n){ ok = false; return; }
-    qty[store] = n;
+    if(!bySize[size]) bySize[size] = {};
+    bySize[size][store] = n;
   });
   if(!ok){ alert2('各店庫存須為 ≥ 0 的整數。'); return; }
+  const sizes = Object.keys(bySize);
+  if(!sizes.length){ alert2('沒有可儲存的庫存。'); return; }
   try{
-    await apiFetch('/api/transfer/inventory/qty', {
-      method:'PUT',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ productId, size, qty })
-    });
+    let changed = 0;
+    for(let i=0;i<sizes.length;i++){
+      const size = sizes[i];
+      try{
+        await apiFetch('/api/transfer/inventory/qty', {
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ productId, size, qty: bySize[size] })
+        });
+        changed++;
+      }catch(e){
+        if(String(e && e.message||e).indexOf('數量沒有變更')>=0) continue;
+        throw e;
+      }
+    }
     closeModal();
     transferInvCache = null;
     transferAdjCache = null;
     await loadTransferInventory(true);
     if(currentView==='transferStockLog') await loadTransferAdjustments(true).catch(function(){});
     render();
-    alert2('已更新庫存。');
+    alert2(changed ? '已更新庫存。' : '數量沒有變更。');
   }catch(e){
     alert2('更新失敗：'+(e.message||e));
   }
@@ -4460,7 +4526,7 @@ function transferInventoryProductGroups(rows){
     }
   });
   return Array.from(map.values()).map(function(g){
-    g.sizes.sort(function(a,b){ return String(a.size||'').localeCompare(String(b.size||''), 'zh-Hant'); });
+    g.sizes.sort(function(a,b){ return compareTransferSizes(a.size, b.size); });
     return g;
   });
 }
@@ -4474,7 +4540,7 @@ function transferInvGroupForProduct(p, invMap){
   invMap = invMap || transferInvGroupMap();
   const hit = invMap[p && p.id];
   if(hit) return hit;
-  const sizes = Array.isArray(p && p.sizes) && p.sizes.length ? p.sizes : ['均碼'];
+  const sizes = sortTransferSizeValues(Array.isArray(p && p.sizes) && p.sizes.length ? p.sizes : ['均碼']);
   const safetyStock = (p && p.safetyStock!=null) ? p.safetyStock : 0;
   return {
     productId: p && p.id,
@@ -4607,16 +4673,16 @@ function vTransferProducts(){
         +'</tr>'
         +(expanded
           ? '<tr><td colspan="'+colSpan+'" style="background:#fafafa;padding:12px 14px">'
-            +'<div style="font-size:12px;color:#78909c;margin:0 0 8px">各尺碼庫存（並列）· 點「改庫存」可手改四店數量</div>'
+            +'<div style="font-size:12px;color:#78909c;margin:0 0 8px">各尺碼由小到大並列 · 點「改庫存」可按門市一次改全部尺碼</div>'
             +transferInvSizeCardsHtml(g, stores)
             +'</td></tr>'
           : '');
     }).join('');
   return '<div class="card">'
     +'<h2>🏷️ 貨品</h2>'
-    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">商品主檔與四店庫存同一頁，可用表格或卡片檢視。'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">商品主檔與各門市／倉庫庫存同一頁，可用表格或卡片檢視。'
     +(transferProductsViewMode==='grid'
-      ? '卡片顯示各尺碼與四店庫存，可「改庫存」或「申請調動」。'
+      ? '卡片顯示各尺碼與各店庫存，可「改庫存」或「申請調動」。'
       : '點擊列展開各尺碼庫存，可「改庫存」或「申請調動」。')
     +'低於安全存量以<span class="inv-low">紅色</span>標示。篩選結果有 <b>'+lowCount+'</b> 款含預警。</p>'
     +'<div class="filters">'
@@ -4637,8 +4703,9 @@ function vTransferProducts(){
 }
 function transferInvSizeCardsHtml(g, stores){
   stores = stores || TRANSFER_STORES_FE;
+  const sizeRows = (g.sizes||[]).slice().sort(function(a,b){ return compareTransferSizes(a.size, b.size); });
   return '<div style="display:flex;flex-wrap:wrap;gap:10px;padding:4px 0">'
-    +(g.sizes||[]).map(function(r){
+    +sizeRows.map(function(r){
       const storeLines = stores.map(function(s){
         const q = (r.qty && r.qty[s]!=null) ? r.qty[s] : 0;
         const isLow = !!(r.low && r.low[s]);
@@ -7053,7 +7120,7 @@ function vSysLogs(){
 var DAILY_KEY='store-web-daily-v6';
 var DAILY_DIRTY_KEY='store-web-daily-v6-dirty';
 var FIXED_UNITS=['觀塘','荔枝角','灣仔','屯門'];
-var STORE_UNITS=['觀塘','荔枝角','灣仔','屯門','國內倉'];
+var STORE_UNITS=['觀塘','荔枝角','灣仔','屯門','國內倉','屯門中轉倉','觀塘中轉倉','國內倉(秋冬)','國內倉(春夏)'];
 var PRIORITIES=['高','中','低'];
 var dailyUnitFilter='全部'; // 相容舊呼叫；實際篩選改用 dailyUnitFilterSelected
 var dailyUnitFilterSelected=null; // null／空＝尚未初始化；陣列＝已勾選單位

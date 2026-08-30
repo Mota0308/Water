@@ -335,8 +335,17 @@ async function nextTransferOrderId() {
   return 'TF' + String(seq).padStart(4, '0');
 }
 
-/** 貨品調動：四間港店（與員工地區同名，無「店」字） */
-export const TRANSFER_STORES = ['觀塘', '荔枝角', '灣仔', '屯門'];
+/** 貨品調動／庫存門市（含中轉倉與國內倉） */
+export const TRANSFER_STORES = [
+  '觀塘',
+  '荔枝角',
+  '灣仔',
+  '屯門',
+  '屯門中轉倉',
+  '觀塘中轉倉',
+  '國內倉(秋冬)',
+  '國內倉(春夏)',
+];
 export const TRANSFER_CATEGORIES = [
   '男士及膝泳褲',
   '男士平腳泳褲',
@@ -2426,8 +2435,9 @@ export async function createTransferProduct(actor, input) {
 
   const safetyStock = parseNonNegInt(input?.safetyStock, '安全存量');
   const extras = normalizeTransferProductExtras(input, {});
-  const skus = buildTransferSkusMap(id, color, sizes);
-  extras.sku = (sizes.length ? skus[sizes[0]] : '') || Object.values(skus)[0] || '';
+  const resolvedSkus = resolveTransferSkus(id, color, sizes, extras.sku);
+  const skus = resolvedSkus.skus;
+  extras.sku = resolvedSkus.sku;
   extras.upc = await allocateUniqueTransferUpc(extras.upc);
 
   const existing = await transferProductsCol().findOne({
@@ -2490,6 +2500,7 @@ export async function createTransferProduct(actor, input) {
     userName: actorName,
     user: actorName,
   });
+  await syncPosSellablesForTransferProduct(product);
   await recordTransferProductChange({
     productId: id,
     productName: name,
@@ -2615,7 +2626,20 @@ export function transferSizeAbbr(size) {
   const s = String(size || '').trim();
   if (!s) return '';
   if (s === '均碼' || /^one\s*size$/i.test(s) || /^free$/i.test(s) || s.toUpperCase() === 'F') return 'OS';
-  return s.replace(/\s+/g, '').toUpperCase();
+  const compact = s.replace(/\s+/g, '');
+  const num = compact.match(/^(\d+)(.*)$/);
+  if (num) return num[1].padStart(2, '0') + String(num[2] || '').toUpperCase();
+  return compact.toUpperCase();
+}
+
+function resolveTransferSkus(productId, color, sizes, inputSku) {
+  const skus = buildTransferSkusMap(productId, color, sizes);
+  const manual = String(inputSku || '').trim();
+  if (manual && sizes.length) skus[sizes[0]] = manual;
+  return {
+    skus,
+    sku: manual || (sizes.length ? skus[sizes[0]] : '') || Object.values(skus)[0] || '',
+  };
 }
 
 /** SKU＝型號＋顏色縮寫＋尺寸縮寫（例：WS-S002 + PK + L → WS-S002PKL） */
@@ -2847,8 +2871,9 @@ export async function updateTransferProduct(actor, oldProductId, input) {
   if (!nextSizes.length) throw new Error('請至少保留 1 個尺碼');
   const extras = normalizeTransferProductExtras(input, product);
   const prevExtras = normalizeTransferProductExtras({}, product);
-  const skus = buildTransferSkusMap(nextId, color, nextSizes);
-  extras.sku = (nextSizes.length ? skus[nextSizes[0]] : '') || Object.values(skus)[0] || '';
+  const resolvedSkus = resolveTransferSkus(nextId, color, nextSizes, extras.sku);
+  const skus = resolvedSkus.skus;
+  extras.sku = resolvedSkus.sku;
   extras.upc = await allocateUniqueTransferUpc(extras.upc, nextId);
   const prevSkus = buildTransferSkusMap(currentId, product.color || '', Array.isArray(product.sizes) && product.sizes.length ? product.sizes : ['均碼']);
 
@@ -3009,6 +3034,7 @@ export async function updateTransferProduct(actor, oldProductId, input) {
   });
 
   const updated = await transferProductsCol().findOne({ $or: [{ _id: nextId }, { id: nextId }] });
+  await syncPosSellablesForTransferProduct(updated);
   return stripTransferProduct(updated);
 }
 
@@ -3064,6 +3090,14 @@ export async function deleteTransferProduct(actor, productId) {
     }
   );
   await transferInventoryCol().deleteMany({ productId: id });
+  try {
+    await posProductsCol().updateMany(
+      { transferProductId: id },
+      { $set: { active: false, updatedAt: time } }
+    );
+  } catch (_e) {
+    /* POS 目錄未就緒時略過 */
+  }
 
   await appendModuleLog({
     module: 'transfer',
@@ -3305,7 +3339,7 @@ export async function applyTransferRequest(actor, input) {
   const fromStore = String(input?.fromStore || '').trim(); // 調動點／調出
   const remark = String(input?.remark || '').trim();
   if (!TRANSFER_STORES.includes(toStore) || !TRANSFER_STORES.includes(fromStore)) {
-    throw new Error('門市僅限觀塘／荔枝角／灣仔／屯門');
+    throw new Error('請選擇有效門市／倉庫');
   }
   if (toStore === fromStore) throw new Error('發起點與調動點不可相同');
 
@@ -3547,7 +3581,7 @@ export async function getTransferOrder(id) {
 }
 
 /* ═══════════ POS（庫存以調動 transfer_inventory 為準） ═══════════ */
-const POS_STORES = ['觀塘', '荔枝角', '灣仔', '屯門'];
+const POS_STORES = TRANSFER_STORES.slice();
 
 function posProductsCol() {
   return db.collection('pos_products');
@@ -3714,6 +3748,66 @@ function stockFromMap(qtyMap, transferProductId, size) {
   return stock;
 }
 
+async function syncPosSellablesForTransferProduct(product) {
+  if (!product || !product.id) return;
+  const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : ['均碼'];
+  const salePrice = Number(product.priceSale != null ? product.priceSale : product.priceOriginal);
+  const price = Number.isFinite(salePrice) && salePrice >= 0 ? Math.round(salePrice * 100) / 100 : 0;
+  const now = formatHkDateTime();
+  const existing = await posProductsCol().find({ transferProductId: product.id }).toArray();
+  const bySize = new Map(existing.map((d) => [String(d.size), d]));
+  const keep = new Set(sizes.map((s) => String(s)));
+  for (const size of sizes) {
+    const sku =
+      (product.skus && product.skus[size]) || buildTransferSku(product.id, product.color, size);
+    const hit = bySize.get(String(size));
+    if (hit) {
+      const $set = {
+        sku,
+        name: product.name || hit.name,
+        category: product.category || '',
+        color: product.color || '',
+        active: true,
+        updatedAt: now,
+      };
+      if (price > 0) $set.price = price;
+      await posProductsCol().updateOne({ _id: hit._id }, { $set });
+    } else {
+      const id = `sell_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      await posProductsCol().insertOne({
+        _id: id,
+        id,
+        transferProductId: product.id,
+        size,
+        name: product.name || '',
+        sku,
+        price,
+        active: true,
+        category: product.category || '',
+        color: product.color || '',
+        updatedAt: now,
+        createdAt: now,
+      });
+    }
+  }
+  for (const d of existing) {
+    if (!keep.has(String(d.size)) && d.active !== false) {
+      await posProductsCol().updateOne({ _id: d._id }, { $set: { active: false, updatedAt: now } });
+    }
+  }
+}
+
+async function ensureMissingTransferProductsInPosCatalog() {
+  const products = await transferProductsCol().find({ active: { $ne: false } }).toArray();
+  const linked = await posProductsCol().find({}).project({ transferProductId: 1, size: 1 }).toArray();
+  const linkedSet = new Set(linked.map((x) => `${x.transferProductId}__${x.size}`));
+  for (const p of products) {
+    const sizes = Array.isArray(p.sizes) && p.sizes.length ? p.sizes : ['均碼'];
+    const missing = sizes.some((size) => !linkedSet.has(`${p.id}__${size}`));
+    if (missing) await syncPosSellablesForTransferProduct(p);
+  }
+}
+
 export async function listPosProducts(user) {
   await connectMongo();
   await ensurePosReady();
@@ -3722,6 +3816,11 @@ export async function listPosProducts(user) {
     if (n === 0) await seedPosSamples(user, { force: false });
   } catch (e) {
     console.warn('POS sample seed skipped:', e.message || e);
+  }
+  try {
+    await ensureMissingTransferProductsInPosCatalog();
+  } catch (e) {
+    console.warn('POS catalog sync skipped:', e.message || e);
   }
   const docs = await posProductsCol().find({ active: { $ne: false } }).sort({ sku: 1, name: 1 }).toArray();
   const qtyMap = await buildTransferQtyMap();
@@ -4980,7 +5079,7 @@ export async function getPosSettlement(user, query = {}) {
       canUnlock: false,
       canApprove: false,
       canReject: false,
-      warning: '此帳號未綁定 POS 店舖，請先在個人設置加入觀塘／荔枝角／灣仔／屯門',
+      warning: '此帳號未綁定 POS 店舖，請先在個人設置加入門市或倉庫',
     };
   }
   if (!POS_STORES.includes(store)) throw new Error('店舖無效');

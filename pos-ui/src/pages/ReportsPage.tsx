@@ -176,7 +176,7 @@ export function ReportsPage() {
             className={fieldClass()}
           >
             <option value="">全部門市</option>
-            {(data?.stores || contextStores || ['觀塘', '荔枝角', '灣仔', '屯門']).map((x) => (
+            {(data?.stores || contextStores || ['觀塘', '荔枝角', '灣仔', '屯門', '屯門中轉倉', '觀塘中轉倉', '國內倉(秋冬)', '國內倉(春夏)']).map((x) => (
               <option key={x} value={x}>
                 {x}
               </option>
