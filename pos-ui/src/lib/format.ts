@@ -1,4 +1,27 @@
-﻿export function formatHKD(amount: number): string {
+﻿const CLOTHING_SIZE_ORDER = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', '2XL', '3XL', '4XL']
+
+function sizeSortKey(size: string | number | null | undefined): { n: number; rank: number; t: string } {
+  const t = String(size ?? '').trim()
+  if (!t) return { n: Number.POSITIVE_INFINITY, rank: 999, t: '' }
+  const upper = t.toUpperCase()
+  const clothing = CLOTHING_SIZE_ORDER.indexOf(upper)
+  if (clothing >= 0) return { n: Number.POSITIVE_INFINITY, rank: clothing, t }
+  if (/^\d+(\.\d+)?$/.test(t)) return { n: Number(t), rank: -1, t }
+  const m = t.match(/^(\d+(\.\d+)?)/)
+  if (m) return { n: Number(m[1]), rank: -1, t }
+  return { n: Number.POSITIVE_INFINITY, rank: 500, t }
+}
+
+/** 尺碼由小到大：0、1、2、4、10…；S／M／L 依服裝順序 */
+export function compareProductSizes(a: string | number | null | undefined, b: string | number | null | undefined): number {
+  const ka = sizeSortKey(a)
+  const kb = sizeSortKey(b)
+  if (ka.n !== kb.n) return ka.n - kb.n
+  if (ka.rank !== kb.rank) return ka.rank - kb.rank
+  return ka.t.localeCompare(kb.t, 'zh-Hant', { numeric: true })
+}
+
+export function formatHKD(amount: number): string {
   return new Intl.NumberFormat('zh-HK', {
     style: 'currency',
     currency: 'HKD',

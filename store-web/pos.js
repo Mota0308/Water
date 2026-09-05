@@ -143,7 +143,9 @@ function posEnsureStore() {
     posSelectedStore = '';
     return '';
   }
-  if (stores.indexOf(posSelectedStore) < 0) posSelectedStore = stores[0];
+  var preferred = (typeof getWorkingStore === 'function') ? getWorkingStore() : posSelectedStore;
+  if (stores.indexOf(preferred) >= 0) posSelectedStore = preferred;
+  else if (stores.indexOf(posSelectedStore) < 0) posSelectedStore = stores[0];
   return posSelectedStore;
 }
 function posInvalidateCloud() {
@@ -443,6 +445,10 @@ function posCartSubtotal() {
   }, 0);
 }
 function posSetStore(store) {
+  if (typeof setWorkingStore === 'function') {
+    setWorkingStore(store);
+    return;
+  }
   var stores = posUserStoresLocal();
   if (stores.indexOf(store) < 0) return;
   posSelectedStore = store;

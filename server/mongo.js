@@ -29,7 +29,14 @@ export async function connectMongo() {
   await sessionsCol().createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
   await metaCol().createIndex({ _id: 1 });
   await moduleLogsCol().createIndex({ module: 1, createdAt: -1 });
-  await transferProductsCol().createIndex({ id: 1 }, { unique: true });
+  try {
+    const indexes = await transferProductsCol().indexes();
+    const uniqueId = indexes.find((i) => i.unique && i.key && i.key.id === 1);
+    if (uniqueId) await transferProductsCol().dropIndex(uniqueId.name);
+  } catch (e) {
+    console.warn('drop transferProducts unique id index:', e.message || e);
+  }
+  await transferProductsCol().createIndex({ id: 1 });
   await transferInventoryCol().createIndex({ productId: 1, size: 1, store: 1 }, { unique: true });
   await transferOrdersCol().createIndex({ id: 1 }, { unique: true });
   await transferOrdersCol().createIndex({ createdAtMs: -1 });
@@ -2351,15 +2358,19 @@ export async function listTransferInventory() {
       const low = {};
       let total = 0;
       for (const store of TRANSFER_STORES) {
-        const q = qtyMap.has(`${p.id}__${size}__${store}`)
-          ? qtyMap.get(`${p.id}__${size}__${store}`)
-          : 0;
+        const key = String(p._id || p.id);
+        const q = qtyMap.has(`${key}__${size}__${store}`)
+          ? qtyMap.get(`${key}__${size}__${store}`)
+          : qtyMap.has(`${p.id}__${size}__${store}`)
+            ? qtyMap.get(`${p.id}__${size}__${store}`)
+            : 0;
         qty[store] = q;
         low[store] = q < safetyStock;
         total += q;
       }
       rows.push({
-        productId: p.id,
+        productId: String(p._id || p.id),
+        model: p.id || String(p._id || ''),
         name: p.name || '',
         category: p.category || '其他',
         color: p.color || '',
@@ -2385,6 +2396,36 @@ export async function listTransferInventory() {
 
 function normalizeProductId(raw) {
   return String(raw || '').trim();
+}
+
+function productDocKey(product) {
+  if (!product) return '';
+  return String(product._id || product.id || '');
+}
+
+async function findActiveTransferProduct(ref) {
+  const key = normalizeProductId(ref);
+  if (!key) return null;
+  const byUid = await transferProductsCol().findOne({ _id: key, active: { $ne: false } });
+  if (byUid) return byUid;
+  return transferProductsCol().findOne({ id: key, active: { $ne: false } });
+}
+
+async function allocateUniqueProductDocId(modelId, color) {
+  const model = normalizeProductId(modelId);
+  async function taken(key) {
+    return transferProductsCol().findOne({ _id: key });
+  }
+  if (!(await taken(model))) return model;
+  const abbr = transferColorAbbr(color);
+  const candidates = [];
+  if (abbr) candidates.push(model + '__' + abbr);
+  for (let i = 2; i < 200; i++) candidates.push(model + '__' + i);
+  candidates.push(model + '__' + Date.now().toString(36));
+  for (const c of candidates) {
+    if (!(await taken(c))) return c;
+  }
+  return model + '__' + Date.now();
 }
 
 function normalizeSizeList(input) {
@@ -2438,9 +2479,10 @@ export async function createTransferProduct(actor, input) {
   const resolvedSkus = resolveTransferSkus(id, color, sizes, extras.sku, input?.skus);
   const skus = resolvedSkus.skus;
   extras.sku = resolvedSkus.sku;
+  const uid = await allocateUniqueProductDocId(id, color);
   const inputUpcs = { ...(input?.upcs && typeof input.upcs === 'object' ? input.upcs : {}) };
   if (extras.upc && sizes[0] && !inputUpcs[sizes[0]]) inputUpcs[sizes[0]] = extras.upc;
-  const upcs = await allocateSizeUpcs(sizes, inputUpcs, id);
+  const upcs = await allocateSizeUpcs(sizes, inputUpcs, uid);
   extras.upc = (sizes.length && upcs[sizes[0]]) || extras.upc || '';
   const upcList = Object.values(upcs).filter(Boolean);
   const images = normalizeImageList(input?.images, extras);
@@ -2449,19 +2491,16 @@ export async function createTransferProduct(actor, input) {
     extras.imageFileId = images[0].fileId || extras.imageFileId;
   }
 
-  const existing = await transferProductsCol().findOne({
-    $or: [{ _id: id }, { id }],
-  });
-  if (existing && existing.active !== false) throw new Error('產品編號已存在：' + id);
-  if (existing && existing.active === false) {
-    await transferProductsCol().deleteOne({ _id: existing._id });
-    await transferInventoryCol().deleteMany({ productId: existing.id || String(existing._id) });
+  const existingUid = await transferProductsCol().findOne({ _id: uid });
+  if (existingUid && existingUid.active === false) {
+    await transferProductsCol().deleteOne({ _id: existingUid._id });
+    await transferInventoryCol().deleteMany({ productId: String(existingUid._id) });
   }
 
   const now = new Date();
   const time = formatHkDateTime(now);
   const product = {
-    _id: id,
+    _id: uid,
     id,
     name,
     category,
@@ -2483,13 +2522,13 @@ export async function createTransferProduct(actor, input) {
 
   for (const size of sizes) {
     for (const store of TRANSFER_STORES) {
-      const _id = `${id}__${size}__${store}`;
+      const _id = `${uid}__${size}__${store}`;
       await transferInventoryCol().updateOne(
         { _id },
         {
           $setOnInsert: {
             _id,
-            productId: id,
+            productId: uid,
             size,
             store,
             quantity: 0,
@@ -2514,7 +2553,7 @@ export async function createTransferProduct(actor, input) {
   });
   await syncPosSellablesForTransferProduct(product);
   await recordTransferProductChange({
-    productId: id,
+    productId: uid,
     productName: name,
     action: '建立',
     changes: [
@@ -2701,7 +2740,7 @@ async function findProductByUpc(upc, excludeProductId) {
   const exclude = String(excludeProductId || '').trim();
   return transferProductsCol().findOne({
     active: { $ne: false },
-    ...(exclude ? { id: { $ne: exclude } } : {}),
+    ...(exclude ? { _id: { $ne: exclude } } : {}),
     $or: [{ upc: code }, { upcList: code }],
   });
 }
@@ -2857,6 +2896,7 @@ function stripTransferProduct(doc) {
     extras.imageFileId = images[0].fileId || extras.imageFileId;
   }
   return {
+    uid: String(_id),
     id,
     name: rest.name || '',
     category: rest.category || '其他',
@@ -2935,8 +2975,8 @@ async function renameTransferProductId(oldId, newId, now) {
 }
 
 /**
- * 編輯商品主檔：可改名稱／類別／顏色／安全存量／款號／尺碼（增；有條件刪）。
- * 改款號會級聯更新庫存、調動單、校正與主檔變更記錄中的款號。
+ * 編輯商品主檔：可改名稱／類別／顏色／安全存量／型號／尺碼（增；有條件刪）。
+ * 型號可重複；文件 _id 不變，庫存／調動仍用 uid。
  */
 export async function updateTransferProduct(actor, oldProductId, input) {
   await connectMongo();
@@ -2947,23 +2987,14 @@ export async function updateTransferProduct(actor, oldProductId, input) {
   const currentId = normalizeProductId(oldProductId);
   if (!currentId) throw new Error('缺少產品編號');
 
-  const product = await transferProductsCol().findOne({
-    $or: [{ _id: currentId }, { id: currentId }],
-    active: { $ne: false },
-  });
+  const product = await findActiveTransferProduct(currentId);
   if (!product) throw new Error('找不到商品');
+  const uid = productDocKey(product);
 
-  const nextId = normalizeProductId(input?.id || input?.productId || currentId);
+  const nextId = normalizeProductId(input?.id || product.id || uid);
   if (!nextId) throw new Error('請填寫產品編號');
   if (nextId.length > 64) throw new Error('產品編號過長');
   if (/[\/\\]/.test(nextId)) throw new Error('產品編號含有不允許的字元');
-
-  if (nextId !== currentId) {
-    const clash = await transferProductsCol().findOne({
-      $or: [{ _id: nextId }, { id: nextId }],
-    });
-    if (clash) throw new Error('產品編號已存在：' + nextId);
-  }
 
   const name = String(input?.name != null ? input.name : product.name || '').trim();
   if (!name) throw new Error('請填寫產品名稱');
@@ -2984,7 +3015,7 @@ export async function updateTransferProduct(actor, oldProductId, input) {
   const prevSizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes.map(String) : ['均碼'];
   const inputUpcs = { ...(input?.upcs && typeof input.upcs === 'object' ? input.upcs : {}) };
   if (extras.upc && nextSizes[0] && !inputUpcs[nextSizes[0]]) inputUpcs[nextSizes[0]] = extras.upc;
-  const upcs = await allocateSizeUpcs(nextSizes, inputUpcs, currentId, product.upcs);
+  const upcs = await allocateSizeUpcs(nextSizes, inputUpcs, uid, product.upcs);
   extras.upc = (nextSizes.length && upcs[nextSizes[0]]) || extras.upc || '';
   const upcList = Object.values(upcs).filter(Boolean);
   const images = Array.isArray(input?.images)
@@ -3011,11 +3042,11 @@ export async function updateTransferProduct(actor, oldProductId, input) {
 
   for (const size of removedSizes) {
     for (const store of TRANSFER_STORES) {
-      const q = await getInventoryQty(currentId, size, store);
+      const q = await getInventoryQty(uid, size, store);
       if (q > 0) throw new Error('無法刪除尺碼「' + size + '」：' + store + '仍有庫存 ' + q);
     }
     const pending = await transferOrdersCol().countDocuments({
-      productId: currentId,
+      productId: uid,
       size,
       status: 'pending',
     });
@@ -3026,7 +3057,9 @@ export async function updateTransferProduct(actor, oldProductId, input) {
   const time = formatHkDateTime(now);
   const actorName = me.name || me.login || me.id;
   const changes = [];
-  if (nextId !== currentId) changes.push({ field: '型號', before: currentId, after: nextId });
+  if (nextId !== String(product.id || '')) {
+    changes.push({ field: '型號', before: String(product.id || '') || '—', after: nextId });
+  }
   if (name !== String(product.name || '')) changes.push({ field: '商品名', before: String(product.name || ''), after: name });
   if (category !== String(product.category || '')) {
     changes.push({ field: '產品分類', before: String(product.category || ''), after: category });
@@ -3087,13 +3120,13 @@ export async function updateTransferProduct(actor, oldProductId, input) {
   // 先處理尺碼增刪（仍用舊款號），再換號
   for (const size of addedSizes) {
     for (const store of TRANSFER_STORES) {
-      const _id = `${currentId}__${size}__${store}`;
+      const _id = `${uid}__${size}__${store}`;
       await transferInventoryCol().updateOne(
         { _id },
         {
           $setOnInsert: {
             _id,
-            productId: currentId,
+            productId: uid,
             size,
             store,
             quantity: 0,
@@ -3106,58 +3139,32 @@ export async function updateTransferProduct(actor, oldProductId, input) {
     }
   }
   for (const size of removedSizes) {
-    await transferInventoryCol().deleteMany({ productId: currentId, size });
+    await transferInventoryCol().deleteMany({ productId: uid, size });
   }
 
-  if (nextId !== currentId) {
-    await renameTransferProductId(currentId, nextId, now);
-    const newDoc = {
-      _id: nextId,
-      id: nextId,
-      name,
-      category,
-      color,
-      sizes: nextSizes,
-      safetyStock,
-      skus,
-      upcs,
-      upcList,
-      images,
-      ...extras,
-      active: true,
-      createdAt: product.createdAt || now,
-      updatedAt: now,
-      createdBy: product.createdBy || String(me.id),
-      createdByName: product.createdByName || actorName,
-    };
-    await transferProductsCol().insertOne(newDoc);
-    await transferProductsCol().deleteOne({ _id: product._id });
-    await transferOrdersCol().updateMany({ productId: nextId }, { $set: { productName: name } });
-  } else {
-    await transferProductsCol().updateOne(
-      { _id: product._id },
-      {
-        $set: {
-          id: currentId,
-          name,
-          category,
-          color,
-          sizes: nextSizes,
-          safetyStock,
-          skus,
-          upcs,
-          upcList,
-          images,
-          ...extras,
-          updatedAt: now,
-        },
-      }
-    );
-    await transferOrdersCol().updateMany({ productId: currentId }, { $set: { productName: name } });
-  }
+  await transferProductsCol().updateOne(
+    { _id: product._id },
+    {
+      $set: {
+        id: nextId,
+        name,
+        category,
+        color,
+        sizes: nextSizes,
+        safetyStock,
+        skus,
+        upcs,
+        upcList,
+        images,
+        ...extras,
+        updatedAt: now,
+      },
+    }
+  );
+  await transferOrdersCol().updateMany({ productId: uid }, { $set: { productName: name } });
 
   await recordTransferProductChange({
-    productId: nextId,
+    productId: uid,
     productName: name,
     action: '編輯',
     changes,
@@ -3176,7 +3183,7 @@ export async function updateTransferProduct(actor, oldProductId, input) {
     user: actorName,
   });
 
-  const updated = await transferProductsCol().findOne({ $or: [{ _id: nextId }, { id: nextId }] });
+  const updated = await transferProductsCol().findOne({ _id: product._id });
   await syncPosSellablesForTransferProduct(updated);
   return stripTransferProduct(updated);
 }
@@ -3193,13 +3200,11 @@ export async function deleteTransferProduct(actor, productId) {
   const id = normalizeProductId(productId);
   if (!id) throw new Error('缺少產品編號');
 
-  const product = await transferProductsCol().findOne({
-    $or: [{ _id: id }, { id }],
-    active: { $ne: false },
-  });
+  const product = await findActiveTransferProduct(id);
   if (!product) throw new Error('找不到商品');
+  const uid = productDocKey(product);
 
-  const invDocs = await transferInventoryCol().find({ productId: id }).toArray();
+  const invDocs = await transferInventoryCol().find({ productId: uid }).toArray();
   const stockHits = invDocs.filter((d) => (Number(d.quantity) || 0) > 0);
   if (stockHits.length) {
     const sample = stockHits
@@ -3211,7 +3216,7 @@ export async function deleteTransferProduct(actor, productId) {
 
   const pending = await transferOrdersCol().countDocuments({
     status: 'pending',
-    $or: [{ productId: id }, { 'items.productId': id }],
+    $or: [{ productId: uid }, { 'items.productId': uid }],
   });
   if (pending > 0) throw new Error('無法刪除：尚有待審批調動');
 
@@ -3232,10 +3237,10 @@ export async function deleteTransferProduct(actor, productId) {
       },
     }
   );
-  await transferInventoryCol().deleteMany({ productId: id });
+  await transferInventoryCol().deleteMany({ productId: uid });
   try {
     await posProductsCol().updateMany(
-      { transferProductId: id },
+      { transferProductId: uid },
       { $set: { active: false, updatedAt: time } }
     );
   } catch (_e) {
@@ -3246,13 +3251,13 @@ export async function deleteTransferProduct(actor, productId) {
     module: 'transfer',
     time,
     action: '刪除商品',
-    detail: `${id}｜${name}`,
+    detail: `${product.id || uid}｜${name}`,
     userId: me.id,
     userName: actorName,
     user: actorName,
   });
   await recordTransferProductChange({
-    productId: id,
+    productId: uid,
     productName: name,
     action: '刪除',
     changes: [{ field: '狀態', before: '啟用', after: '已刪除' }],
@@ -3278,11 +3283,9 @@ export async function setTransferInventoryQuantities(actor, input) {
   const size = String(input?.size || '').trim();
   if (!productId || !size) throw new Error('缺少產品編號或尺碼');
 
-  const product = await transferProductsCol().findOne({
-    $or: [{ _id: productId }, { id: productId }],
-    active: { $ne: false },
-  });
+  const product = await findActiveTransferProduct(productId);
   if (!product) throw new Error('找不到商品');
+  const uid = productDocKey(product);
   const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : ['均碼'];
   if (!sizes.includes(size)) throw new Error('此商品沒有該尺碼');
 
@@ -3292,7 +3295,7 @@ export async function setTransferInventoryQuantities(actor, input) {
   const before = {};
   const after = {};
   for (const store of TRANSFER_STORES) {
-    before[store] = await getInventoryQty(productId, size, store);
+    before[store] = await getInventoryQty(uid, size, store);
     if (qtyInput[store] === undefined || qtyInput[store] === null || qtyInput[store] === '') {
       after[store] = before[store];
     } else {
@@ -3307,11 +3310,11 @@ export async function setTransferInventoryQuantities(actor, input) {
   const time = formatHkDateTime(now);
   for (const store of TRANSFER_STORES) {
     if (before[store] === after[store]) continue;
-    const _id = `${productId}__${size}__${store}`;
+    const _id = `${uid}__${size}__${store}`;
     await transferInventoryCol().updateOne(
       { _id },
       {
-        $set: { productId, size, store, quantity: after[store], updatedAt: now },
+        $set: { productId: uid, size, store, quantity: after[store], updatedAt: now },
         $setOnInsert: { _id, createdAt: now },
       },
       { upsert: true }
@@ -3323,7 +3326,7 @@ export async function setTransferInventoryQuantities(actor, input) {
   const adjustment = {
     _id: adjId,
     id: adjId,
-    productId,
+    productId: uid,
     productName: product.name || '',
     size,
     before,
@@ -3342,7 +3345,7 @@ export async function setTransferInventoryQuantities(actor, input) {
     module: 'transfer',
     time,
     action: '庫存校正',
-    detail: `${productId}｜${size}｜${detailParts.join('、')}`,
+    detail: `${product.id || uid}｜${size}｜${detailParts.join('、')}`,
     userId: me.id,
     userName: actorName,
     user: actorName,
@@ -3463,7 +3466,7 @@ function formatTransferItemsSummary(items) {
   if (!items.length) return '';
   if (items.length === 1) {
     const it = items[0];
-    return `${it.productId} ${it.size} × ${it.quantity}`;
+    return `${it.model || it.productId} ${it.size} × ${it.quantity}`;
   }
   const totalQty = items.reduce((s, it) => s + (it.quantity || 0), 0);
   return `${items.length} 項｜共 ${totalQty} 件`;
@@ -3511,18 +3514,21 @@ export async function applyTransferRequest(actor, input) {
 
   const items = [];
   for (const draft of merged.values()) {
-    const product = await transferProductsCol().findOne({ id: draft.productId, active: { $ne: false } });
+    const product = await findActiveTransferProduct(draft.productId);
     if (!product) throw new Error(`找不到商品 ${draft.productId}`);
+    const uid = productDocKey(product);
+    const model = String(product.id || uid);
     const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : ['均碼'];
-    if (!sizes.includes(draft.size)) throw new Error(`此商品沒有該尺碼（${draft.productId} ${draft.size}）`);
-    const available = await getInventoryQty(draft.productId, draft.size, fromStore);
+    if (!sizes.includes(draft.size)) throw new Error(`此商品沒有該尺碼（${model} ${draft.size}）`);
+    const available = await getInventoryQty(uid, draft.size, fromStore);
     if (draft.quantity > available) {
       throw new Error(
-        `調動點（${fromStore}）庫存不足：${draft.productId} ${draft.size} 現有 ${available}，申請 ${draft.quantity}`
+        `調動點（${fromStore}）庫存不足：${model} ${draft.size} 現有 ${available}，申請 ${draft.quantity}`
       );
     }
     items.push({
-      productId: draft.productId,
+      productId: uid,
+      model,
       productName: product.name || '',
       category: product.category || '其他',
       color: product.color || '',
@@ -3538,12 +3544,13 @@ export async function applyTransferRequest(actor, input) {
   const summary = formatTransferItemsSummary(items);
   const first = items[0];
   const totalQty = items.reduce((s, it) => s + it.quantity, 0);
-  const linesDetail = items.map((it) => `${it.productId} ${it.productName || ''}｜尺碼 ${it.size}｜數量 ${it.quantity}`).join('\n');
+  const linesDetail = items.map((it) => `${it.model || it.productId} ${it.productName || ''}｜尺碼 ${it.size}｜數量 ${it.quantity}`).join('\n');
   const order = {
     _id: id,
     id,
     // 相容舊欄位（首項／彙總）
     productId: first.productId,
+    model: first.model || first.productId,
     productName: items.length === 1 ? first.productName : `${items.length} 項貨品`,
     category: first.category || '其他',
     color: first.color || '',
@@ -3893,11 +3900,14 @@ function stockFromMap(qtyMap, transferProductId, size) {
 
 async function syncPosSellablesForTransferProduct(product) {
   if (!product || !product.id) return;
+  const tpid = String(product._id || product.id);
   const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : ['均碼'];
   const salePrice = Number(product.priceSale != null ? product.priceSale : product.priceOriginal);
   const price = Number.isFinite(salePrice) && salePrice >= 0 ? Math.round(salePrice * 100) / 100 : 0;
   const now = formatHkDateTime();
-  const existing = await posProductsCol().find({ transferProductId: product.id }).toArray();
+  const existing = await posProductsCol().find({
+    $or: [{ transferProductId: tpid }, { transferProductId: product.id }],
+  }).toArray();
   const bySize = new Map(existing.map((d) => [String(d.size), d]));
   const keep = new Set(sizes.map((s) => String(s)));
   for (const size of sizes) {
@@ -3921,7 +3931,7 @@ async function syncPosSellablesForTransferProduct(product) {
       await posProductsCol().insertOne({
         _id: id,
         id,
-        transferProductId: product.id,
+        transferProductId: tpid,
         size,
         name: product.name || '',
         sku,
@@ -3948,7 +3958,7 @@ async function ensureMissingTransferProductsInPosCatalog() {
   const linkedSet = new Set(linked.map((x) => `${x.transferProductId}__${x.size}`));
   for (const p of products) {
     const sizes = Array.isArray(p.sizes) && p.sizes.length ? p.sizes : ['均碼'];
-    const missing = sizes.some((size) => !linkedSet.has(`${p.id}__${size}`));
+    const missing = sizes.some((size) => !linkedSet.has(`${String(p._id || p.id)}__${size}`));
     if (missing) await syncPosSellablesForTransferProduct(p);
   }
 }
@@ -3972,10 +3982,16 @@ export async function listPosProducts(user) {
   const transferIds = [...new Set(docs.map((d) => String(d.transferProductId || '')).filter(Boolean))];
   const transferDocs = transferIds.length
     ? await transferProductsCol()
-        .find({ id: { $in: transferIds } })
+        .find({ $or: [{ _id: { $in: transferIds } }, { id: { $in: transferIds } }] })
         .toArray()
     : [];
-  const transferById = new Map(transferDocs.map((p) => [String(p.id), p]));
+  const transferById = new Map();
+  transferDocs.forEach((p) => {
+    transferById.set(String(p._id), p);
+  });
+  transferDocs.forEach((p) => {
+    if (p.id && !transferById.has(String(p.id))) transferById.set(String(p.id), p);
+  });
   const products = docs.map((d) => {
     const base = stripPosProduct(d);
     const tp = transferById.get(String(d.transferProductId || '')) || {};
@@ -4013,10 +4029,10 @@ export async function listPosCatalogOptions(user) {
   for (const p of products) {
     const sizes = Array.isArray(p.sizes) && p.sizes.length ? p.sizes : ['均碼'];
     for (const size of sizes) {
-      const key = `${p.id}__${size}`;
+      const key = `${String(p._id || p.id)}__${size}`;
       if (linkedSet.has(key)) continue;
       options.push({
-        transferProductId: p.id,
+        transferProductId: String(p._id || p.id),
         name: p.name || '',
         category: p.category || '',
         color: p.color || '',
@@ -4035,18 +4051,16 @@ export async function addPosSellable(user, input = {}) {
   const transferProductId = normalizeProductId(input.transferProductId || input.productId);
   const size = String(input.size || '').trim();
   if (!transferProductId || !size) throw new Error('請選擇調動貨品與尺碼');
-  const tp = await transferProductsCol().findOne({
-    $or: [{ _id: transferProductId }, { id: transferProductId }],
-    active: { $ne: false },
-  });
+  const tp = await findActiveTransferProduct(transferProductId);
   if (!tp) throw new Error('找不到調動貨品');
+  const uid = productDocKey(tp);
   const sizes = Array.isArray(tp.sizes) && tp.sizes.length ? tp.sizes : ['均碼'];
   if (!sizes.includes(size)) throw new Error('此貨品沒有該尺碼');
-  const dup = await posProductsCol().findOne({ transferProductId, size });
+  const dup = await posProductsCol().findOne({ transferProductId: uid, size });
   if (dup) throw new Error('此貨品尺碼已在可售目錄');
   const price = Number(input.price);
   if (!isFinite(price) || price < 0) throw new Error('請填寫有效售價');
-  const sku = String(input.sku || buildTransferSku(transferProductId, tp.color, size)).trim();
+  const sku = String(input.sku || buildTransferSku(tp.id, tp.color, size)).trim();
   if (!sku) throw new Error('請填寫條碼／SKU');
   const id = `sell_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   const now = formatHkDateTime();
@@ -4054,7 +4068,7 @@ export async function addPosSellable(user, input = {}) {
   const doc = {
     _id: id,
     id,
-    transferProductId,
+    transferProductId: uid,
     size,
     name,
     sku,
@@ -4071,13 +4085,13 @@ export async function addPosSellable(user, input = {}) {
     module: 'pos',
     time: now,
     action: '加入可售商品',
-    detail: `${transferProductId}｜${size}｜$${doc.price}｜${sku}`,
+    detail: `${uid}｜${size}｜$${doc.price}｜${sku}`,
     userId: me?.id,
     userName: me?.name || me?.login,
     user: me?.name || me?.login,
   });
   const qtyMap = await buildTransferQtyMap();
-  return { product: { ...stripPosProduct(doc), stock: stockFromMap(qtyMap, transferProductId, size) } };
+  return { product: { ...stripPosProduct(doc), stock: stockFromMap(qtyMap, uid, size) } };
 }
 
 export async function listPosTransactions(user) {

@@ -16,7 +16,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiJson, fileUrl } from '@/lib/api'
-import { formatHKD } from '@/lib/format'
+import { compareProductSizes, formatHKD } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { PosCartLine, PosMember, PosProduct, PointsSettings } from '@/lib/types'
 import { PAYMENT_METHODS } from '@/lib/types'
@@ -90,7 +90,7 @@ function groupPosProducts(products: PosProduct[]): PosProductGroup[] {
     map.set(id, current)
   }
   return Array.from(map.values()).map((group) => {
-    group.items.sort((a, b) => String(a.size || '').localeCompare(String(b.size || ''), 'zh-Hant'))
+    group.items.sort((a, b) => compareProductSizes(a.size, b.size))
     return group
   })
 }

@@ -78,6 +78,29 @@ export function PosStoreProvider({ children }: { children: ReactNode }) {
     void reload()
   }, [reload])
 
+  useEffect(() => {
+    function onStorage(e: StorageEvent) {
+      if (e.key !== STORAGE_KEY) return
+      const next = String(e.newValue || '').trim()
+      if (next) setStoreState(next)
+    }
+    function onMessage(e: MessageEvent) {
+      const data = e.data as { type?: string; store?: string } | null
+      if (!data || data.type !== 'store-web-set-store') return
+      const next = String(data.store || '').trim()
+      if (next) {
+        setStoreState(next)
+        writeStoredStore(next)
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    window.addEventListener('message', onMessage)
+    return () => {
+      window.removeEventListener('storage', onStorage)
+      window.removeEventListener('message', onMessage)
+    }
+  }, [])
+
   const value = useMemo(
     () => ({ stores, store, setStore, loading, error, reload }),
     [stores, store, setStore, loading, error, reload],

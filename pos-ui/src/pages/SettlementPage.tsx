@@ -310,7 +310,7 @@ export function SettlementPage() {
               <div className="mt-1 flex h-10 items-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-800">
                 {store ? `${store}店` : '—'}
               </div>
-              <p className="mt-1 text-xs text-slate-400">請用上方「現門市」切換</p>
+              <p className="mt-1 text-xs text-slate-400">請用頂欄「所屬門市」切換</p>
             </label>
             <label className="text-sm text-slate-600">
               營業日期

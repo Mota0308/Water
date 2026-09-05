@@ -124,11 +124,14 @@
     .topbar .userinfo { gap:8px; font-size:12px; }
     .topbar button,
     .topbar .mailbox-btn,
-    .topbar #btn-logout {
+    .topbar #btn-logout,
+    .topbar-store select {
       min-height:var(--touch-min);
       padding:8px 14px;
       font-size:14px;
     }
+    .topbar-store { font-size:12px; }
+    .topbar-store select { max-width:150px; }
     .app-sidebar {
       position:fixed; left:0; top:0; bottom:0; height:100%;
       height:100dvh;
@@ -178,6 +181,17 @@
   .mailbox-btn { display:inline-flex; align-items:center; gap:6px; background:#546e7a !important; color:#fff !important; }
   .mailbox-btn:hover { background:#607d8b !important; }
   .mailbox-btn:active { background:#455a64 !important; }
+  .topbar-store {
+    display:inline-flex; align-items:center; gap:6px;
+    color:#eceff1; font-size:12px; white-space:nowrap;
+  }
+  .topbar-store.hidden { display:none !important; }
+  .topbar-store select {
+    background:#fff; color:#37474f; border:none; border-radius:6px;
+    padding:5px 10px; font-size:13px; font-weight:600; max-width:180px;
+    box-shadow:0 1px 2px rgba(0,0,0,.12); cursor:pointer;
+  }
+  .topbar-store select:disabled { opacity:.92; cursor:default; }
   .mailbox-badge {
     display:inline-flex; align-items:center; justify-content:center;
     min-width:18px; height:18px; padding:0 5px; border-radius:9px;
@@ -291,7 +305,8 @@
   .mailbox-detail .md-read-toggle:hover { filter:brightness(1.04); }
   .mailbox-detail .md-read-toggle:active { filter:brightness(.92); }
   .inv-low { color:#c62828; font-weight:bold; }
-  .inv-ok { color:#263238; }
+  .inv-ok { color:#1565c0; }
+  .inv-qty { color:#1565c0; font-weight:bold; }
   .tf-apply-products { display:flex; flex-direction:column; gap:6px; margin-top:10px; max-height:280px; overflow:auto; }
   .tf-apply-product {
     text-align:left; border:1px solid #cfd8dc; background:#fff; border-radius:8px;
@@ -324,7 +339,7 @@
   .notice-poll-bar > div { height:100%; background:#7b1fa2; border-radius:8px; min-width:0; }
   .notice-poll-count { font-size:12px; color:#8e24aa; margin-top:4px; }
   .notice-poll .btn { margin-top:8px; }
-  .inv-ok { color:#37474f; }
+  .inv-ok { color:#1565c0; }
   .tag.n-cat{background:#e3f2fd;color:#1565c0}
   .tag.n-pri-normal{background:#eceff1;color:#546e7a}
   .tag.n-pri-important{background:#fff3e0;color:#ef6c00}
@@ -613,6 +628,10 @@
       <button type="button" class="sidebar-toggle" id="sidebar-toggle" aria-label="開啟選單" title="選單">☰</button>
       <div class="brand">🏭 店鋪員工系統</div>
       <button type="button" class="mailbox-btn" id="mailbox-btn">信箱通知<span id="mailbox-badge" class="mailbox-badge hidden">0</span></button>
+      <label class="topbar-store hidden" id="top-store-wrap">
+        <span>所屬門市</span>
+        <select id="top-store-select" aria-label="賬號所屬門市" onchange="setWorkingStore(this.value)"></select>
+      </label>
     </div>
     <div class="userinfo"><span id="cloud-sync-status" style="font-size:12px;opacity:.9"></span><span id="top-user"></span><button type="button" id="btn-logout">登出</button></div>
   </div>
