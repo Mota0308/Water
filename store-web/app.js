@@ -159,7 +159,7 @@ const ST = {
 function stTag(s){
   const map = {'未開始':'s-notstart','待處理':'s-pending','進行中':'s-doing','待確認':'s-wait',
     '需要修改':'s-fix','已退回':'s-return','已完成':'s-done','直接下一階段':'s-skip','不適用':'s-na','逾期':'s-overdue',
-    '暫停':'s-pause','已取消':'s-cancel','已封存':'s-archive'};
+    '暫停':'s-pause','已取消':'s-cancel','已封存':'s-archive','草稿':'s-wait'};
   return `<span class="tag ${map[s]||'s-notstart'}">${s}</span>`;
 }
 
@@ -874,7 +874,7 @@ function fileHref(f){
 }
 async function initCloud(){
   apiReady = false;
-  loadAuthToken();
+  try{ clearAuthToken(); }catch(e){}
   try{
     const health = await apiFetch('/api/health');
     apiEnabled = !!(health.mongoConfigured || health.configured || health.driveConfigured);
@@ -884,24 +884,12 @@ async function initCloud(){
       apiReady = true;
       return;
     }
-    // 未登入時不打受保護 API；有 token 則嘗試恢復工作階段
-    if(authToken){
-      try{
-        const me = await apiFetch('/api/auth/me');
-        if(me && me.user){
-          await loadCloudAppData();
-          enterAppAs(normalizeUser(me.user), { silent:true });
-        } else {
-          clearAuthToken();
-          loadUsersLocal();
-        }
-      }catch(e){
-        clearAuthToken();
-        loadUsersLocal();
-      }
-    } else {
-      loadUsersLocal();
-    }
+    // 取消自動登入：不依本機 token／cookie 恢復工作階段，每次開啟都要重新登入
+    try{
+      await apiFetch('/api/auth/logout', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+    }catch(_e){}
+    clearAuthToken();
+    loadUsersLocal();
   }catch(e){
     console.warn('Cloud init failed, fallback to local mode:', e);
     apiEnabled = false;
@@ -2898,6 +2886,7 @@ const TRANSFER_CATEGORY_FALLBACK = [
 ];
 let transferProductOptionsCache = null; // { brands:[], colors:[], sizeOptions:[] }
 let transferProductImageDraft = null; // { name, dataUrl, file } pending local pick before upload
+let transferVariantDrafts = {}; // color -> { images:[{name,dataUrl,file,url,fileId}], upcs:{size:upc} }
 let transferProductModalReturn = null; // snapshot to reopen add/edit product after adding options
 
 let transferInvCache = null; // { stores, categories, rows }
@@ -3092,31 +3081,33 @@ function collectTransferProductForm(){
   const category = catSel==='__custom__'
     ? ((document.getElementById('tp-cat-custom')||{}).value||'').trim()
     : catSel.trim();
-  const color = ((document.getElementById('tp-color')||{}).value||'').trim();
+  snapshotTransferVariantDraftsFromDom();
+  const colors = getTransferProductFormColors();
+  const color = colors.length ? colors[0] : ((document.getElementById('tp-color')||{}).value||'').trim();
   const safetyStock = Number((document.getElementById('tp-safety')||{}).value);
   const brand = ((document.getElementById('tp-brand')||{}).value||'').trim();
-  const upc = ((document.getElementById('tp-upc')||{}).value||'').trim();
-  if(!upc) transferUpcManual = false;
   const nameEn = ((document.getElementById('tp-name-en')||{}).value||'').trim();
-  const imageUrl = ((document.getElementById('tp-image')||{}).value||'').trim();
-  const imageFileId = ((document.getElementById('tp-image-file-id')||{}).value||'').trim();
   const tickieCategory = ((document.getElementById('tp-tickie-cat')||{}).value||'').trim();
   const priceOriginalRaw = ((document.getElementById('tp-price-original')||{}).value||'').trim();
   const priceSaleRaw = ((document.getElementById('tp-price-sale')||{}).value||'').trim();
   const tickiePointsRaw = ((document.getElementById('tp-tickie-points')||{}).value||'').trim();
   const sizes = getTransferProductFormSizes();
+  const firstDraft = ensureTransferVariantDraft(color);
+  const firstUpcs = firstDraft.upcs || {};
   const skus = buildTransferSkusMapFe(id, color, sizes);
-  const skuTyped = ((document.getElementById('tp-sku')||{}).value||'').trim();
-  const sku = skuTyped || (sizes.length ? (skus[sizes[0]] || Object.values(skus)[0] || '') : '');
-  const upcFinal = upc || buildTransferUpcFe();
-  const upcEl = document.getElementById('tp-upc');
-  if(upcEl && !upc) upcEl.value = upcFinal;
+  const sku = sizes.length ? (skus[sizes[0]] || Object.values(skus)[0] || '') : '';
+  const upcFinal = (sizes.length && firstUpcs[sizes[0]]) || firstUpcs[Object.keys(firstUpcs)[0]] || '';
+  const firstImg = (firstDraft.images && firstDraft.images[0]) || {};
   return {
-    id, name, category, color, sizes, safetyStock,
-    brand, sku, skus, upc: upcFinal, nameEn, imageUrl, imageFileId, tickieCategory,
+    id, name, category, color, colors, sizes, safetyStock,
+    brand, sku, skus, upc: upcFinal, upcs: firstUpcs, nameEn,
+    imageUrl: firstImg.url || '', imageFileId: firstImg.fileId || '',
+    images: (firstDraft.images||[]).slice(),
+    tickieCategory,
     priceOriginal: priceOriginalRaw==='' ? null : Number(priceOriginalRaw),
     priceSale: priceSaleRaw==='' ? null : Number(priceSaleRaw),
-    tickiePoints: tickiePointsRaw==='' ? null : Number(tickiePointsRaw)
+    tickiePoints: tickiePointsRaw==='' ? null : Number(tickiePointsRaw),
+    variantDrafts: transferVariantDrafts
   };
 }
 function validateTransferProductForm(form){
@@ -3150,7 +3141,10 @@ function getTransferBrandOptions(){
 }
 function getTransferColorOptions(){
   const fromCache = (transferProductOptionsCache && transferProductOptionsCache.colors) || [];
-  const fromProducts = (transferProductsCache||[]).map(function(p){ return String(p.color||'').trim(); }).filter(Boolean);
+  const fromProducts = (transferProductsCache||[]).flatMap(function(p){
+    const list = Array.isArray(p.colors) && p.colors.length ? p.colors : [p.color];
+    return list.map(function(c){ return String(c||'').trim(); }).filter(Boolean);
+  });
   const out = [];
   const seen = {};
   fromCache.concat(fromProducts).forEach(function(c){
@@ -3249,6 +3243,292 @@ function getTransferProductFormSizes(){
   }
   return sizes;
 }
+function getTransferProductFormColors(){
+  const colors = [];
+  const st = transferComboStore['tp-color'];
+  if(st && st.multi && Array.isArray(st.selected)){
+    st.selected.forEach(function(c){ if(c) colors.push(String(c)); });
+  } else {
+    const el = document.getElementById('tp-color');
+    if(el && el.multiple){
+      Array.prototype.forEach.call(el.selectedOptions||[], function(opt){
+        if(opt && opt.value) colors.push(opt.value);
+      });
+    } else if(el && String(el.value||'').trim()){
+      colors.push(String(el.value).trim());
+    }
+  }
+  return colors;
+}
+function transferVariantColorKey(color){
+  return String(color||'') === '' ? '__none__' : String(color);
+}
+function transferVariantColorFromKey(key){
+  return key === '__none__' ? '' : String(key||'');
+}
+function ensureTransferVariantDraft(color){
+  const key = String(color||'');
+  if(!transferVariantDrafts[key]) transferVariantDrafts[key] = { images: [], upcs: {} };
+  if(!transferVariantDrafts[key].upcs) transferVariantDrafts[key].upcs = {};
+  if(!Array.isArray(transferVariantDrafts[key].images)) transferVariantDrafts[key].images = [];
+  return transferVariantDrafts[key];
+}
+function resetTransferVariantDrafts(fromProduct){
+  transferVariantDrafts = {};
+  if(!fromProduct) return;
+  if(fromProduct.variantDrafts && typeof fromProduct.variantDrafts==='object'){
+    transferVariantDrafts = fromProduct.variantDrafts;
+    return;
+  }
+  const colors = Array.isArray(fromProduct.colors) && fromProduct.colors.length
+    ? fromProduct.colors.map(String)
+    : [String(fromProduct.color||'')];
+  colors.forEach(function(color){
+    const draft = ensureTransferVariantDraft(color);
+    if(fromProduct.upcs && typeof fromProduct.upcs==='object'){
+      Object.keys(fromProduct.upcs).forEach(function(sz){
+        if(fromProduct.upcs[sz]) draft.upcs[sz] = String(fromProduct.upcs[sz]);
+      });
+    }
+    if(!Object.keys(draft.upcs).length && fromProduct.upc && Array.isArray(fromProduct.sizes) && fromProduct.sizes[0]){
+      draft.upcs[fromProduct.sizes[0]] = String(fromProduct.upc);
+    }
+    if(Array.isArray(fromProduct.images) && fromProduct.images.length){
+      draft.images = fromProduct.images.map(function(img){
+        return {
+          name: img.name || '',
+          url: img.url || img.imageUrl || '',
+          fileId: img.fileId || img.imageFileId || '',
+          dataUrl: img.dataUrl || '',
+          file: img.file || null
+        };
+      });
+    } else if(fromProduct.imageUrl || fromProduct.imageFileId){
+      draft.images = [{
+        name: '',
+        url: fromProduct.imageUrl || '',
+        fileId: fromProduct.imageFileId || '',
+        dataUrl: '',
+        file: null
+      }];
+    }
+  });
+}
+function snapshotTransferVariantDraftsFromDom(){
+  const used = {};
+  document.querySelectorAll('input.tp-variant-upc').forEach(function(el){
+    const color = transferVariantColorFromKey(el.getAttribute('data-color'));
+    const size = String(el.getAttribute('data-size')||'');
+    if(!size) return;
+    const draft = ensureTransferVariantDraft(color);
+    const v = String(el.value||'').trim();
+    if(v){
+      draft.upcs[size] = v;
+      used[v] = true;
+    }
+  });
+  return used;
+}
+function nextUniqueUpcFe(used){
+  used = used || {};
+  let upc = buildTransferUpcFe();
+  let i = 0;
+  while(used[upc] && i<24){
+    upc = buildTransferUpcFe();
+    i++;
+  }
+  used[upc] = true;
+  return upc;
+}
+function transferColorProductId(baseId, color, usedIds, isFirst){
+  usedIds = usedIds || {};
+  const abbr = transferColorAbbrFe(color) || 'C';
+  let candidate = isFirst ? String(baseId) : (String(baseId)+'-'+abbr);
+  if(usedIds[candidate] && isFirst) candidate = String(baseId)+'-'+abbr;
+  let id = candidate;
+  let n = 2;
+  while(usedIds[id]){
+    id = candidate+'-'+n;
+    n++;
+  }
+  usedIds[id] = true;
+  return id;
+}
+function transferProductImageHref(img){
+  if(!img) return '';
+  if(img.dataUrl) return img.dataUrl;
+  if(img.fileId){
+    return typeof withFileToken==='function' ? withFileToken(apiUrl('/api/files/'+img.fileId)) : (img.url||'');
+  }
+  return img.url || '';
+}
+function refreshTransferProductVariantPanels(){
+  const host = document.getElementById('tp-variant-panels');
+  if(!host) return;
+  const usedUpcs = snapshotTransferVariantDraftsFromDom();
+  const id = ((document.getElementById('tp-id')||{}).value||'').trim();
+  const sizes = getTransferProductFormSizes();
+  let colors = getTransferProductFormColors();
+  if(!colors.length) colors = [''];
+  colors.forEach(function(color){
+    const draft = ensureTransferVariantDraft(color);
+    sizes.forEach(function(sz){
+      if(!draft.upcs[sz]) draft.upcs[sz] = nextUniqueUpcFe(usedUpcs);
+      else usedUpcs[draft.upcs[sz]] = true;
+    });
+    Object.keys(draft.upcs).forEach(function(sz){
+      if(sizes.indexOf(sz)<0) delete draft.upcs[sz];
+    });
+  });
+  const usedIds = {};
+  host.innerHTML = colors.map(function(color, ci){
+    const draft = ensureTransferVariantDraft(color);
+    const colorKey = transferVariantColorKey(color);
+    const productId = id ? transferColorProductId(id, color, usedIds, ci===0) : '';
+    const title = color ? ('顏色：'+escHtml(color)) : '未選顏色';
+    const skuRows = sizes.length
+      ? sizes.map(function(sz){
+          const sku = productId ? buildTransferSkuFe(productId, color, sz) : '（先填型號）';
+          const upc = draft.upcs[sz] || '';
+          return '<tr>'
+            +'<td style="white-space:nowrap;padding:6px 8px 6px 0"><b>'+escHtml(sz)+'</b></td>'
+            +'<td style="padding:6px 8px 6px 0"><code style="font-size:12px">'+escHtml(sku)+'</code></td>'
+            +'<td style="padding:6px 0">'
+            +'<input type="text" class="tp-variant-upc" data-color="'+escHtml(colorKey)+'" data-size="'+escHtml(sz)+'" value="'+escHtml(upc)+'" placeholder="自動產生，可改" style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #cfd8dc;border-radius:8px;font-size:13px">'
+            +'</td>'
+            +'</tr>';
+        }).join('')
+      : '<tr><td colspan="3" style="color:#90a4ae;font-size:12px;padding:6px 0">請先選擇尺碼，才會產生 SKU／UPC。</td></tr>';
+    const thumbs = (draft.images||[]).length
+      ? '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">'+draft.images.map(function(img, ii){
+          const href = transferProductImageHref(img);
+          const preview = href
+            ? '<img src="'+escHtml(href)+'" alt="" style="width:100%;height:100%;object-fit:contain;display:block">'
+            : '<span style="font-size:11px;color:#90a4ae">無預覽</span>';
+          return '<div style="width:72px">'
+            +'<div style="width:72px;height:72px;border:1px solid #e0e0e0;border-radius:8px;background:#fafafa;overflow:hidden;display:flex;align-items:center;justify-content:center">'+preview+'</div>'
+            +'<button type="button" class="btn red sm" style="width:100%;margin-top:4px;padding:2px 4px" data-call="removeTransferVariantImage" data-arg0="'+escHtml(colorKey)+'" data-arg1="'+ii+'">移除</button>'
+            +'</div>';
+        }).join('')+'</div>'
+      : '<p style="font-size:12px;color:#90a4ae;margin:6px 0 0">尚未選擇圖片</p>';
+    return '<div style="border:1px solid #e0e0e0;border-radius:10px;padding:12px;margin:0 0 10px;background:#fff">'
+      +'<div style="font-weight:700;margin:0 0 8px">'+title+(productId?' <span style="font-weight:400;color:#78909c;font-size:12px">型號 '+escHtml(productId)+'</span>':'')+'</div>'
+      +'<div class="table-wrap"><table style="width:100%;font-size:13px"><tr><th style="text-align:left">尺碼</th><th style="text-align:left">SKU</th><th style="text-align:left">UPC（每尺碼不同）</th></tr>'
+      +skuRows+'</table></div>'
+      +'<label style="margin-top:10px">上傳圖片（可多張）</label>'
+      +'<input type="file" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" multiple data-color="'+escHtml(colorKey)+'" onchange="onTransferVariantImagesPick(this)">'
+      +thumbs
+      +'</div>';
+  }).join('');
+}
+function onTransferVariantImagesPick(input){
+  const files = input && input.files;
+  if(!files || !files.length) return;
+  const color = transferVariantColorFromKey(input.getAttribute('data-color'));
+  const draft = ensureTransferVariantDraft(color);
+  const list = Array.prototype.slice.call(files);
+  let i = 0;
+  function next(){
+    if(i>=list.length){
+      input.value = '';
+      refreshTransferProductVariantPanels();
+      return;
+    }
+    const file = list[i++];
+    if(!/^image\//i.test(file.type||'') && !/\.(jpe?g|png|webp|gif)$/i.test(file.name||'')){
+      next();
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = function(){
+      draft.images.push({
+        name: file.name,
+        dataUrl: String(reader.result||''),
+        file: file,
+        url: '',
+        fileId: ''
+      });
+      next();
+    };
+    reader.onerror = function(){ next(); };
+    reader.readAsDataURL(file);
+  }
+  next();
+}
+function removeTransferVariantImage(colorKey, idx){
+  const color = transferVariantColorFromKey(colorKey);
+  const draft = ensureTransferVariantDraft(color);
+  draft.images.splice(Number(idx)||0, 1);
+  refreshTransferProductVariantPanels();
+}
+async function uploadTransferVariantImages(images){
+  const out = [];
+  const list = Array.isArray(images) ? images : [];
+  for(let i=0;i<list.length;i++){
+    const img = list[i] || {};
+    if(img.fileId || (img.url && !img.file && !img.dataUrl)){
+      out.push({ url: img.url||'', fileId: img.fileId||'', name: img.name||'' });
+      continue;
+    }
+    if(img.file){
+      const up = await cloudUploadFile(img.file, { title:'上傳產品圖片' });
+      out.push({ url: up.dataUrl||'', fileId: up.driveFileId||'', name: img.name||img.file.name||'' });
+    } else if(img.dataUrl){
+      const up = await cloudUploadDataUrl(img.name||'image.jpg', img.dataUrl, { title:'上傳產品圖片' });
+      out.push({ url: up.dataUrl||'', fileId: up.driveFileId||'', name: img.name||'' });
+    }
+  }
+  return out;
+}
+async function prepareTransferProductVariants(form){
+  snapshotTransferVariantDraftsFromDom();
+  const base = form || collectTransferProductForm();
+  let colors = Array.isArray(base.colors) && base.colors.length ? base.colors.slice() : (base.color ? [base.color] : ['']);
+  if(!colors.length) colors = [''];
+  const sizes = base.sizes || [];
+  const usedIds = {};
+  (transferProductsCache||[]).forEach(function(p){
+    if(p && p.id && String(p.id)!==String(transferEditOriginalId||'')) usedIds[String(p.id)] = true;
+  });
+  const payloads = [];
+  for(let i=0;i<colors.length;i++){
+    const color = colors[i];
+    const draft = ensureTransferVariantDraft(color);
+    let productId;
+    if(i===0){
+      productId = String(base.id);
+      usedIds[productId] = true;
+    } else {
+      productId = transferColorProductId(base.id, color, usedIds, false);
+    }
+    const skus = buildTransferSkusMapFe(productId, color, sizes);
+    const uploaded = await uploadTransferVariantImages(draft.images||[]);
+    const upcs = {};
+    sizes.forEach(function(sz){ if(draft.upcs && draft.upcs[sz]) upcs[sz] = draft.upcs[sz]; });
+    payloads.push({
+      id: productId,
+      name: base.name,
+      category: base.category,
+      color: color,
+      sizes: sizes,
+      safetyStock: base.safetyStock,
+      brand: base.brand,
+      sku: sizes.length ? (skus[sizes[0]] || '') : '',
+      skus: skus,
+      upc: sizes.length ? (upcs[sizes[0]] || '') : '',
+      upcs: upcs,
+      nameEn: base.nameEn,
+      imageUrl: uploaded[0] ? uploaded[0].url : '',
+      imageFileId: uploaded[0] ? uploaded[0].fileId : '',
+      images: uploaded,
+      tickieCategory: base.tickieCategory,
+      priceOriginal: base.priceOriginal,
+      priceSale: base.priceSale,
+      tickiePoints: base.tickiePoints
+    });
+  }
+  return payloads;
+}
 var transferUpcManual = false;
 var transferSkuManual = false;
 function markTransferUpcManual(){
@@ -3273,42 +3553,7 @@ function ensureAutoTransferUpc(){
   if(!String(upcInput.value||'').trim()) upcInput.value = buildTransferUpcFe();
 }
 function refreshTransferProductSkuPreview(){
-  const id = ((document.getElementById('tp-id')||{}).value||'').trim();
-  const color = ((document.getElementById('tp-color')||{}).value||'').trim();
-  const sizes = getTransferProductFormSizes();
-  const preview = document.getElementById('tp-sku-preview');
-  const skuInput = document.getElementById('tp-sku');
-  let first = '';
-  if(id){
-    if(sizes.length){
-      const skus = buildTransferSkusMapFe(id, color, sizes);
-      first = skus[sizes[0]] || Object.values(skus)[0] || '';
-    } else {
-      first = buildTransferSkuFe(id, color, '');
-    }
-  }
-  if(skuInput && !transferSkuManual) skuInput.value = first || '';
-  ensureAutoTransferUpc();
-  if(!preview) return;
-  if(!id){
-    preview.style.display = 'none';
-    preview.innerHTML = '';
-    return;
-  }
-  const colorHint = color ? (transferColorAbbrFe(color)+'＝'+escHtml(color)) : '尚未選顏色';
-  const sizeHint = sizes.length ? '主 SKU＝首個尺碼' : '尚未選尺碼';
-  preview.style.display = '';
-  if(!sizes.length){
-    preview.innerHTML = '<div style="font-size:11px;color:#78909c;margin:0 0 6px">'+colorHint+' · '+sizeHint+'</div>'
-      +'<div><code style="font-size:13px">'+escHtml(first)+'</code></div>';
-    return;
-  }
-  const skus = buildTransferSkusMapFe(id, color, sizes);
-  preview.innerHTML = '<div style="font-size:11px;color:#78909c;margin:0 0 6px">'+colorHint+' · '+sizeHint+'</div>'
-    +sizes.map(function(sz, idx){
-      const mark = idx===0 ? ' <span style="color:#546e7a;font-size:11px">(主)</span>' : '';
-      return '<div><b>'+escHtml(sz)+'</b>'+mark+' → <code style="font-size:13px">'+escHtml(skus[sz]||'')+'</code></div>';
-    }).join('');
+  refreshTransferProductVariantPanels();
 }
 var transferComboStore = {};
 function transferComboInputStyle(){
@@ -3469,7 +3714,7 @@ function transferComboPick(id, value){
     const chips = document.getElementById(id+'-chips');
     if(chips) chips.innerHTML = transferComboChipsHtml(id);
     transferComboSyncMultiSelect(id);
-    if(id==='tp-sizes') refreshTransferProductSkuPreview();
+    if(id==='tp-sizes' || id==='tp-color') refreshTransferProductSkuPreview();
     transferComboOpen(id);
     return;
   }
@@ -3493,7 +3738,7 @@ function transferComboRemoveMulti(id, value){
   const chips = document.getElementById(id+'-chips');
   if(chips) chips.innerHTML = transferComboChipsHtml(id);
   transferComboSyncMultiSelect(id);
-  if(id==='tp-sizes') refreshTransferProductSkuPreview();
+  if(id==='tp-sizes' || id==='tp-color') refreshTransferProductSkuPreview();
 }
 function transferComboKey(e, id){
   if(!e) return;
@@ -3537,10 +3782,13 @@ function transferBrandSelectHtml(selected){
   });
 }
 function transferColorSelectHtml(selected){
-  return transferComboSingleHtml('tp-color', getTransferColorOptions(), selected, {
-    allowEmpty: true,
-    emptyLabel: '（未選顏色）',
-    placeholder: '輸入關鍵字搜尋顏色…'
+  const selectedList = Array.isArray(selected)
+    ? selected.map(String).filter(Boolean)
+    : (selected ? [String(selected)] : []);
+  const opts = getTransferColorOptions().slice();
+  selectedList.forEach(function(c){ if(c && opts.indexOf(c)<0) opts.push(c); });
+  return transferComboMultiHtml('tp-color', opts, selectedList, {
+    placeholder: '輸入關鍵字搜尋顏色，可多選…'
   });
 }
 function transferSizeSelectHtml(selectedSizes){
@@ -3592,12 +3840,23 @@ function transferProductImageFieldHtml(p){
   // 相容舊呼叫：改為縮圖欄（顯示於品牌左側）
   return transferProductImageThumbHtml(p);
 }
+function transferProductPrimaryImage(p){
+  p = p || {};
+  if(Array.isArray(p.images) && p.images[0]){
+    return {
+      imageUrl: p.images[0].url || p.imageUrl || '',
+      imageFileId: p.images[0].fileId || p.imageFileId || ''
+    };
+  }
+  return { imageUrl: p.imageUrl||'', imageFileId: p.imageFileId||'' };
+}
 function transferProductListThumbHtml(p, size){
   p = p || {};
   const px = Number(size)||48;
-  const href = p.imageFileId
-    ? (typeof withFileToken==='function' ? withFileToken(apiUrl('/api/files/'+p.imageFileId)) : (p.imageUrl||''))
-    : (p.imageUrl||'');
+  const primary = transferProductPrimaryImage(p);
+  const href = primary.imageFileId
+    ? (typeof withFileToken==='function' ? withFileToken(apiUrl('/api/files/'+primary.imageFileId)) : (primary.imageUrl||''))
+    : (primary.imageUrl||'');
   if(href){
     return '<img src="'+escHtml(href)+'" alt="" loading="lazy" style="width:'+px+'px;height:'+px+'px;object-fit:contain;border:1px solid #e0e0e0;border-radius:8px;background:#fafafa;display:block;flex:0 0 '+px+'px">';
   }
@@ -3648,23 +3907,14 @@ async function ensureTransferProductImageUploaded(form){
 function transferProductAttrFieldsHtml(p){
   p = p || {};
   function val(k){ return p[k]==null || p[k]==='' ? '' : String(p[k]); }
-  return '<div style="display:flex;gap:14px;align-items:flex-start;margin:8px 0 4px">'
-    +transferProductImageThumbHtml(p)
-    +'<div style="flex:1;min-width:0">'
+  return '<div style="margin:8px 0 4px">'
     +transferOptionFieldLabelHtml('品牌', 'brand')
     +transferBrandSelectHtml(val('brand'))
-    +'<label>SKU（自動生成，可修改）</label>'
-    +'<input type="text" id="tp-sku" value="'+escHtml(val('sku'))+'" placeholder="填寫型號後自動顯示，可手動修改" oninput="markTransferSkuManual()">'
-    +'<div id="tp-sku-preview" style="border:1px solid #e0e0e0;border-radius:8px;background:#fafafa;padding:10px 12px;font-size:13px;line-height:1.55;min-height:0;margin-top:8px;color:#37474f"></div>'
-    +'<p style="font-size:12px;color:#888;margin:4px 0 0">格式：型號＋顏色縮寫＋尺碼。尺碼若為數字會顯示兩位（1→01）。手動改過主 SKU 後不會覆蓋（清空後恢復自動）。</p>'
-    +'<label>UPC（自動生成，可修改）</label>'
-    +'<input type="text" id="tp-upc" value="'+escHtml(val('upc'))+'" placeholder="自動產生條碼，可手動修改" oninput="markTransferUpcManual()">'
-    +'<p style="font-size:12px;color:#888;margin:4px 0 0">系統自動產生店內條碼；手動改過後不會覆蓋（清空後會重新產生）。</p>'
     +'<label>原價</label><input type="number" id="tp-price-original" min="0" step="0.01" value="'+escHtml(val('priceOriginal'))+'" placeholder="可留空">'
     +'<label>優惠價</label><input type="number" id="tp-price-sale" min="0" step="0.01" value="'+escHtml(val('priceSale'))+'" placeholder="可留空">'
     +'<label>剔剔積分類</label><input type="text" id="tp-tickie-cat" value="'+escHtml(val('tickieCategory'))+'" placeholder="可留空">'
     +'<label>剔剔積分</label><input type="number" id="tp-tickie-points" min="0" step="0.5" value="'+escHtml(val('tickiePoints'))+'" placeholder="例如 2">'
-    +'</div></div>';
+    +'</div>';
 }
 function transferProductSizeChecksHtml(selectedSizes){
   return transferSizeSelectHtml(selectedSizes);
@@ -3801,17 +4051,16 @@ function fillTransferProductFormFields(form){
   setVal('tp-id', form.id);
   setVal('tp-name', form.name);
   setVal('tp-name-en', form.nameEn);
-  setVal('tp-sku', form.sku);
-  setVal('tp-upc', form.upc);
   setVal('tp-price-original', form.priceOriginal);
   setVal('tp-price-sale', form.priceSale);
   setVal('tp-tickie-cat', form.tickieCategory);
   setVal('tp-tickie-points', form.tickiePoints);
   setVal('tp-safety', form.safetyStock!=null?form.safetyStock:0);
-  setVal('tp-image', form.imageUrl);
-  setVal('tp-image-file-id', form.imageFileId);
   transferComboSetSingle('tp-brand', form.brand||'');
-  transferComboSetSingle('tp-color', form.color||'');
+  const colors = Array.isArray(form.colors) && form.colors.length
+    ? form.colors
+    : (form.color ? [form.color] : []);
+  transferComboSetMulti('tp-color', colors);
   if(form.category){
     const known = getTransferCategoryOptions().indexOf(String(form.category))>=0;
     if(known){
@@ -3822,35 +4071,8 @@ function fillTransferProductFormFields(form){
     }
   }
   if(Array.isArray(form.sizes)) transferComboSetMulti('tp-sizes', form.sizes);
-  // 已有 UPC／手動 SKU 視為鎖定，避免重整預覽時覆蓋
-  resetTransferUpcManual(!!(form.upc && String(form.upc).trim()));
-  resetTransferSkuManual(!!(form.sku && String(form.sku).trim()));
+  if(form.variantDrafts) resetTransferVariantDrafts(form);
   refreshTransferProductSkuPreview();
-  if(transferSkuManual && form.sku) setVal('tp-sku', form.sku);
-  if(form.upc && String(form.upc).trim()){
-    setVal('tp-upc', form.upc);
-  } else {
-    ensureAutoTransferUpc();
-  }
-  const nameEl = document.getElementById('tp-image-name');
-  const preview = document.getElementById('tp-image-preview');
-  if(transferProductImageDraft && transferProductImageDraft.dataUrl){
-    if(nameEl) nameEl.textContent = '已選：'+(transferProductImageDraft.name||'圖片')+'（儲存時上傳）';
-    if(preview){
-      preview.innerHTML = '<img src="'+escHtml(transferProductImageDraft.dataUrl)+'" alt="預覽" style="width:100%;height:100%;object-fit:contain;display:block">';
-    }
-  } else if(form.imageFileId || form.imageUrl){
-    const href = form.imageFileId
-      ? (typeof withFileToken==='function' ? withFileToken(apiUrl('/api/files/'+form.imageFileId)) : (form.imageUrl||''))
-      : (form.imageUrl||'');
-    if(nameEl) nameEl.textContent = '已有圖片';
-    if(preview && href){
-      preview.innerHTML = '<img src="'+escHtml(href)+'" alt="產品圖" style="width:100%;height:100%;object-fit:contain;display:block">';
-    }
-  } else {
-    if(nameEl) nameEl.textContent = '尚未選擇';
-    if(preview) preview.innerHTML = '<span style="font-size:11px;color:#90a4ae;text-align:center;padding:8px;line-height:1.35">尚未<br>選擇圖片</span>';
-  }
 }
 function reopenTransferProductModalAfterOptions(){
   const ret = transferProductModalReturn;
@@ -3964,12 +4186,14 @@ function openAddTransferProductModal(prefillForm){
   if(!currentUser){ alert2('請先登入。'); return; }
   transferEditOriginalId = null;
   if(!prefillForm) transferProductImageDraft = null;
-  resetTransferUpcManual(!!(prefillForm && prefillForm.upc && String(prefillForm.upc).trim()));
-  resetTransferSkuManual(!!(prefillForm && prefillForm.sku && String(prefillForm.sku).trim()));
+  resetTransferVariantDrafts(prefillForm||null);
+  const colorPrefill = prefillForm
+    ? (Array.isArray(prefillForm.colors) ? prefillForm.colors : (prefillForm.color||''))
+    : [];
   const open = function(){
     showModal(
       '<h3>新增產品</h3>'
-      +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">商品屬性依 Excel「18062026」。圖片顯示在品牌左側；品牌／產品分類／顏色／商品選項可在各欄右側「＋ 添加」一次新增多個後再選。</p>'
+      +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">顏色可多選：每種顏色會顯示獨立的 SKU、每尺碼 UPC 與多圖上傳。儲存時每個顏色各建立一筆產品（第一個顏色用上方型號，其餘自動加上顏色縮寫）。品牌／分類／顏色／尺碼可在各欄「＋ 添加」。</p>'
       +'<label>型號</label><input type="text" id="tp-id" placeholder="例如 WS-S002" maxlength="64" oninput="refreshTransferProductSkuPreview()">'
       +'<label>商品名</label><input type="text" id="tp-name" placeholder="商品名稱">'
       +'<label>英文</label><input type="text" id="tp-name-en" placeholder="English name">'
@@ -3977,39 +4201,44 @@ function openAddTransferProductModal(prefillForm){
       +transferOptionFieldLabelHtml('產品分類', 'category')
       +transferCategorySelectHtml((prefillForm&&prefillForm.category)||'其他')
       +'<div id="tp-cat-custom-wrap" style="display:none"><label>自訂產品分類</label><input type="text" id="tp-cat-custom" placeholder="輸入新分類"></div>'
-      +transferOptionFieldLabelHtml('顏色（可留空）', 'color')
-      +transferColorSelectHtml((prefillForm&&prefillForm.color)||'')
+      +transferOptionFieldLabelHtml('顏色（可多選）', 'color')
+      +transferColorSelectHtml(colorPrefill)
       +transferOptionFieldLabelHtml('商品選項（尺碼）', 'size')
       +transferSizeSelectHtml((prefillForm&&prefillForm.sizes)||[])
+      +'<div id="tp-variant-panels"></div>'
       +'<label>安全存量</label><input type="number" id="tp-safety" min="0" step="1" value="0">'
       +'<div class="actions">'
       +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
       +'<button type="button" class="btn green" data-action="submit-transfer-product">建立產品</button>'
       +'</div>'
     , { closeOnBackdrop: false });
+    const modalEl = document.getElementById('modal-content');
+    if(modalEl) modalEl.classList.add('modal-wide');
     if(prefillForm) fillTransferProductFormFields(prefillForm);
-    else {
-      refreshTransferProductSkuPreview();
-      ensureAutoTransferUpc();
-    }
+    else refreshTransferProductSkuPreview();
   };
   loadTransferProductOptions(true).then(open).catch(open);
 }
 async function submitTransferProduct(){
-  let form = collectTransferProductForm();
+  const form = collectTransferProductForm();
   if(!validateTransferProductForm(form)) return;
   try{
-    form = await ensureTransferProductImageUploaded(form);
-    await apiFetch('/api/transfer/products', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(form)
-    });
+    const variants = await prepareTransferProductVariants(form);
+    const created = [];
+    for(let i=0;i<variants.length;i++){
+      await apiFetch('/api/transfer/products', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(variants[i])
+      });
+      created.push(variants[i].id);
+    }
     closeModal();
+    transferVariantDrafts = {};
     invalidateTransferCaches();
     await loadTransferProducts(true);
     render();
-    alert2('已建立產品 '+form.id+'，庫存均為 0，可點擊該列展開後用「改庫存」填入數量。');
+    alert2('已建立 '+created.length+' 個產品：'+created.join('、')+'。庫存均為 0，可點擊該列展開後用「改庫存」填入數量。');
   }catch(e){
     alert2('建立失敗：'+(e.message||e));
   }
@@ -4021,21 +4250,18 @@ function openEditTransferProductModal(productId, prefillForm){
   if(!p){ alert2('找不到該產品，請重新整理後再試。'); return; }
   transferEditOriginalId = String(p.id);
   if(!prefillForm) transferProductImageDraft = null;
-  const existingUpc = (prefillForm && prefillForm.upc != null) ? prefillForm.upc : p.upc;
-  resetTransferUpcManual(!!(existingUpc && String(existingUpc).trim()));
-  const existingSku = (prefillForm && prefillForm.sku != null) ? prefillForm.sku : p.sku;
-  const autoSku = (Array.isArray(p.sizes) && p.sizes.length)
-    ? buildTransferSkuFe(p.id, p.color, p.sizes[0])
-    : buildTransferSkuFe(p.id, p.color, '');
-  resetTransferSkuManual(!!(existingSku && String(existingSku).trim() && String(existingSku)!==autoSku));
+  resetTransferVariantDrafts(prefillForm||p);
   const sizes = Array.isArray(p.sizes) ? p.sizes : [];
   const cat = (prefillForm&&prefillForm.category)!=null ? String(prefillForm.category||'') : (p.category || '其他');
+  const colorPrefill = prefillForm
+    ? (Array.isArray(prefillForm.colors) ? prefillForm.colors : (prefillForm.color!=null?prefillForm.color:p.color||''))
+    : (p.color||'');
   const open = function(){
     const catKnown = !cat || getTransferCategoryOptions().indexOf(cat)>=0;
     showModal(
       '<h3>編輯產品</h3>'
       +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">可改型號與各商品屬性。改型號會一併更新庫存／調動／校正記錄中的編號。'
-      +'新增商品選項四店從 0；取消選取僅在該選項四店皆為 0 且無待審批調動時可刪。圖片顯示在品牌左側。</p>'
+      +'若多選顏色，第一個顏色更新本產品，其餘顏色會另外建立新產品。每尺碼 UPC 不同，圖片可上傳多張。</p>'
       +'<label>型號</label><input type="text" id="tp-id" value="'+escHtml(String(p.id))+'" maxlength="64" oninput="refreshTransferProductSkuPreview()">'
       +'<label>商品名</label><input type="text" id="tp-name" value="'+escHtml(p.name||'')+'">'
       +'<label>英文</label><input type="text" id="tp-name-en" value="'+escHtml(p.nameEn||'')+'" placeholder="English name">'
@@ -4043,16 +4269,19 @@ function openEditTransferProductModal(productId, prefillForm){
       +transferOptionFieldLabelHtml('產品分類', 'category')
       +transferCategorySelectHtml(catKnown?cat:'__custom__')
       +'<div id="tp-cat-custom-wrap" style="'+(catKnown?'display:none':'')+'"><label>自訂產品分類</label><input type="text" id="tp-cat-custom" value="'+(catKnown?'':escHtml(cat))+'" placeholder="輸入新分類"></div>'
-      +transferOptionFieldLabelHtml('顏色（可留空）', 'color')
-      +transferColorSelectHtml((prefillForm&&prefillForm.color)!=null?prefillForm.color:(p.color||''))
+      +transferOptionFieldLabelHtml('顏色（可多選）', 'color')
+      +transferColorSelectHtml(colorPrefill)
       +transferOptionFieldLabelHtml('商品選項（尺碼）', 'size')
       +transferSizeSelectHtml((prefillForm&&prefillForm.sizes)||sizes)
+      +'<div id="tp-variant-panels"></div>'
       +'<label>安全存量</label><input type="number" id="tp-safety" min="0" step="1" value="'+escHtml(String(p.safetyStock!=null?p.safetyStock:0))+'">'
       +'<div class="actions">'
       +'<button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
       +'<button type="button" class="btn green" data-action="submit-transfer-product-edit">儲存變更</button>'
       +'</div>'
     , { closeOnBackdrop: false });
+    const modalEl = document.getElementById('modal-content');
+    if(modalEl) modalEl.classList.add('modal-wide');
     if(!catKnown) onTransferProductCatChange();
     if(prefillForm) fillTransferProductFormFields(prefillForm);
     else refreshTransferProductSkuPreview();
@@ -4062,25 +4291,41 @@ function openEditTransferProductModal(productId, prefillForm){
 async function submitTransferProductEdit(){
   const originalId = transferEditOriginalId;
   if(!originalId){ alert2('找不到原產品編號。'); return; }
-  let form = collectTransferProductForm();
+  const form = collectTransferProductForm();
   if(!validateTransferProductForm(form)) return;
+  const extraColors = (form.colors||[]).length > 1;
   if(form.id!==originalId){
     if(!confirm('確認將型號由「'+originalId+'」改為「'+form.id+'」？\n系統會檢測新號是否已存在，並一併更新庫存／調動／校正記錄。')) return;
   }
+  if(extraColors){
+    if(!confirm('已選 '+form.colors.length+' 種顏色：第一個顏色會更新本產品，其餘將另外建立新產品。確定繼續？')) return;
+  }
   try{
-    form = await ensureTransferProductImageUploaded(form);
-    await apiFetch('/api/transfer/products/'+encodeURIComponent(originalId), {
-      method:'PUT',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(form)
-    });
+    const variants = await prepareTransferProductVariants(form);
+    const created = [];
+    if(variants.length){
+      await apiFetch('/api/transfer/products/'+encodeURIComponent(originalId), {
+        method:'PUT',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(variants[0])
+      });
+    }
+    for(let i=1;i<variants.length;i++){
+      await apiFetch('/api/transfer/products', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(variants[i])
+      });
+      created.push(variants[i].id);
+    }
     closeModal();
     transferEditOriginalId = null;
+    transferVariantDrafts = {};
     invalidateTransferCaches();
     await loadTransferProducts(true);
     if(currentView==='transferProductLog') await loadTransferProductChanges(true).catch(function(){});
     render();
-    alert2('已更新產品。');
+    alert2('已更新產品。'+(created.length?' 並建立 '+created.join('、')+'。':''));
   }catch(e){
     alert2('更新失敗：'+(e.message||e));
   }
@@ -4632,7 +4877,9 @@ function vTransferProducts(){
     products = products.filter(function(p){
       const sizes = Array.isArray(p.sizes) ? p.sizes.join(' ') : '';
       const skuMap = p.skus && typeof p.skus==='object' ? Object.values(p.skus).join(' ') : '';
-      return [p.id, p.name, p.nameEn, p.brand, p.color, p.category, p.sku, p.upc, sizes, skuMap]
+      const upcMap = p.upcs && typeof p.upcs==='object' ? Object.values(p.upcs).join(' ') : '';
+      const upcList = Array.isArray(p.upcList) ? p.upcList.join(' ') : '';
+      return [p.id, p.name, p.nameEn, p.brand, p.color, p.category, p.sku, p.upc, sizes, skuMap, upcMap, upcList]
         .join(' ').toLowerCase().indexOf(kw)>=0;
     });
   }
@@ -4673,7 +4920,7 @@ function vTransferProducts(){
         +'</tr>'
         +(expanded
           ? '<tr><td colspan="'+colSpan+'" style="background:#fafafa;padding:12px 14px">'
-            +'<div style="font-size:12px;color:#78909c;margin:0 0 8px">各尺碼由小到大並列 · 點「改庫存」可按門市一次改全部尺碼</div>'
+            +'<div style="font-size:12px;color:#78909c;margin:0 0 8px">各門市一卡，尺碼由小到大由左至右 · 點「改庫存」可一次改全部尺碼</div>'
             +transferInvSizeCardsHtml(g, stores)
             +'</td></tr>'
           : '');
@@ -4682,8 +4929,8 @@ function vTransferProducts(){
     +'<h2>🏷️ 貨品</h2>'
     +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">商品主檔與各門市／倉庫庫存同一頁，可用表格或卡片檢視。'
     +(transferProductsViewMode==='grid'
-      ? '卡片顯示各尺碼與各店庫存，可「改庫存」或「申請調動」。'
-      : '點擊列展開各尺碼庫存，可「改庫存」或「申請調動」。')
+      ? '卡片顯示各門市庫存與各尺碼數量，可「改庫存」或「申請調動」。'
+      : '點擊列展開各門市庫存（每卡列出各尺碼），可「改庫存」或「申請調動」。')
     +'低於安全存量以<span class="inv-low">紅色</span>標示。篩選結果有 <b>'+lowCount+'</b> 款含預警。</p>'
     +'<div class="filters">'
     +'<input type="text" placeholder="搜尋型號／名稱／品牌／顏色／尺碼／SKU" value="'+escHtml(transferInvKw)+'" onchange="setTransferInvKw(this.value)" onkeydown="if(event.key===\'Enter\'){setTransferInvKw(this.value)}">'
@@ -4704,22 +4951,27 @@ function vTransferProducts(){
 function transferInvSizeCardsHtml(g, stores){
   stores = stores || TRANSFER_STORES_FE;
   const sizeRows = (g.sizes||[]).slice().sort(function(a,b){ return compareTransferSizes(a.size, b.size); });
+  const pid = escHtml(String((g && g.productId) || (sizeRows[0] && sizeRows[0].productId) || ''));
   return '<div style="display:flex;flex-wrap:wrap;gap:10px;padding:4px 0">'
-    +sizeRows.map(function(r){
-      const storeLines = stores.map(function(s){
-        const q = (r.qty && r.qty[s]!=null) ? r.qty[s] : 0;
-        const isLow = !!(r.low && r.low[s]);
-        return '<div style="display:flex;justify-content:space-between;gap:12px;font-size:13px;line-height:1.55">'
-          +'<span style="color:#607d8b">'+escHtml(s)+'</span>'
-          +'<span class="'+(isLow?'inv-low':'inv-ok')+'"><b>'+q+'</b></span>'
+    +stores.map(function(store){
+      const sizeLines = sizeRows.map(function(r){
+        const q = (r.qty && r.qty[store]!=null) ? r.qty[store] : 0;
+        const isLow = !!(r.low && r.low[store]);
+        return '<div style="flex:0 0 auto;min-width:64px;text-align:center">'
+          +'<div style="font-size:11px;color:#607d8b;margin-bottom:2px">尺碼 '+escHtml(String(r.size))+'</div>'
+          +'<div class="'+(isLow?'inv-low':'inv-ok')+'" style="font-size:16px"><b>'+q+'</b></div>'
           +'</div>';
       }).join('');
-      return '<div style="flex:1 1 150px;min-width:140px;max-width:220px;border:1px solid #e0e0e0;border-radius:10px;padding:10px 12px;background:#fff;box-sizing:border-box">'
-        +'<div style="font-weight:700;margin:0 0 8px;font-size:14px">尺碼 '+escHtml(String(r.size))+'</div>'
-        +storeLines
+      let total = 0;
+      sizeRows.forEach(function(r){
+        total += Number((r.qty && r.qty[store]!=null) ? r.qty[store] : 0) || 0;
+      });
+      return '<div style="flex:1 1 220px;min-width:200px;border:1px solid #e0e0e0;border-radius:10px;padding:10px 12px;background:#fff;box-sizing:border-box">'
+        +'<div style="font-weight:700;margin:0 0 8px;font-size:14px">'+escHtml(store)+'</div>'
+        +'<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">'+sizeLines+'</div>'
         +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;padding-top:8px;border-top:1px solid #eee">'
-        +'<span style="font-size:13px">合計 <b>'+(r.total!=null?r.total:0)+'</b></span>'
-        +'<button type="button" class="btn sm gray" data-call="openTransferStockEditModal" data-arg0="'+escHtml(String(r.productId))+'" data-arg1="'+escHtml(String(r.size))+'">改庫存</button>'
+        +'<span style="font-size:13px">合計 <b>'+total+'</b></span>'
+        +'<button type="button" class="btn sm gray" data-call="openTransferStockEditModal" data-arg0="'+pid+'">改庫存</button>'
         +'</div>'
         +'</div>';
     }).join('')
@@ -5313,13 +5565,15 @@ function projProgress(p){
   return applicable.length ? Math.round(done/applicable.length*100) : 0;
 }
 function currentStage(p){
+  if(p && p.status==='草稿') return '草稿（未發佈）';
   const s = p.stages.find(x=>!stageDone(x));
   return s ? s.name : '全部完成';
 }
 function isProjectLocked(p){
-  return !!(p && ['暫停','已取消','已封存'].indexOf(p.status)>=0);
+  return !!(p && ['暫停','已取消','已封存','草稿'].indexOf(p.status)>=0);
 }
 function projStatus(p){
+  if(p.status==='草稿') return '草稿';
   if(p.status==='已取消'||p.status==='暫停'||p.status==='已封存') return p.status;
   if(p.stages.every(stageDone)) return '已完成';
   if(p.stages.some(s=>s.status==='待確認')) return '待確認';
@@ -6073,7 +6327,7 @@ function vList(type){
     <h2>${type==='dev'?'📐 開發及生產項目':'🔄 補貨項目'}（${list.length}）</h2>
     <div class="filters">
       <select onchange="fCat=this.value;render()"><option ${fCat==='全部'?'selected':''}>全部</option>${CATEGORIES.map(c=>`<option ${fCat===c?'selected':''}>${c}</option>`).join('')}</select>
-      <select onchange="fStatus=this.value;render()">${['全部','進行中','待確認','需要修改','已完成','暫停','已取消','已封存'].map(s=>`<option ${fStatus===s?'selected':''}>${s}</option>`).join('')}</select>
+      <select onchange="fStatus=this.value;render()">${['全部','草稿','進行中','待確認','需要修改','已完成','暫停','已取消','已封存'].map(s=>`<option ${fStatus===s?'selected':''}>${s}</option>`).join('')}</select>
       <input type="text" placeholder="搜尋編號／名稱／內容" value="${fKw}" onchange="fKw=this.value;render()">
       ${isAdmin()?`<button class="btn sm" onclick="go('addProject')">＋ 建立新項目</button><button class="btn gray sm" data-call="exportProjectsCsv" data-arg0="${escHtml(String(type))}">匯出資料</button>`:''}
     </div>
@@ -6148,15 +6402,59 @@ function vProject(){
   </div>`;
 }
 
+function groupedLinkedProductsHtml(items, opts){
+  opts = opts || {};
+  const editable = !!opts.editable;
+  const list = Array.isArray(items) ? items : [];
+  if(!list.length){
+    return '<p style="color:#888;font-size:13px;margin:6px 0">尚未添加產品。</p>';
+  }
+  const groups = {};
+  list.forEach(function(it){
+    const cat = String(it.category || '其他').trim() || '其他';
+    (groups[cat] = groups[cat] || []).push(it);
+  });
+  const cats = Object.keys(groups).sort(function(a,b){ return a.localeCompare(b,'zh-Hant'); });
+  return cats.map(function(cat){
+    const rows = groups[cat].map(function(it){
+      const qty = it.qty!=null && it.qty!=='' ? String(it.qty) : '1';
+      const qtyHtml = editable
+        ? '<input type="number" min="1" step="1" value="'+escHtml(qty)+'" style="width:72px" data-product-id="'+escHtml(String(it.productId))+'" onchange="npSetRepProductQtyEl(this)">'
+        : escHtml(qty);
+      const removeHtml = editable
+        ? '<button type="button" class="btn red sm" data-call="npRemoveRepProduct" data-arg0="'+escHtml(String(it.productId))+'">移除</button>'
+        : '';
+      return '<tr>'
+        +'<td><b>'+escHtml(it.productId||'')+'</b></td>'
+        +'<td>'+escHtml(it.name||'')+'</td>'
+        +'<td>'+escHtml(it.color||'—')+'</td>'
+        +'<td>'+qtyHtml+'</td>'
+        +(editable?'<td>'+removeHtml+'</td>':'')
+        +'</tr>';
+    }).join('');
+    return '<div style="border:1px solid #e0e0e0;border-radius:10px;padding:10px 12px;margin:0 0 10px;background:#fff">'
+      +'<div style="font-weight:700;margin:0 0 8px">'+escHtml(cat)+'（'+groups[cat].length+'）</div>'
+      +'<div class="table-wrap"><table><tr><th>型號</th><th>商品名</th><th>顏色</th><th>數量</th>'+(editable?'<th></th>':'')+'</tr>'
+      +rows+'</table></div></div>';
+  }).join('');
+}
+
 function tabOverview(p){
   const lockedNote = isProjectLocked(p)
-    ? `<div class="info-banner" style="margin-bottom:12px">🔒 項目目前為「${escHtml(p.status)}」${p.statusReason?'：'+escHtml(p.statusReason):''}${p.statusChangedAt?'（'+escHtml(p.statusChangedAt)+'）':''}。階段推進已鎖定。</div>`
+    ? `<div class="info-banner" style="margin-bottom:12px">🔒 項目目前為「${escHtml(p.status)}」${p.statusReason?'：'+escHtml(p.statusReason):''}${p.statusChangedAt?'（'+escHtml(p.statusChangedAt)+'）':''}。${p.status==='草稿'?'請繼續編輯後建立項目，階段尚未開始。':'階段推進已鎖定。'}</div>`
     : '';
   const hist = Array.isArray(p.revisions) && p.revisions.length
     ? `<div style="margin-top:12px"><h3>修改紀錄（保留修改前版本）</h3>
         <div class="table-wrap"><table><tr><th>時間</th><th>人員</th><th>變更摘要</th></tr>
         ${p.revisions.slice(0,10).map(r=>`<tr><td style="font-size:11px;white-space:nowrap">${escHtml(r.time||'')}</td><td>${escHtml(r.byName||'')}</td><td style="font-size:12px">${escHtml(r.summary||'')}</td></tr>`).join('')}
         </table></div></div>`
+    : '';
+  const linked = Array.isArray(p.linkedProducts) ? p.linkedProducts : [];
+  const linkedBlock = p.type==='rep'
+    ? `<div style="margin-top:14px"><h3>補貨產品（按類型歸類）</h3>${groupedLinkedProductsHtml(linked)}</div>`
+    : '';
+  const draftBtns = (isAdmin() && p.status==='草稿')
+    ? `<button class="btn green sm" data-call="continueReplenishmentDraft" data-arg0="${escHtml(String(p.id))}">繼續編輯草稿</button>`
     : '';
   return `${lockedNote}<div class="table-wrap"><table>
     <tr><th style="width:130px">項目編號</th><td>${p.id}</td></tr>
@@ -6172,7 +6470,9 @@ function tabOverview(p){
     <tr><th>整體狀態</th><td>${stTag(projStatus(p))}</td></tr>
     <tr><th>項目詳細</th><td style="white-space:pre-wrap">${escHtml(p.desc||'')}</td></tr>
   </table></div>
+  ${linkedBlock}
   ${isAdmin()?`<div class="actions-row">
+    ${draftBtns}
     <button class="btn warn sm" data-call="askEditProject" data-arg0="${escHtml(String(p.id))}">編輯項目資料</button>
     <button class="btn red sm" data-call="askProjectLifecycle" data-arg0="${escHtml(String(p.id))}">暫停／取消／封存</button>
     ${p.status==='暫停'?`<button class="btn green sm" data-call="resumeProject" data-arg0="${escHtml(String(p.id))}">恢復進行</button>`:''}
@@ -6878,6 +7178,10 @@ function tabLogs(p){
 /* ═══════════ 建立項目（管理層） ═══════════ */
 let npDraftFiles = []; // {name, dataUrl}
 let npCoverDraft = null; // {name, dataUrl} | null
+let npRepItems = []; // { productId, name, category, color, qty }
+let npEditDraftId = null;
+let npKeepForm = false;
+let npDraftHandlers = [];
 
 function npCoverPreviewHtml(){
   if(!npCoverDraft) return '<p style="font-size:12px;color:#888;margin:6px 0">未選擇封面（將使用預設圖示）。</p>';
@@ -6940,26 +7244,39 @@ async function npOnFilesPick(input){
 }
 function vAddProject(){
   if(!isAdmin()) return `<div class="card"><h2>➕ 建立新項目</h2><p>只有系統管理員可以建立項目。</p></div>`;
-  const staffOpts = projectAssigneeOpts('');
+  const draft = npEditDraftId ? projects.find(function(x){ return x.id===npEditDraftId; }) : null;
+  const defaultType = (draft && draft.type) || (currentModule==='replenishment' ? 'rep' : 'dev');
+  const staffOpts = projectAssigneeOpts(draft && draft.owner ? draft.owner : '');
   const staffHint = listAssignableStaff().length
     ? '<p style="font-size:12px;color:#888;margin:4px 0 0">各階段經手人僅可選<strong>經理／主管</strong>，可多選；對方可在「我的工作」看到待辦。</p>'
     : '<p style="font-size:12px;color:#c62828;margin:4px 0 0">尚未有經理／主管賬號。請先到「創建員工」新增職位為「經理」或「主管」的賬號。</p>';
-  setTimeout(()=>{ renderNpStages(); npRenderCoverPreview(); npRenderFileList(); },0);
-  return `<div class="card"><h2>➕ 建立新項目</h2>
+  const heading = draft && draft.status==='草稿' ? '✏️ 繼續編輯補貨草稿' : '➕ 建立新項目';
+  setTimeout(function(){ renderNpStages(); npRenderCoverPreview(); npRenderFileList(); npRenderRepItems(); },0);
+  return `<div class="card"><h2>${heading}</h2>
     <label>項目封面圖片（選填）</label>
     <input type="file" id="np-cover" accept="image/*" onchange="npOnCoverPick(this)">
     <div id="np-cover-preview">${npCoverPreviewHtml()}</div>
     <label>項目類型</label>
-    <select id="np-type" onchange="renderNpStages()">
-      <option value="dev">開發及生產（7個階段）</option>
-      <option value="rep">補貨（6個階段）</option>
+    <select id="np-type" onchange="renderNpStages()"${draft && draft.status==='草稿'?' disabled':''}>
+      <option value="dev"${defaultType==='dev'?' selected':''}>開發及生產（7個階段）</option>
+      <option value="rep"${defaultType==='rep'?' selected':''}>補貨（6個階段）</option>
     </select>
-    <label>產品編號</label><input type="text" id="np-code" placeholder="例如：WS-666">
-    <label>項目簡介</label><input type="text" id="np-name" placeholder="例如：成人抓毛套裝">
-    <label>產品類別</label><select id="np-cat">${CATEGORIES.map(c=>`<option>${c}</option>`).join('')}</select>
-    <label>項目詳細內容（支援分行）</label><textarea id="np-desc" placeholder="• 要求一&#10;• 要求二"></textarea>
+    <label>產品編號</label><input type="text" id="np-code" placeholder="例如：WS-666" value="${escHtml(draft&&draft.code?draft.code:'')}">
+    <label>項目簡介</label><input type="text" id="np-name" placeholder="例如：成人抓毛套裝" value="${escHtml(draft&&draft.name?draft.name:'')}">
+    <label>產品類別</label><select id="np-cat">${CATEGORIES.map(function(c){ return '<option'+(draft&&draft.cat===c?' selected':'')+'>'+c+'</option>'; }).join('')}</select>
+    <label>項目詳細內容（支援分行）</label><textarea id="np-desc" placeholder="• 要求一&#10;• 要求二">${escHtml(draft&&draft.desc?draft.desc:'')}</textarea>
     <label>項目負責人（經理／主管）</label><select id="np-owner">${staffOpts}</select>
-    <label>預計完成日期</label><input type="date" id="np-due">
+    <label>預計完成日期</label><input type="date" id="np-due" value="${(draft&&draft.due&&draft.due!=='—')?escHtml(draft.due):''}">
+    <div id="np-rep-wrap" style="${defaultType==='rep'?'':'display:none'}">
+      <h3 style="margin-top:16px">添加產品（可多件）</h3>
+      <p style="font-size:12px;color:#888;margin:0 0 8px">可加入多個貨品；相同類型會自動歸類顯示。草稿／補貨單亦按類型分組。</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 8px">
+        <input type="text" id="np-rep-kw" placeholder="搜尋型號／名稱／顏色" oninput="npRenderRepPicker()" style="flex:1;min-width:180px">
+        <select id="np-rep-pick" style="flex:1;min-width:220px"></select>
+        <button type="button" class="btn green sm" data-call="npAddRepProductFromPick">加入產品</button>
+      </div>
+      <div id="np-rep-items">${groupedLinkedProductsHtml(npRepItems, { editable:true })}</div>
+    </div>
     <label>項目附件（可多次添加、可多選）</label>
     <input type="file" id="np-files" multiple onchange="npOnFilesPick(this)">
     <p style="font-size:12px;color:#888;margin:4px 0 0">附件會顯示在項目「文件及圖片」，標籤為「建立項目」。封面只用於列表／標題縮圖，不進文件列表。</p>
@@ -6967,39 +7284,190 @@ function vAddProject(){
     <h3 style="margin-top:16px">各階段經手人分配（經理／主管，可多選）</h3>
     ${staffHint}
     <div id="np-stages"></div>
-    <button class="btn" onclick="askCreateProject()">建立項目</button>
+    <div class="actions-row" style="margin-top:12px">
+      <button class="btn" onclick="askCreateProject()">建立項目</button>
+      <button type="button" class="btn gray" id="np-draft-btn" style="${defaultType==='rep'?'':'display:none'}" data-call="saveReplenishmentDraft">保存草稿</button>
+    </div>
   </div>`;
+}
+function npRenderRepPicker(){
+  const sel = document.getElementById('np-rep-pick');
+  if(!sel) return;
+  const kw = String(((document.getElementById('np-rep-kw')||{}).value)||'').trim().toLowerCase();
+  const chosen = {};
+  npRepItems.forEach(function(it){ chosen[String(it.productId)] = true; });
+  const list = (transferProductsCache||[]).filter(function(p){
+    if(!p || chosen[String(p.id)]) return false;
+    if(!kw) return true;
+    return [p.id, p.name, p.color, p.category, p.brand].join(' ').toLowerCase().indexOf(kw)>=0;
+  });
+  sel.innerHTML = '<option value="">'+(list.length?'選擇要加入的產品…':'沒有可加入的產品')+'</option>'
+    +list.slice(0,80).map(function(p){
+      return '<option value="'+escHtml(String(p.id))+'">'+escHtml(p.id+'｜'+(p.name||'')+(p.color?'｜'+p.color:'')+'｜'+(p.category||''))+'</option>';
+    }).join('');
+}
+function npRenderRepItems(){
+  const el = document.getElementById('np-rep-items');
+  if(el) el.innerHTML = groupedLinkedProductsHtml(npRepItems, { editable:true });
+  npRenderRepPicker();
+}
+function npAddRepProductFromPick(){
+  const sel = document.getElementById('np-rep-pick');
+  const id = sel ? String(sel.value||'').trim() : '';
+  if(!id){ alert2('請先選擇要加入的產品。'); return; }
+  npAddRepProduct(id);
+}
+function npAddRepProduct(productId){
+  productId = String(productId||'').trim();
+  if(!productId) return;
+  if(npRepItems.some(function(it){ return String(it.productId)===productId; })){
+    alert2('此產品已在清單中。'); return;
+  }
+  const p = (transferProductsCache||[]).find(function(x){ return String(x.id)===productId; });
+  if(!p){ alert2('找不到該產品，請重新整理後再試。'); return; }
+  npRepItems.push({
+    productId: p.id,
+    name: p.name||'',
+    category: p.category||'其他',
+    color: p.color||'',
+    qty: 1
+  });
+  npRenderRepItems();
+}
+function npRemoveRepProduct(productId){
+  productId = String(productId||'').trim();
+  npRepItems = npRepItems.filter(function(it){ return String(it.productId)!==productId; });
+  npRenderRepItems();
+}
+function npSetRepProductQtyEl(el){
+  if(!el) return;
+  npSetRepProductQty(el.getAttribute('data-product-id'), el.value);
+}
+function npSetRepProductQty(productId, qty){
+  productId = String(productId||'').trim();
+  const n = Math.max(1, Math.floor(Number(qty)||1));
+  npRepItems.forEach(function(it){
+    if(String(it.productId)===productId) it.qty = n;
+  });
+}
+function continueReplenishmentDraft(pid){
+  const p = projects.find(function(x){ return x.id===pid; });
+  if(!p){ alert2('找不到該草稿。'); return; }
+  npEditDraftId = p.id;
+  npRepItems = Array.isArray(p.linkedProducts) ? p.linkedProducts.map(function(it){
+    return {
+      productId: it.productId || it.id || '',
+      name: it.name || '',
+      category: it.category || '其他',
+      color: it.color || '',
+      qty: it.qty!=null ? it.qty : 1
+    };
+  }) : [];
+  npDraftHandlers = (p.stages||[]).map(function(s){ return stageHandlers(s); });
+  npDraftFiles = [];
+  npCoverDraft = null;
+  npKeepForm = true;
+  currentModule = 'replenishment';
+  go('addProject');
+}
+function npToggleRepSection(){
+  const type = (document.getElementById('np-type')||{}).value;
+  const wrap = document.getElementById('np-rep-wrap');
+  const draftBtn = document.getElementById('np-draft-btn');
+  if(wrap) wrap.style.display = type==='rep' ? '' : 'none';
+  if(draftBtn) draftBtn.style.display = type==='rep' ? '' : 'none';
+  if(type==='rep'){
+    loadTransferProducts().then(function(){ npRenderRepItems(); }).catch(function(){ npRenderRepItems(); });
+  }
+}
+function readNpHandlers(stages){
+  const handlerBoxes = Array.prototype.slice.call(document.querySelectorAll('.np-handler-box'));
+  return stages.map(function(_, i){
+    const box = handlerBoxes.find(function(b){ return String(b.getAttribute('data-stage'))===String(i); }) || handlerBoxes[i];
+    return box ? readCheckedHandlerIds(box, 'np-handler-cb') : [];
+  });
+}
+function readNpFormFields(){
+  const type = ((document.getElementById('np-type')||{}).value)||'dev';
+  return {
+    type: type,
+    code: ((document.getElementById('np-code')||{}).value||'').trim(),
+    name: ((document.getElementById('np-name')||{}).value||'').trim(),
+    cat: ((document.getElementById('np-cat')||{}).value)||CATEGORIES[0],
+    desc: ((document.getElementById('np-desc')||{}).value||'').trim(),
+    owner: ((document.getElementById('np-owner')||{}).value)||'',
+    due: ((document.getElementById('np-due')||{}).value)||'—',
+    stages: type==='dev'?DEV_STAGES:REP_STAGES,
+    linkedProducts: type==='rep' ? npRepItems.slice() : []
+  };
+}
+async function npUploadNewAssets(existing){
+  existing = existing || { coverUrl:null, coverFileId:null, files:[] };
+  let coverUrl = existing.coverUrl || null;
+  let coverFileId = existing.coverFileId || null;
+  const files = (existing.files||[]).slice();
+  if(npCoverDraft){
+    const up = await cloudUploadDataUrl(npCoverDraft.name, npCoverDraft.dataUrl, { title:'上傳封面' });
+    coverUrl = up.dataUrl; coverFileId = up.driveFileId || null;
+  }
+  if(npDraftFiles.length){
+    const fileObjs = [];
+    for(let i=0;i<npDraftFiles.length;i++){
+      const f = npDraftFiles[i];
+      const blob = await (await fetch(f.dataUrl)).blob();
+      fileObjs.push(new File([blob], f.name || 'file.bin', { type: blob.type || 'application/octet-stream' }));
+    }
+    const uploaded = await cloudUploadFiles(fileObjs, { title:'上傳項目附件' });
+    const startVer = files.length;
+    for(let i=0;i<uploaded.length;i++){
+      const up = uploaded[i];
+      const f = npDraftFiles[i];
+      files.push({
+        name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType,
+        by:currentUser.id, time:nowStr(), ver:'V'+(startVer+i+1), latest:true
+      });
+    }
+    files.forEach(function(f, idx){ f.latest = idx===files.length-1; });
+  }
+  return { coverUrl, coverFileId, files };
+}
+function npClearAfterSave(){
+  npDraftFiles=[]; npCoverDraft=null; npRepItems=[]; npEditDraftId=null; npDraftHandlers=[];
 }
 function renderNpStages(){
   const typeEl=document.getElementById('np-type');
   if(!typeEl) return;
   const type = typeEl.value;
   const stages = type==='dev'?DEV_STAGES:REP_STAGES;
-  document.getElementById('np-stages').innerHTML = stages.map((s,i)=>`
-    <div class="np-stage-row" style="display:flex;gap:12px;align-items:flex-start;margin-bottom:10px;flex-wrap:wrap">
-      <span style="min-width:140px;font-size:13px;padding-top:6px"><b>${i+1}. ${s}</b></span>
-      <div class="np-handler-box" data-stage="${i}">${projectAssigneeChecksHtml([], 'np-handler-cb')}</div>
-    </div>`).join('');
+  const host = document.getElementById('np-stages');
+  if(!host) return;
+  host.innerHTML = stages.map(function(s,i){
+    return '<div class="np-stage-row" style="display:flex;gap:12px;align-items:flex-start;margin-bottom:10px;flex-wrap:wrap">'
+      +'<span style="min-width:140px;font-size:13px;padding-top:6px"><b>'+(i+1)+'. '+s+'</b></span>'
+      +'<div class="np-handler-box" data-stage="'+i+'">'+projectAssigneeChecksHtml(npDraftHandlers[i]||[], 'np-handler-cb')+'</div>'
+      +'</div>';
+  }).join('');
+  npToggleRepSection();
 }
 function askCreateProject(){
   if(!isAdmin()){ alert2('只有系統管理員可以建立項目。'); return; }
   if(!requireCloud('建立項目')) return;
-  const type = document.getElementById('np-type').value;
-  const code = document.getElementById('np-code').value.trim();
-  const name = document.getElementById('np-name').value.trim();
-  if(!code||!name){ alert2('請輸入產品編號及項目簡介。'); return; }
-  const typeLabel = type==='dev'?'開發及生產':'補貨';
-  const stages = (type==='dev'?DEV_STAGES:REP_STAGES);
+  const form = readNpFormFields();
+  if(!form.code||!form.name){ alert2('請輸入產品編號及項目簡介。'); return; }
+  const typeLabel = form.type==='dev'?'開發及生產':'補貨';
   const coverNote = npCoverDraft ? '已選封面' : '無封面';
   const fileNote = npDraftFiles.length ? ('附件 '+npDraftFiles.length+' 個') : '無附件';
+  const prodNote = form.type==='rep' ? ('<li>產品 '+form.linkedProducts.length+' 件（按類型自動歸類）</li>') : '';
   showModal(
     '<h3>確認建立項目？</h3>'+
     '<p style="font-size:14px">即將建立：</p>'+
     '<ul style="font-size:13px;line-height:1.7;margin:8px 0 12px 18px">'+
-      '<li>類型：'+typeLabel+'（'+stages.length+' 個階段）</li>'+
-      '<li>編號／簡介：<b>'+String(code).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))+'｜'+String(name).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))+'</b></li>'+
+      '<li>類型：'+typeLabel+'（'+form.stages.length+' 個階段）</li>'+
+      '<li>編號／簡介：<b>'+escHtml(form.code)+'｜'+escHtml(form.name)+'</b></li>'+
+      prodNote+
       '<li>'+coverNote+'｜'+fileNote+'</li>'+
     '</ul>'+
+    (form.type==='rep' && form.linkedProducts.length ? groupedLinkedProductsHtml(form.linkedProducts) : '')+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">返回修改</button>'+
     '<button class="btn sm" onclick="createProject()">確認建立</button></div>'
   );
@@ -7007,64 +7475,55 @@ function askCreateProject(){
 async function createProject(){
   if(!isAdmin()){ alert2('只有系統管理員可以建立項目。'); return; }
   if(!requireCloud('建立項目')) return;
-  const type = document.getElementById('np-type').value;
-  const code = document.getElementById('np-code').value.trim();
-  const name = document.getElementById('np-name').value.trim();
-  if(!code||!name){ alert2('請輸入產品編號及項目簡介。'); return; }
-  const cat = document.getElementById('np-cat').value;
-  const desc = document.getElementById('np-desc').value.trim();
-  const owner = document.getElementById('np-owner').value;
-  const due = document.getElementById('np-due').value || '—';
-  const stages = (type==='dev'?DEV_STAGES:REP_STAGES);
-  const handlerBoxes = [...document.querySelectorAll('.np-handler-box')];
-  const handlers = stages.map((_, i)=>{
-    const box = handlerBoxes.find(b=>String(b.getAttribute('data-stage'))===String(i)) || handlerBoxes[i];
-    return box ? readCheckedHandlerIds(box, 'np-handler-cb') : [];
-  });
-  const assignedN = handlers.filter(hs=>hs && hs.length).length;
-  let coverUrl = null, coverFileId = null;
-  let files = [];
+  const form = readNpFormFields();
+  if(!form.code||!form.name){ alert2('請輸入產品編號及項目簡介。'); return; }
+  const handlers = readNpHandlers(form.stages);
+  const assignedN = handlers.filter(function(hs){ return hs && hs.length; }).length;
+  const existing = npEditDraftId ? projects.find(function(x){ return x.id===npEditDraftId; }) : null;
+  let assets;
   try{
-    if(npCoverDraft){
-      const up = await cloudUploadDataUrl(npCoverDraft.name, npCoverDraft.dataUrl, { title:'上傳封面' });
-      coverUrl = up.dataUrl; coverFileId = up.driveFileId || null;
-    }
-    if(npDraftFiles.length){
-      const fileObjs = [];
-      for(let i=0;i<npDraftFiles.length;i++){
-        const f = npDraftFiles[i];
-        const blob = await (await fetch(f.dataUrl)).blob();
-        fileObjs.push(new File([blob], f.name || 'file.bin', { type: blob.type || 'application/octet-stream' }));
-      }
-      const uploaded = await cloudUploadFiles(fileObjs, { title:'上傳項目附件' });
-      for(let i=0;i<uploaded.length;i++){
-        const up = uploaded[i];
-        const f = npDraftFiles[i];
-        files.push({
-          name:up.name||f.name, dataUrl:up.dataUrl, driveFileId:up.driveFileId, mimeType:up.mimeType,
-          by:currentUser.id, time:nowStr(), ver:'V'+(i+1), latest:i===npDraftFiles.length-1
-        });
-      }
-    }
+    assets = await npUploadNewAssets(existing || {});
   }catch(_e){ return; }
-  const p = {
-    id: type==='rep'
-      ? ('R'+String(repProjSeq++).padStart(3,'0'))
-      : ('P'+String(projSeq++).padStart(3,'0')),
-    type, code, name, cat, icon:type==='dev'?'🆕':'🔄',
-    coverUrl, coverFileId,
-    owner: owner||null, createdBy:currentUser.id, created:todayStr(), createdAtMs: Date.now(), due, desc, status:'進行中',
-    files: files,
-    stages: stages.map((s,i)=>mkStage(s, handlers[i]||[], i===0?'待處理':'未開始')),
-    comments:[], logs:[]
-  };
-  projects.unshift(p);
-  addProjLog(p,'建立項目',(type==='dev'?'開發及生產':'補貨')+'｜'+code+'｜'+name+(p.coverUrl?'｜已設封面':'')+(files.length?'｜附件 '+files.length+' 個':''));
+  let p = existing;
+  if(p){
+    p.type = form.type;
+    p.code = form.code;
+    p.name = form.name;
+    p.cat = form.cat;
+    p.desc = form.desc;
+    p.owner = form.owner||null;
+    p.due = form.due;
+    p.coverUrl = assets.coverUrl;
+    p.coverFileId = assets.coverFileId;
+    p.files = assets.files;
+    p.linkedProducts = form.linkedProducts;
+    p.status = '進行中';
+    p.icon = form.type==='dev'?'🆕':'🔄';
+    p.stages = form.stages.map(function(s,i){
+      return mkStage(s, handlers[i]||[], i===0?'待處理':'未開始');
+    });
+    addProjLog(p,'發佈草稿','補貨單已建立｜'+form.code+'｜'+form.name+(form.linkedProducts.length?'｜產品 '+form.linkedProducts.length+' 件':''));
+  } else {
+    p = {
+      id: form.type==='rep'
+        ? ('R'+String(repProjSeq++).padStart(3,'0'))
+        : ('P'+String(projSeq++).padStart(3,'0')),
+      type: form.type, code: form.code, name: form.name, cat: form.cat, icon:form.type==='dev'?'🆕':'🔄',
+      coverUrl: assets.coverUrl, coverFileId: assets.coverFileId,
+      owner: form.owner||null, createdBy:currentUser.id, created:todayStr(), createdAtMs: Date.now(), due: form.due, desc: form.desc, status:'進行中',
+      files: assets.files,
+      linkedProducts: form.linkedProducts,
+      stages: form.stages.map(function(s,i){ return mkStage(s, handlers[i]||[], i===0?'待處理':'未開始'); }),
+      comments:[], logs:[]
+    };
+    projects.unshift(p);
+    addProjLog(p,'建立項目',(form.type==='dev'?'開發及生產':'補貨')+'｜'+form.code+'｜'+form.name+(p.coverUrl?'｜已設封面':'')+(assets.files.length?'｜附件 '+assets.files.length+' 個':'')+(form.linkedProducts.length?'｜產品 '+form.linkedProducts.length+' 件':''));
+  }
   addProjLog(p,'分配經手人', assignedN
-    ? ('已指派 '+assignedN+'／'+stages.length+' 個階段（經理／主管可於「我的工作」處理）')
+    ? ('已指派 '+assignedN+'／'+form.stages.length+' 個階段（經理／主管可於「我的工作」處理）')
     : '尚未指派經手人（請稍後在工作流程中更改經手人）');
-  if(files.length) addProjLog(p,'上載文件','建立項目｜'+files.map(f=>f.name).join('、'));
-  npDraftFiles=[]; npCoverDraft=null;
+  if(npDraftFiles.length) addProjLog(p,'上載文件','建立項目｜'+npDraftFiles.map(function(f){ return f.name; }).join('、'));
+  npClearAfterSave();
   try{
     await persistProjectsNow();
   }catch(e){
@@ -7078,9 +7537,65 @@ async function createProject(){
       await notifyProjectStageTurn(p, firstStage.name, '項目已建立，目前為第一階段。');
     }catch(_e){}
   }
-  showModal(`<h3>✅ 已建立項目</h3><p>「${code}｜${name}」已建立並同步到雲端，共 ${stages.length} 個階段${files.length?'，附件 '+files.length+' 個':''}。</p>
-    <div class="actions"><button class="btn sm" onclick="closeModal();openProject('${p.id}','files')">查看文件及圖片</button>
-    <button class="btn gray sm" onclick="closeModal();openProject('${p.id}','flow')">查看工作流程</button></div>`);
+  showModal('<h3>✅ 已建立項目</h3><p>「'+escHtml(form.code)+'｜'+escHtml(form.name)+'」已建立並同步到雲端，共 '+form.stages.length+' 個階段'+(assets.files.length?'，附件 '+assets.files.length+' 個':'')+(form.linkedProducts.length?'，產品 '+form.linkedProducts.length+' 件':'')+'。</p>'
+    +'<div class="actions"><button class="btn sm" onclick="closeModal();openProject(\''+p.id+'\',\'overview\')">查看項目</button>'
+    +'<button class="btn gray sm" onclick="closeModal();openProject(\''+p.id+'\',\'flow\')">查看工作流程</button></div>');
+}
+async function saveReplenishmentDraft(){
+  if(!isAdmin()){ alert2('只有系統管理員可以保存草稿。'); return; }
+  if(!requireCloud('保存草稿')) return;
+  const form = readNpFormFields();
+  if(form.type!=='rep'){ alert2('只有補貨單可以保存草稿。'); return; }
+  const code = form.code || ('草稿-'+String(todayStr()).replace(/[^\d]/g,''));
+  const name = form.name || '未命名補貨單';
+  const handlers = readNpHandlers(form.stages);
+  const existing = npEditDraftId ? projects.find(function(x){ return x.id===npEditDraftId; }) : null;
+  let assets;
+  try{
+    assets = await npUploadNewAssets(existing || {});
+  }catch(_e){ return; }
+  let p = existing;
+  if(p){
+    p.type = 'rep';
+    p.code = code;
+    p.name = name;
+    p.cat = form.cat;
+    p.desc = form.desc;
+    p.owner = form.owner||null;
+    p.due = form.due;
+    p.coverUrl = assets.coverUrl;
+    p.coverFileId = assets.coverFileId;
+    p.files = assets.files;
+    p.linkedProducts = form.linkedProducts;
+    p.status = '草稿';
+    p.icon = '🔄';
+    p.stages = form.stages.map(function(s,i){ return mkStage(s, handlers[i]||[], '未開始'); });
+    addProjLog(p,'保存草稿','補貨｜'+code+'｜'+name+(form.linkedProducts.length?'｜產品 '+form.linkedProducts.length+' 件':''));
+  } else {
+    p = {
+      id: 'R'+String(repProjSeq++).padStart(3,'0'),
+      type: 'rep', code: code, name: name, cat: form.cat, icon:'🔄',
+      coverUrl: assets.coverUrl, coverFileId: assets.coverFileId,
+      owner: form.owner||null, createdBy:currentUser.id, created:todayStr(), createdAtMs: Date.now(), due: form.due, desc: form.desc, status:'草稿',
+      files: assets.files,
+      linkedProducts: form.linkedProducts,
+      stages: form.stages.map(function(s,i){ return mkStage(s, handlers[i]||[], '未開始'); }),
+      comments:[], logs:[]
+    };
+    projects.unshift(p);
+    addProjLog(p,'保存草稿','補貨｜'+code+'｜'+name+(form.linkedProducts.length?'｜產品 '+form.linkedProducts.length+' 件':''));
+  }
+  npClearAfterSave();
+  try{
+    await persistProjectsNow();
+  }catch(e){
+    noteCloudError(e);
+    alert2('草稿已保存在此裝置，但雲端同步失敗：'+(e.message||e));
+    return;
+  }
+  showModal('<h3>✅ 已保存草稿</h3><p>「'+escHtml(code)+'｜'+escHtml(name)+'」已存為草稿，可稍後繼續填寫。產品已按類型歸類。</p>'
+    +'<div class="actions"><button class="btn sm" onclick="closeModal();openProject(\''+p.id+'\',\'overview\')">查看草稿</button>'
+    +'<button class="btn gray sm" onclick="closeModal();go(\'repList\')">返回列表</button></div>');
 }
 
 /* ═══════════ 模組操作記錄（僅顯示當前模組） ═══════════ */
@@ -9208,7 +9723,23 @@ document.addEventListener('keydown', function(e){
 });
 // 建立項目頁初始化階段列表
 const _go = go;
-go = function(v){ _go(v); if(v==='addProject') setTimeout(renderNpStages, 0); };
+go = function(v){
+  if(v==='addProject' && !npKeepForm){
+    npEditDraftId = null;
+    npRepItems = [];
+    npDraftFiles = [];
+    npCoverDraft = null;
+    npDraftHandlers = [];
+  }
+  npKeepForm = false;
+  _go(v);
+  if(v==='addProject') setTimeout(function(){
+    renderNpStages();
+    npRenderCoverPreview();
+    npRenderFileList();
+    npRenderRepItems();
+  }, 0);
+};
 
 (async function bootCloud(){
   const err = document.getElementById('login-err');

@@ -2435,10 +2435,19 @@ export async function createTransferProduct(actor, input) {
 
   const safetyStock = parseNonNegInt(input?.safetyStock, '安全存量');
   const extras = normalizeTransferProductExtras(input, {});
-  const resolvedSkus = resolveTransferSkus(id, color, sizes, extras.sku);
+  const resolvedSkus = resolveTransferSkus(id, color, sizes, extras.sku, input?.skus);
   const skus = resolvedSkus.skus;
   extras.sku = resolvedSkus.sku;
-  extras.upc = await allocateUniqueTransferUpc(extras.upc);
+  const inputUpcs = { ...(input?.upcs && typeof input.upcs === 'object' ? input.upcs : {}) };
+  if (extras.upc && sizes[0] && !inputUpcs[sizes[0]]) inputUpcs[sizes[0]] = extras.upc;
+  const upcs = await allocateSizeUpcs(sizes, inputUpcs, id);
+  extras.upc = (sizes.length && upcs[sizes[0]]) || extras.upc || '';
+  const upcList = Object.values(upcs).filter(Boolean);
+  const images = normalizeImageList(input?.images, extras);
+  if (images[0]) {
+    extras.imageUrl = images[0].url || extras.imageUrl;
+    extras.imageFileId = images[0].fileId || extras.imageFileId;
+  }
 
   const existing = await transferProductsCol().findOne({
     $or: [{ _id: id }, { id }],
@@ -2460,6 +2469,9 @@ export async function createTransferProduct(actor, input) {
     sizes,
     safetyStock,
     skus,
+    upcs,
+    upcList,
+    images,
     ...extras,
     active: true,
     createdAt: now,
@@ -2511,13 +2523,13 @@ export async function createTransferProduct(actor, input) {
       { field: '產品分類', before: '', after: category },
       { field: '品牌', before: '', after: extras.brand || '—' },
       { field: 'SKU', before: '', after: Object.values(skus).join('、') || '—' },
-      { field: 'UPC', before: '', after: extras.upc || '—' },
+      { field: 'UPC', before: '', after: upcList.join('、') || extras.upc || '—' },
       { field: '原價', before: '', after: fmtAttrChange(extras.priceOriginal) },
       { field: '優惠價', before: '', after: fmtAttrChange(extras.priceSale) },
       { field: '剔剔積分類', before: '', after: extras.tickieCategory || '—' },
       { field: '剔剔積分', before: '', after: fmtAttrChange(extras.tickiePoints) },
       { field: '英文', before: '', after: extras.nameEn || '—' },
-      { field: '圖片', before: '', after: extras.imageUrl || '—' },
+      { field: '圖片', before: '', after: images.length ? String(images.length) + ' 張' : extras.imageUrl || '—' },
       { field: '顏色', before: '', after: color || '—' },
       { field: '商品選項', before: '', after: sizes.join('、') },
       { field: '安全存量', before: '', after: String(safetyStock) },
@@ -2632,13 +2644,19 @@ export function transferSizeAbbr(size) {
   return compact.toUpperCase();
 }
 
-function resolveTransferSkus(productId, color, sizes, inputSku) {
+function resolveTransferSkus(productId, color, sizes, inputSku, inputSkus) {
   const skus = buildTransferSkusMap(productId, color, sizes);
+  if (inputSkus && typeof inputSkus === 'object') {
+    (Array.isArray(sizes) ? sizes : []).forEach((sz) => {
+      const v = String(inputSkus[sz] || '').trim();
+      if (v) skus[sz] = v;
+    });
+  }
   const manual = String(inputSku || '').trim();
   if (manual && sizes.length) skus[sizes[0]] = manual;
   return {
     skus,
-    sku: manual || (sizes.length ? skus[sizes[0]] : '') || Object.values(skus)[0] || '',
+    sku: (sizes.length ? skus[sizes[0]] : '') || Object.values(skus)[0] || '',
   };
 }
 
@@ -2677,20 +2695,86 @@ export function buildTransferUpc() {
   return body + ean13CheckDigit(body);
 }
 
+async function findProductByUpc(upc, excludeProductId) {
+  const code = String(upc || '').trim();
+  if (!code) return null;
+  const exclude = String(excludeProductId || '').trim();
+  return transferProductsCol().findOne({
+    active: { $ne: false },
+    ...(exclude ? { id: { $ne: exclude } } : {}),
+    $or: [{ upc: code }, { upcList: code }],
+  });
+}
+
 async function allocateUniqueTransferUpc(preferred, excludeProductId) {
   const want = String(preferred || '').trim();
-  if (want) return want;
-  const exclude = String(excludeProductId || '').trim();
+  if (want) {
+    const hit = await findProductByUpc(want, excludeProductId);
+    if (hit) throw new Error('UPC 已被使用：' + want);
+    return want;
+  }
   for (let i = 0; i < 24; i++) {
     const upc = buildTransferUpc();
-    const hit = await transferProductsCol().findOne({
-      upc,
-      active: { $ne: false },
-      ...(exclude ? { id: { $ne: exclude } } : {}),
-    });
+    const hit = await findProductByUpc(upc, excludeProductId);
     if (!hit) return upc;
   }
   return buildTransferUpc() + String(Date.now()).slice(-4);
+}
+
+async function allocateSizeUpcs(sizes, inputUpcs, excludeProductId, existingUpcs) {
+  const upcs = {};
+  const used = new Set();
+  const input = inputUpcs && typeof inputUpcs === 'object' ? inputUpcs : {};
+  const existing = existingUpcs && typeof existingUpcs === 'object' ? existingUpcs : {};
+  for (const size of sizes) {
+    let preferred = String(input[size] || existing[size] || '').trim();
+    if (preferred && used.has(preferred)) preferred = '';
+    let upc = await allocateUniqueTransferUpc(preferred, excludeProductId);
+    let guard = 0;
+    while (used.has(upc) && guard < 12) {
+      upc = await allocateUniqueTransferUpc('', excludeProductId);
+      guard += 1;
+    }
+    used.add(upc);
+    upcs[size] = upc;
+  }
+  return upcs;
+}
+
+function normalizeImageList(images, extras = {}) {
+  const list = [];
+  const seen = new Set();
+  function push(img) {
+    if (!img) return;
+    const url = String(img.url || img.imageUrl || '').trim();
+    const fileId = String(img.fileId || img.imageFileId || '').trim();
+    const name = String(img.name || '').trim();
+    if (!url && !fileId) return;
+    const key = fileId || url;
+    if (seen.has(key)) return;
+    seen.add(key);
+    list.push({ url, fileId, name });
+  }
+  if (Array.isArray(images)) images.forEach(push);
+  if (!list.length) {
+    push({
+      url: extras.imageUrl || '',
+      fileId: extras.imageFileId || '',
+      name: extras.imageName || '',
+    });
+  }
+  return list;
+}
+
+function normalizeUpcsMap(raw, sizes, fallbackUpc) {
+  const upcs = {};
+  const src = raw && typeof raw === 'object' ? raw : {};
+  (Array.isArray(sizes) ? sizes : []).forEach((sz, idx) => {
+    const v = String(src[sz] || '').trim();
+    if (v) upcs[sz] = v;
+    else if (idx === 0 && fallbackUpc) upcs[sz] = String(fallbackUpc).trim();
+  });
+  return upcs;
 }
 
 function parseOptionalNonNegNumber(v, label) {
@@ -2750,8 +2834,28 @@ function stripTransferProduct(doc) {
   const sizes = Array.isArray(rest.sizes) && rest.sizes.length ? rest.sizes.slice() : ['均碼'];
   const id = rest.id || String(_id);
   const color = rest.color || '';
-  const skus = buildTransferSkusMap(id, color, sizes);
-  extras.sku = Object.values(skus)[0] || extras.sku || '';
+  const autoSkus = buildTransferSkusMap(id, color, sizes);
+  const skus = { ...autoSkus };
+  if (rest.skus && typeof rest.skus === 'object') {
+    Object.keys(rest.skus).forEach((k) => {
+      const v = String(rest.skus[k] || '').trim();
+      if (v) skus[k] = v;
+    });
+  }
+  if (extras.sku && sizes.length && !String(rest.skus?.[sizes[0]] || '').trim()) {
+    skus[sizes[0]] = extras.sku;
+  }
+  extras.sku = extras.sku || (sizes.length ? skus[sizes[0]] : '') || Object.values(skus)[0] || '';
+  const upcs = normalizeUpcsMap(rest.upcs, sizes, extras.upc);
+  const upcList = Array.isArray(rest.upcList)
+    ? rest.upcList.map((u) => String(u || '').trim()).filter(Boolean)
+    : Object.values(upcs).filter(Boolean);
+  if (!extras.upc && sizes.length && upcs[sizes[0]]) extras.upc = upcs[sizes[0]];
+  const images = normalizeImageList(rest.images, extras);
+  if (images[0]) {
+    extras.imageUrl = images[0].url || extras.imageUrl;
+    extras.imageFileId = images[0].fileId || extras.imageFileId;
+  }
   return {
     id,
     name: rest.name || '',
@@ -2760,6 +2864,9 @@ function stripTransferProduct(doc) {
     sizes,
     safetyStock: Number(rest.safetyStock) || 0,
     skus,
+    upcs,
+    upcList,
+    images,
     ...extras,
     active: rest.active !== false,
     createdAt: rest.createdAt || null,
@@ -2871,13 +2978,32 @@ export async function updateTransferProduct(actor, oldProductId, input) {
   if (!nextSizes.length) throw new Error('請至少保留 1 個尺碼');
   const extras = normalizeTransferProductExtras(input, product);
   const prevExtras = normalizeTransferProductExtras({}, product);
-  const resolvedSkus = resolveTransferSkus(nextId, color, nextSizes, extras.sku);
+  const resolvedSkus = resolveTransferSkus(nextId, color, nextSizes, extras.sku, input?.skus);
   const skus = resolvedSkus.skus;
   extras.sku = resolvedSkus.sku;
-  extras.upc = await allocateUniqueTransferUpc(extras.upc, nextId);
-  const prevSkus = buildTransferSkusMap(currentId, product.color || '', Array.isArray(product.sizes) && product.sizes.length ? product.sizes : ['均碼']);
-
   const prevSizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes.map(String) : ['均碼'];
+  const inputUpcs = { ...(input?.upcs && typeof input.upcs === 'object' ? input.upcs : {}) };
+  if (extras.upc && nextSizes[0] && !inputUpcs[nextSizes[0]]) inputUpcs[nextSizes[0]] = extras.upc;
+  const upcs = await allocateSizeUpcs(nextSizes, inputUpcs, currentId, product.upcs);
+  extras.upc = (nextSizes.length && upcs[nextSizes[0]]) || extras.upc || '';
+  const upcList = Object.values(upcs).filter(Boolean);
+  const images = Array.isArray(input?.images)
+    ? normalizeImageList(input.images, extras)
+    : normalizeImageList(product.images, prevExtras);
+  if (images[0]) {
+    extras.imageUrl = images[0].url || extras.imageUrl;
+    extras.imageFileId = images[0].fileId || extras.imageFileId;
+  }
+  const prevSkus =
+    product.skus && typeof product.skus === 'object'
+      ? product.skus
+      : buildTransferSkusMap(
+          currentId,
+          product.color || '',
+          prevSizes
+        );
+  const prevUpcs = normalizeUpcsMap(product.upcs, prevSizes, product.upc);
+  const prevImages = normalizeImageList(product.images, prevExtras);
   const prevSet = new Set(prevSizes);
   const nextSet = new Set(nextSizes);
   const addedSizes = nextSizes.filter((s) => !prevSet.has(s));
@@ -2927,16 +3053,27 @@ export async function updateTransferProduct(actor, oldProductId, input) {
   if (beforeSkuStr !== afterSkuStr) {
     changes.push({ field: 'SKU', before: beforeSkuStr, after: afterSkuStr });
   }
+  const beforeUpcStr = Object.values(prevUpcs).join('、') || prevExtras.upc || '—';
+  const afterUpcStr = upcList.join('、') || extras.upc || '—';
+  if (beforeUpcStr !== afterUpcStr) {
+    changes.push({ field: 'UPC', before: beforeUpcStr, after: afterUpcStr });
+  }
+  const beforeImgStr = prevImages.map((img) => img.fileId || img.url).join('、') || '—';
+  const afterImgStr = images.map((img) => img.fileId || img.url).join('、') || '—';
+  if (beforeImgStr !== afterImgStr) {
+    changes.push({
+      field: '圖片',
+      before: prevImages.length ? String(prevImages.length) + ' 張' : '—',
+      after: images.length ? String(images.length) + ' 張' : '—',
+    });
+  }
   const extraLabels = {
     brand: '品牌',
-    upc: 'UPC',
     priceOriginal: '原價',
     priceSale: '優惠價',
     tickieCategory: '剔剔積分類',
     tickiePoints: '剔剔積分',
     nameEn: '英文',
-    imageUrl: '圖片',
-    imageFileId: '圖片檔案',
   };
   Object.keys(extraLabels).forEach((key) => {
     const before = prevExtras[key];
@@ -2983,6 +3120,9 @@ export async function updateTransferProduct(actor, oldProductId, input) {
       sizes: nextSizes,
       safetyStock,
       skus,
+      upcs,
+      upcList,
+      images,
       ...extras,
       active: true,
       createdAt: product.createdAt || now,
@@ -3005,6 +3145,9 @@ export async function updateTransferProduct(actor, oldProductId, input) {
           sizes: nextSizes,
           safetyStock,
           skus,
+          upcs,
+          upcList,
+          images,
           ...extras,
           updatedAt: now,
         },
@@ -3764,6 +3907,7 @@ async function syncPosSellablesForTransferProduct(product) {
     if (hit) {
       const $set = {
         sku,
+        upc: (product.upcs && product.upcs[size]) || product.upc || '',
         name: product.name || hit.name,
         category: product.category || '',
         color: product.color || '',
@@ -3781,6 +3925,7 @@ async function syncPosSellablesForTransferProduct(product) {
         size,
         name: product.name || '',
         sku,
+        upc: (product.upcs && product.upcs[size]) || product.upc || '',
         price,
         active: true,
         category: product.category || '',
