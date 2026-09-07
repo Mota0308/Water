@@ -4874,17 +4874,13 @@ function transferProductCardHtml(p, invMap, stores){
     +'<div style="font-weight:bold;font-size:15px;line-height:1.35">'+escHtml(p.name||'')+lowMark+'</div>'
     +(p.nameEn?'<div style="font-size:12px;color:#888;margin-top:2px">'+escHtml(p.nameEn)+'</div>':'')
     +'<div style="font-size:12px;color:#78909c;margin-top:4px">'
-    +escHtml(p.brand||'—')+'｜'+escHtml(p.id)+'｜'+escHtml(p.category||'')+'｜'+escHtml(p.color||'—')
+    +escHtml(p.brand||'—')+'｜'+escHtml(p.color||'—')+'｜'+escHtml(p.id)+'｜'+escHtml(p.category||'')
     +'</div></div></div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:#607d8b;margin:10px 0 8px">'
     +'<span>選項 '+escHtml(sizes)+'</span>'
     +'<span>原價 '+escHtml(transferProductTableVal(p.priceOriginal))+'</span>'
-    +'<span>優惠價 '+escHtml(transferProductTableVal(p.priceSale))+'</span>'
-    +'<span>剔剔積分 '+escHtml(transferProductTableVal(p.tickiePoints))+'</span>'
-    +'<span>安全存量 '+escHtml(String(p.safetyStock!=null?p.safetyStock:0))+'</span>'
     +'</div>'
-    +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
-    +'<span style="font-size:13px">總庫存 <b class="inv-qty">'+(g.total!=null?g.total:0)+'</b></span>'
+    +'<div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
     +'<span style="white-space:nowrap">'
     +'<button type="button" class="btn sm" data-call="openEditTransferProductModal" data-arg0="'+escHtml(transferProductUid(p))+'">編輯</button> '
     +'<button type="button" class="btn red sm" data-call="deleteTransferProductRow" data-arg0="'+escHtml(transferProductUid(p))+'">刪除</button>'
@@ -4944,8 +4940,8 @@ function vTransferProducts(){
   const catOpts = ['全部'].concat(cats).map(function(c){
     return '<option value="'+escHtml(c)+'"'+(transferInvCat===c?' selected':'')+'>'+escHtml(c)+'</option>';
   }).join('');
-  const colSpan = 13;
-  const head = '<tr><th style="width:56px">圖片</th><th>品牌</th><th>型號</th><th>商品名</th><th>產品分類</th><th>顏色</th><th>商品選項</th><th>原價</th><th>優惠價</th><th>剔剔積分</th><th>安全存量</th><th>總庫存</th><th></th></tr>';
+  const colSpan = 9;
+  const head = '<tr><th style="width:56px">圖片</th><th>品牌</th><th>顏色</th><th>型號</th><th>商品名</th><th>產品分類</th><th>商品選項</th><th>原價</th><th></th></tr>';
   const body = !products.length
     ? '<tr><td colspan="'+colSpan+'" style="color:#888;text-align:center">'+((transferProductsCache||[]).length?'沒有符合條件的商品。':'尚未有產品，請按「新增產品」。')+'</td></tr>'
     : products.map(function(p){
@@ -4956,16 +4952,12 @@ function vTransferProducts(){
       return '<tr class="tf-inv-row" style="cursor:pointer'+(expanded?';background:#f5f9fc':'')+'" data-action="toggle-transfer-inv" data-pid="'+escHtml(transferProductUid(p))+'">'
         +'<td>'+transferProductListThumbHtml(p)+'</td>'
         +'<td>'+escHtml(p.brand||'—')+'</td>'
+        +'<td>'+escHtml(p.color||'—')+'</td>'
         +'<td><b>'+(expanded?'▾ ':'▸ ')+escHtml(p.id)+'</b></td>'
         +'<td>'+escHtml(p.name||'')+(p.nameEn?'<div style="font-size:11px;color:#888">'+escHtml(p.nameEn)+'</div>':'')+lowMark+'</td>'
         +'<td>'+escHtml(p.category||'')+'</td>'
-        +'<td>'+escHtml(p.color||'—')+'</td>'
         +'<td>'+escHtml(sizes)+'</td>'
         +'<td>'+escHtml(transferProductTableVal(p.priceOriginal))+'</td>'
-        +'<td>'+escHtml(transferProductTableVal(p.priceSale))+'</td>'
-        +'<td>'+escHtml(transferProductTableVal(p.tickiePoints))+'</td>'
-        +'<td>'+escHtml(String(p.safetyStock!=null?p.safetyStock:0))+'</td>'
-        +'<td><b class="inv-qty">'+(g.total!=null?g.total:0)+'</b></td>'
         +'<td style="white-space:nowrap">'
         +'<button type="button" class="btn sm" data-call="openEditTransferProductModal" data-arg0="'+escHtml(transferProductUid(p))+'">編輯</button> '
         +'<button type="button" class="btn red sm" data-call="deleteTransferProductRow" data-arg0="'+escHtml(transferProductUid(p))+'">刪除</button>'
@@ -4973,7 +4965,7 @@ function vTransferProducts(){
         +'</tr>'
         +(expanded
           ? '<tr><td colspan="'+colSpan+'" style="background:#fafafa;padding:12px 14px">'
-            +'<div style="font-size:12px;color:#78909c;margin:0 0 8px">各門市一卡，尺碼由小到大由左至右 · 點「改庫存」可一次改全部尺碼</div>'
+            +'<div style="font-size:12px;color:#78909c;margin:0 0 8px">尺碼為列、地點為行 · 點「改庫存」可一次改全部尺碼</div>'
             +transferInvSizeCardsHtml(g, stores)
             +'</td></tr>'
           : '');
@@ -4982,8 +4974,8 @@ function vTransferProducts(){
     +'<h2>🏷️ 貨品</h2>'
     +'<p style="font-size:13px;color:#666;margin:0 0 10px;line-height:1.55">商品主檔與各門市／倉庫庫存同一頁，可用表格或卡片檢視。'
     +(transferProductsViewMode==='grid'
-      ? '卡片顯示各門市庫存與各尺碼數量，可「改庫存」或「申請調動」。'
-      : '點擊列展開各門市庫存（每卡列出各尺碼），可「改庫存」或「申請調動」。')
+      ? '卡片展開各門市庫存（尺碼為列、地點為行），可「改庫存」或「申請調動」。'
+      : '點擊列展開庫存（尺碼為列、地點為行），可「改庫存」或「申請調動」。')
     +'低於安全存量以<span class="inv-low">紅色</span>標示。篩選結果有 <b>'+lowCount+'</b> 款含預警。</p>'
     +'<div class="filters">'
     +'<input type="text" placeholder="搜尋型號／名稱／品牌／顏色／尺碼／SKU" value="'+escHtml(transferInvKw)+'" onchange="setTransferInvKw(this.value)" onkeydown="if(event.key===\'Enter\'){setTransferInvKw(this.value)}">'
@@ -5005,29 +4997,30 @@ function transferInvSizeCardsHtml(g, stores){
   stores = stores || TRANSFER_STORES_FE;
   const sizeRows = (g.sizes||[]).slice().sort(function(a,b){ return compareTransferSizes(a.size, b.size); });
   const pid = escHtml(String((g && g.productId) || (sizeRows[0] && sizeRows[0].productId) || ''));
-  return '<div style="display:flex;flex-wrap:wrap;gap:10px;padding:4px 0">'
-    +stores.map(function(store){
-      const sizeLines = sizeRows.map(function(r){
-        const q = (r.qty && r.qty[store]!=null) ? r.qty[store] : 0;
-        const isLow = !!(r.low && r.low[store]);
-        return '<div style="flex:0 0 auto;min-width:64px;text-align:center">'
-          +'<div style="font-size:11px;color:#607d8b;margin-bottom:2px">尺碼 '+escHtml(String(r.size))+'</div>'
-          +'<div class="'+(isLow?'inv-low':'inv-ok')+'" style="font-size:16px"><b>'+q+'</b></div>'
-          +'</div>';
-      }).join('');
-      let total = 0;
-      sizeRows.forEach(function(r){
-        total += Number((r.qty && r.qty[store]!=null) ? r.qty[store] : 0) || 0;
-      });
-      return '<div style="flex:1 1 220px;min-width:200px;border:1px solid #e0e0e0;border-radius:10px;padding:10px 12px;background:#fff;box-sizing:border-box">'
-        +'<div style="font-weight:700;margin:0 0 8px;font-size:14px">'+escHtml(store)+'</div>'
-        +'<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">'+sizeLines+'</div>'
-        +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:10px;padding-top:8px;border-top:1px solid #eee">'
-        +'<span style="font-size:13px">合計 <b class="inv-qty">'+total+'</b></span>'
-        +'<button type="button" class="btn sm gray" data-call="openTransferStockEditModal" data-arg0="'+pid+'">改庫存</button>'
-        +'</div>'
-        +'</div>';
-    }).join('')
+  const head = '<tr><th style="text-align:left;white-space:nowrap">地點</th>'
+    +sizeRows.map(function(r){ return '<th style="text-align:center;white-space:nowrap">'+escHtml(String(r.size))+'</th>'; }).join('')
+    +'<th style="text-align:center;white-space:nowrap">合計</th></tr>';
+  const body = stores.map(function(store){
+    let total = 0;
+    const cells = sizeRows.map(function(r){
+      const q = (r.qty && r.qty[store]!=null) ? r.qty[store] : 0;
+      total += Number(q)||0;
+      const isLow = !!(r.low && r.low[store]);
+      return '<td style="text-align:center" class="'+(isLow?'inv-low':'inv-ok')+'"><b>'+q+'</b></td>';
+    }).join('');
+    return '<tr>'
+      +'<th style="text-align:left;font-weight:600;white-space:nowrap">'+escHtml(store)+'</th>'
+      +cells
+      +'<td style="text-align:center"><b class="inv-qty">'+total+'</b></td>'
+      +'</tr>';
+  }).join('');
+  return '<div>'
+    +'<div style="display:flex;justify-content:flex-end;margin:0 0 8px">'
+    +'<button type="button" class="btn sm gray" data-call="openTransferStockEditModal" data-arg0="'+pid+'">改庫存</button>'
+    +'</div>'
+    +'<div class="table-wrap"><table style="width:100%;font-size:13px">'
+    +head+body
+    +'</table></div>'
     +'</div>';
 }
 function vTransferProductLog(){
