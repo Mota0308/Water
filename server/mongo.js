@@ -4239,30 +4239,39 @@ export async function checkoutPos(user, payload = {}) {
   });
   subtotal = Math.round(subtotal * 100) / 100;
 
-  // 積分折抵（每 N 分＝$1，可設定）
   await ensureMembersReady();
   const ptsSettings = await getPosPointsSettingsInternal();
+  const now = new Date();
+  const memberKey = String(payload.memberId || payload.memberPhone || '').trim();
+  let memberDoc = null;
+  if (memberKey) {
+    memberDoc = await findMemberDoc(memberKey);
+    if (!memberDoc) throw new Error('找不到會員');
+    if (memberDoc.active === false) throw new Error('會員已停用');
+  }
+  const holidayDates = await holidayDatesNow();
+  const pricing = memberPricingFor(memberDoc?.level, { holidayDates, at: now });
+  const memberDiscount = memberDoc ? Math.round(subtotal * (1 - pricing.rate) * 100) / 100 : 0;
+  const afterMember = Math.round((subtotal - memberDiscount) * 100) / 100;
+
   let pointsRedeemed = 0;
   let pointsDiscount = 0;
-  const memberKey = String(payload.memberId || payload.memberPhone || '').trim();
   const wantRedeem = Number(payload.pointsToRedeem || 0);
   if (wantRedeem) {
     if (!ptsSettings.redeemEnabled) throw new Error('積分兌換已關閉');
-    if (!memberKey) throw new Error('請先選擇會員才能折抵積分');
+    if (!memberDoc) throw new Error('請先選擇會員才能折抵積分');
     if (!Number.isInteger(wantRedeem) || wantRedeem <= 0) throw new Error('折抵積分無效');
     const n = ptsSettings.pointsPerDollar;
     if (wantRedeem % n !== 0) throw new Error(`折抵積分須為 ${n} 的倍數（每 ${n} 分＝$1）`);
     pointsDiscount = wantRedeem / n;
-    const member = await findMemberDoc(memberKey);
-    if (!member) throw new Error('找不到會員');
-    const bal = Math.max(0, Number(member.points) || 0);
+    const bal = Math.max(0, Number(memberDoc.points) || 0);
     if (wantRedeem > bal) throw new Error(`積分不足（餘額 ${bal}）`);
-    const maxDiscount = Math.max(0, subtotal + accountBalance);
+    const maxDiscount = Math.max(0, afterMember + accountBalance);
     if (pointsDiscount > maxDiscount + 1e-9) throw new Error('折抵金額不可超過應付總額');
     pointsRedeemed = wantRedeem;
   }
 
-  const orderTotal = Math.round((subtotal + accountBalance - pointsDiscount) * 100) / 100;
+  const orderTotal = Math.round((afterMember + accountBalance - pointsDiscount) * 100) / 100;
   if (orderTotal < 0) {
     for (const d of deducted) {
       await adjustInventoryQty(d.sellable.transferProductId, d.sellable.size, store, d.qty);
@@ -4281,7 +4290,6 @@ export async function checkoutPos(user, payload = {}) {
   const year = new Date().getFullYear();
   const invoiceNo = `INV-${year}-${String(seq).padStart(8, '0')}`;
   const id = `tx_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-  const now = new Date();
   const time = formatHkDateTime(now);
   const stamp = (() => {
     const p = (n) => String(n).padStart(2, '0');
@@ -4297,9 +4305,13 @@ export async function checkoutPos(user, payload = {}) {
     store,
     staffId: String(me.id),
     staffName: me.name || me.login || '',
-    memberId: String(payload.memberId || ''),
-    memberName: String(payload.memberName || ''),
-    memberPhone: String(payload.memberPhone || ''),
+    memberId: String(payload.memberId || memberDoc?.id || ''),
+    memberName: String(payload.memberName || memberDoc?.name || ''),
+    memberPhone: String(payload.memberPhone || memberDoc?.phone || ''),
+    memberLevel: memberDoc ? pricing.level : '',
+    memberDiscountRate: memberDoc ? pricing.rate : 1,
+    memberDiscountFold: memberDoc ? pricing.fold : '',
+    memberDiscount,
     remark: String(payload.remark || '').trim(),
     paymentMethod,
     paymentMethodName: paymentNames[paymentMethod],
@@ -4342,7 +4354,7 @@ export async function checkoutPos(user, payload = {}) {
         tx.pointsRedeemed = Math.abs(red.actualDelta);
         tx.pointsDiscount = pointsDiscount;
       }
-      const earnBase = Math.max(0, subtotal - pointsDiscount);
+      const earnBase = Math.max(0, afterMember - pointsDiscount);
       const earn = pointsFromAmount(earnBase);
       if (earn > 0) {
         const pts = await applyMemberPoints({
@@ -5540,6 +5552,152 @@ export async function updatePosPointsSettings(user, input = {}) {
   return { settings, canEdit: true };
 }
 
+const SYSTEM_SETTINGS_ID = 'system_settings';
+let holidayDatesCache = { ms: 0, dates: [] };
+
+function normalizeHolidayDate(raw) {
+  const s = String(raw || '').trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '';
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return '';
+  return `${m[1]}-${m[2]}-${m[3]}`;
+}
+
+function normalizeHolidays(raw) {
+  const map = new Map();
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const date = normalizeHolidayDate(item?.date || item);
+    if (!date) continue;
+    const name = String(item?.name || '').trim();
+    map.set(date, { date, name });
+  }
+  return [...map.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+export function hkDateInfo(d = new Date()) {
+  const at = d instanceof Date ? d : new Date(d);
+  const ymd = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Hong_Kong',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(at);
+  const weekday = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Hong_Kong',
+    weekday: 'short',
+  }).format(at);
+  const isWeekend = weekday === 'Sat' || weekday === 'Sun';
+  return { ymd, weekday, isWeekend };
+}
+
+async function getSystemSettingsInternal() {
+  await metaCol().updateOne(
+    { _id: SYSTEM_SETTINGS_ID },
+    { $setOnInsert: { _id: SYSTEM_SETTINGS_ID, holidays: [] } },
+    { upsert: true }
+  );
+  const doc = await metaCol().findOne({ _id: SYSTEM_SETTINGS_ID });
+  return { holidays: normalizeHolidays(doc?.holidays) };
+}
+
+async function holidayDatesNow() {
+  if (Date.now() - holidayDatesCache.ms < 4000) return holidayDatesCache.dates;
+  const settings = await getSystemSettingsInternal();
+  const dates = settings.holidays.map((h) => h.date);
+  holidayDatesCache = { ms: Date.now(), dates };
+  return dates;
+}
+
+export const MEMBER_LEVELS = [
+  { id: '新會員', label: '新會員', note: '原價，無會員折扣' },
+  { id: '普通會員', label: '普通會員', note: '購買 95 折' },
+  { id: '尊貴會員', label: '尊貴會員', note: '購買 85 折' },
+  { id: '教練會員', label: '教練會員', note: '購買 85 折' },
+  { id: '長者會員', label: '長者會員', note: '平日 75 折，星期六日及紅日 85 折' },
+];
+const MEMBER_LEVEL_IDS = new Set(MEMBER_LEVELS.map((x) => x.id));
+
+export function memberPricingFor(level, { holidayDates = [], at = new Date() } = {}) {
+  const lv = normalizeMemberLevel(level);
+  const info = hkDateInfo(at);
+  const isRedDay = info.isWeekend || (holidayDates || []).includes(info.ymd);
+  let rate = 1;
+  let fold = '原價';
+  if (lv === '普通會員') {
+    rate = 0.95;
+    fold = '95折';
+  } else if (lv === '尊貴會員' || lv === '教練會員') {
+    rate = 0.85;
+    fold = '85折';
+  } else if (lv === '長者會員') {
+    if (isRedDay) {
+      rate = 0.85;
+      fold = '85折（星期六日／紅日）';
+    } else {
+      rate = 0.75;
+      fold = '75折（平日）';
+    }
+  }
+  return {
+    level: lv,
+    rate,
+    fold,
+    isRedDay,
+    isWeekend: info.isWeekend,
+    date: info.ymd,
+  };
+}
+
+export async function getSystemSettings(user) {
+  await connectMongo();
+  const me = publicUser(user);
+  if (!me?.id) throw new Error('未登入');
+  const settings = await getSystemSettingsInternal();
+  return {
+    settings,
+    levels: MEMBER_LEVELS,
+    canEdit: posCanManageCatalog(me),
+    today: memberPricingFor('長者會員', { holidayDates: settings.holidays.map((h) => h.date) }),
+  };
+}
+
+export async function updateSystemSettings(user, input = {}) {
+  await connectMongo();
+  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可修改系統設置');
+  const me = publicUser(user);
+  const holidays = normalizeHolidays(input.holidays);
+  const time = formatHkDateTime();
+  await metaCol().updateOne(
+    { _id: SYSTEM_SETTINGS_ID },
+    {
+      $set: {
+        holidays,
+        updatedAt: time,
+        updatedAtMs: Date.now(),
+        updatedBy: String(me.id),
+      },
+      $setOnInsert: { _id: SYSTEM_SETTINGS_ID },
+    },
+    { upsert: true }
+  );
+  holidayDatesCache = { ms: 0, dates: [] };
+  await appendModuleLog({
+    module: 'settings',
+    time,
+    action: '更新紅日假期',
+    detail: `共 ${holidays.length} 日`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return getSystemSettings(me);
+}
+
 export async function addPosSellablesBatch(user, input = {}) {
   await connectMongo();
   await ensurePosReady();
@@ -5638,18 +5796,39 @@ async function ensureMembersReady() {
   await memberPointsCol().createIndex({ memberId: 1, createdAtMs: -1 });
   await memberPointsCol().createIndex({ id: 1 }, { unique: true });
   await membersCol().updateMany({ points: { $exists: false } }, { $set: { points: 0 } });
+  await membersCol().updateMany(
+    { source: 'excel-import', level: { $in: ['VIP 會員', 'VIP', 'vip'] } },
+    { $set: { level: '尊貴會員' } }
+  );
+  await membersCol().updateMany(
+    { source: 'excel-import', level: { $in: ['一般會員', ''] } },
+    { $set: { level: '新會員' } }
+  );
+  await membersCol().updateMany({ level: '一般會員' }, { $set: { level: '普通會員' } });
+  await membersCol().updateMany({ level: { $in: ['VIP 會員', 'VIP', 'vip'] } }, { $set: { level: '尊貴會員' } });
 }
-function stripMember(doc) {
+function stripMember(doc, ctx = {}) {
   if (!doc) return null;
   const { _id, ...rest } = doc;
   if (rest.points == null) rest.points = 0;
+  rest.level = normalizeMemberLevel(rest.level);
   if (!rest.memberNo) rest.memberNo = isSequentialMemberId(rest.id) ? rest.id : '';
+  rest.pricing = memberPricingFor(rest.level, {
+    holidayDates: ctx.holidayDates || [],
+    at: ctx.at || new Date(),
+  });
   return rest;
 }
 function normalizeMemberLevel(raw) {
   const s = String(raw || '').trim();
-  if (/vip/i.test(s)) return 'VIP 會員';
-  return '一般會員';
+  if (MEMBER_LEVEL_IDS.has(s)) return s;
+  const key = s.toLowerCase();
+  if (key === 'new' || s === '新會員') return '新會員';
+  if (key === 'normal' || s === '一般會員' || s === '普通會員') return '普通會員';
+  if (key === 'vip' || s.includes('VIP') || s.includes('vip') || s === '尊貴會員') return '尊貴會員';
+  if (key === 'coach' || s.includes('教練')) return '教練會員';
+  if (key === 'senior' || s.includes('長者')) return '長者會員';
+  return '新會員';
 }
 export function formatMemberId(n) {
   const num = Number(n);
@@ -5791,9 +5970,12 @@ export async function listMembers(user, { q, includeInactive } = {}) {
     ];
   }
   const docs = await membersCol().find(filter).sort({ id: 1, name: 1 }).limit(10000).toArray();
+  const holidayDates = await holidayDatesNow();
+  const at = new Date();
   return {
-    members: docs.map(stripMember),
+    members: docs.map((d) => stripMember(d, { holidayDates, at })),
     canEdit: posCanManageCatalog(user),
+    levels: MEMBER_LEVELS,
   };
 }
 
@@ -5810,8 +5992,9 @@ export async function listMemberPoints(user, id) {
     .sort({ createdAtMs: -1 })
     .limit(200)
     .toArray();
+  const holidayDates = await holidayDatesNow();
   return {
-    member: stripMember(member),
+    member: stripMember(member, { holidayDates, at: new Date() }),
     ledger: docs.map(stripPointLedger),
     canEdit: posCanManageCatalog(user),
   };
@@ -5860,15 +6043,19 @@ export async function createMember(user, input = {}) {
   const now = new Date();
   const time = formatHkDateTime(now);
   const email = String(input.email || '').trim();
+  const birthDay = String(input.birthDay || '').trim();
+  const birthMonth = String(input.birthMonth || '').trim();
   const doc = {
     _id: memberId,
     id: memberId,
     memberNo: memberId,
     phone,
     name,
-    level: normalizeMemberLevel(input.level),
+    level: normalizeMemberLevel(input.level || '新會員'),
     remark: String(input.remark || '').trim(),
     email,
+    birthDay,
+    birthMonth,
     points: 0,
     active: true,
     createdAt: time,
@@ -5883,19 +6070,20 @@ export async function createMember(user, input = {}) {
     module: 'pos',
     time,
     action: '新增會員',
-    detail: `${memberId}｜${name}｜${phone}`,
+    detail: `${memberId}｜${name}｜${phone}｜${doc.level}`,
     userId: me.id,
     userName: me.name || me.login,
     user: me.name || me.login,
   });
-  return stripMember(doc);
+  const holidayDates = await holidayDatesNow();
+  return stripMember(doc, { holidayDates, at: now });
 }
 
 export async function updateMember(user, id, input = {}) {
   await connectMongo();
   await ensureMembersReady();
-  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可編輯會員');
   const me = publicUser(user);
+  if (!me?.id) throw new Error('未登入');
   const existing = await findMemberDoc(id);
   if (!existing) throw new Error('找不到會員');
   const $set = {
@@ -5910,6 +6098,9 @@ export async function updateMember(user, id, input = {}) {
   }
   if (input.level != null) $set.level = normalizeMemberLevel(input.level);
   if (input.remark != null) $set.remark = String(input.remark).trim();
+  if (input.email != null) $set.email = String(input.email).trim();
+  if (input.birthDay != null) $set.birthDay = String(input.birthDay).trim();
+  if (input.birthMonth != null) $set.birthMonth = String(input.birthMonth).trim();
   if (input.phone != null && input.phone !== '') {
     const newPhone = normalizePhone(input.phone);
     if (!newPhone) throw new Error('新電話無效');
@@ -5919,12 +6110,11 @@ export async function updateMember(user, id, input = {}) {
       $set.phone = newPhone;
     }
   }
-  if (input.email != null) $set.email = String(input.email).trim();
   await membersCol().updateOne({ _id: existing._id }, { $set });
-  if ($set.phone) {
+  if ($set.phone || $set.name) {
     await memberPointsCol().updateMany(
       { memberId: String(existing.id || existing.memberNo || existing.phone) },
-      { $set: { memberPhone: $set.phone, memberName: $set.name || existing.name } }
+      { $set: { memberPhone: $set.phone || existing.phone, memberName: $set.name || existing.name } }
     );
   }
   const updated = await membersCol().findOne({ _id: existing._id });
@@ -5932,12 +6122,13 @@ export async function updateMember(user, id, input = {}) {
     module: 'pos',
     time: $set.updatedAt,
     action: '編輯會員',
-    detail: `${updated.name}｜${updated.phone}`,
+    detail: `${updated.name}｜${updated.phone}｜${updated.level || ''}`,
     userId: me.id,
     userName: me.name || me.login,
     user: me.name || me.login,
   });
-  return stripMember(updated);
+  const holidayDates = await holidayDatesNow();
+  return stripMember(updated, { holidayDates, at: new Date() });
 }
 
 export async function setMemberActive(user, id, active) {

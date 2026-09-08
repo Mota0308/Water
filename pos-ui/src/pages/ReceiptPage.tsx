@@ -92,7 +92,7 @@ export function ReceiptPage() {
         </p>
         {tx.memberName && (
           <p className="mt-1 text-sm text-slate-600">
-            會員：{tx.memberName} {tx.memberPhone || ''}
+            會員：{tx.memberName} {tx.memberPhone || ''} {tx.memberLevel ? `· ${tx.memberLevel}` : ''}
           </p>
         )}
         <div className="mt-4 divide-y divide-slate-100 border-y border-slate-100">
@@ -109,6 +109,12 @@ export function ReceiptPage() {
           ))}
         </div>
         <div className="mt-3 space-y-1 text-sm">
+          {(Number(tx.memberDiscount) || 0) > 0 && (
+            <div className="flex justify-between text-emerald-700">
+              <span>會員折扣{tx.memberDiscountFold ? `（${tx.memberDiscountFold}）` : ''}</span>
+              <span>-{formatHKD(Number(tx.memberDiscount))}</span>
+            </div>
+          )}
           {(Number(tx.pointsDiscount) || 0) > 0 && (
             <div className="flex justify-between text-red-600">
               <span>積分折抵</span>

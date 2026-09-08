@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import { apiJson } from '@/lib/api'
 import { formatDateTime, formatHKD } from '@/lib/format'
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, btnClass, fieldClass, textareaClass } from '@/components/ui'
+import { MEMBER_LEVELS, memberLevelNote, memberLevelTone, normalizeMemberLevel } from '@/lib/members'
 import type { PosMember, PosPointLedger, PosTransaction } from '@/lib/types'
 
 function memberNoFor(member: PosMember) {
@@ -10,18 +11,15 @@ function memberNoFor(member: PosMember) {
 }
 
 function memberLevelLabel(level?: string) {
-  const raw = String(level || '')
-  if (raw === 'vip' || raw === 'VIP' || raw.includes('VIP')) return 'VIP 會員'
-  return '一般會員'
-}
-
-function isVipLevel(level?: string) {
-  return memberLevelLabel(level) === 'VIP 會員'
+  return normalizeMemberLevel(level)
 }
 
 function memberStatusLabel(active?: boolean) {
   return active === false ? '已停用' : '啟用中'
 }
+
+const emptyAddForm = { name: '', phone: '', email: '', birthDay: '', birthMonth: '', level: '新會員', remark: '' }
+const emptyEditForm = { name: '', phone: '', email: '', birthDay: '', birthMonth: '', level: '新會員', remark: '' }
 
 export function MembersPage() {
   const [kw, setKw] = useState('')
@@ -35,7 +33,9 @@ export function MembersPage() {
   const [levelFilter, setLevelFilter] = useState('all')
   const [statusFilter, setStatusFilter] = useState('all')
   const [showAddDialog, setShowAddDialog] = useState(false)
-  const [addForm, setAddForm] = useState({ name: '', phone: '', level: 'normal', remark: '' })
+  const [addForm, setAddForm] = useState(emptyAddForm)
+  const [editForm, setEditForm] = useState(emptyEditForm)
+  const [savingProfile, setSavingProfile] = useState(false)
   const [pointDelta, setPointDelta] = useState('')
   const [pointReason, setPointReason] = useState('')
 
@@ -69,6 +69,22 @@ export function MembersPage() {
     [members, selectedId],
   )
 
+  useEffect(() => {
+    if (!selectedMember) {
+      setEditForm(emptyEditForm)
+      return
+    }
+    setEditForm({
+      name: selectedMember.name || '',
+      phone: selectedMember.phone || '',
+      email: selectedMember.email || '',
+      birthDay: selectedMember.birthDay || '',
+      birthMonth: selectedMember.birthMonth || '',
+      level: normalizeMemberLevel(selectedMember.level),
+      remark: selectedMember.remark || '',
+    })
+  }, [selectedMember])
+
   const loadLedger = useCallback(async (memberId: string) => {
     if (!memberId) return
     try {
@@ -85,8 +101,7 @@ export function MembersPage() {
 
   const filteredMembers = useMemo(() => {
     return members.filter((member) => {
-      if (levelFilter === 'vip' && !isVipLevel(member.level)) return false
-      if (levelFilter === 'normal' && isVipLevel(member.level)) return false
+      if (levelFilter !== 'all' && normalizeMemberLevel(member.level) !== levelFilter) return false
       if (statusFilter === 'active' && member.active === false) return false
       if (statusFilter === 'inactive' && member.active !== false) return false
       return true
@@ -107,11 +122,28 @@ export function MembersPage() {
         body: JSON.stringify(addForm),
       })
       toast.success('已新增會員')
-      setAddForm({ name: '', phone: '', level: 'normal', remark: '' })
+      setAddForm(emptyAddForm)
       setShowAddDialog(false)
       await load()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const saveProfile = async () => {
+    if (!selectedMember) return
+    setSavingProfile(true)
+    try {
+      await apiJson<{ member: PosMember }>(`/api/pos/members/${encodeURIComponent(selectedMember.id)}`, {
+        method: 'PUT',
+        body: JSON.stringify(editForm),
+      })
+      toast.success('已更新會員資料')
+      await load()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSavingProfile(false)
     }
   }
 
@@ -172,8 +204,11 @@ export function MembersPage() {
           />
           <select value={levelFilter} onChange={(e) => setLevelFilter(e.target.value)} className={fieldClass()}>
             <option value="all">全部級別</option>
-            <option value="normal">一般會員</option>
-            <option value="vip">VIP 會員</option>
+            {MEMBER_LEVELS.map((lv) => (
+              <option key={lv.id} value={lv.id}>
+                {lv.label}
+              </option>
+            ))}
           </select>
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={fieldClass()}>
             <option value="all">全部狀態</option>
@@ -217,7 +252,9 @@ export function MembersPage() {
                     <td className="px-4 py-3 font-mono text-xs text-slate-500">{memberNoFor(member)}</td>
                     <td className="px-4 py-3 font-medium text-slate-900">{member.name}</td>
                     <td className="px-4 py-3">{member.phone}</td>
-                    <td className="px-4 py-3">{memberLevelLabel(member.level)}</td>
+                    <td className="px-4 py-3">
+                      <Badge tone={memberLevelTone(member.level)}>{memberLevelLabel(member.level)}</Badge>
+                    </td>
                     <td className="px-4 py-3 text-right font-semibold tabular-nums">{Number(member.points || 0).toLocaleString()}</td>
                     <td className="px-4 py-3">
                       <Badge tone={member.active === false ? 'red' : 'emerald'}>{memberStatusLabel(member.active)}</Badge>
@@ -239,7 +276,7 @@ export function MembersPage() {
         <Card>
           <CardHeader>
             <CardTitle>會員詳情</CardTitle>
-            <CardDescription>選取左側會員後，可查看流水與最近購買記錄。</CardDescription>
+            <CardDescription>選取左側會員後，可修改個人資料、轉換會員類別，並查看積分與購買記錄。</CardDescription>
           </CardHeader>
           <CardContent>
             {!selectedMember ? (
@@ -254,29 +291,83 @@ export function MembersPage() {
                       <div className="text-lg font-semibold text-slate-900">{selectedMember.name}</div>
                       <div className="mt-1 font-mono text-xs text-slate-500">{memberNoFor(selectedMember)}</div>
                     </div>
-                    <Badge tone={isVipLevel(selectedMember.level) ? 'amber' : 'sky'}>{memberLevelLabel(selectedMember.level)}</Badge>
+                    <Badge tone={memberLevelTone(selectedMember.level)}>{memberLevelLabel(selectedMember.level)}</Badge>
                   </div>
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <div>
-                      <div className="text-xs text-slate-500">電話</div>
-                      <div className="mt-1">{selectedMember.phone}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-slate-500">電郵</div>
-                      <div className="mt-1">{selectedMember.email || '—'}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-slate-500">狀態</div>
-                      <div className="mt-1">{memberStatusLabel(selectedMember.active)}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-slate-500">目前積分</div>
-                      <div className="mt-1 font-semibold tabular-nums">{Number(selectedMember.points || 0).toLocaleString()}</div>
-                    </div>
-                    <div>
-                      <div className="text-xs text-slate-500">備註</div>
-                      <div className="mt-1">{selectedMember.remark || '—'}</div>
-                    </div>
+                  <p className="text-xs text-slate-500">{memberLevelNote(selectedMember.level)}</p>
+                  {selectedMember.pricing?.fold ? (
+                    <p className="text-xs text-sky-700">今日結帳：{selectedMember.pricing.fold}</p>
+                  ) : null}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="text-sm">
+                      <span className="text-xs text-slate-500">姓名</span>
+                      <input
+                        value={editForm.name}
+                        onChange={(e) => setEditForm((prev) => ({ ...prev, name: e.target.value }))}
+                        className={fieldClass('mt-1')}
+                      />
+                    </label>
+                    <label className="text-sm">
+                      <span className="text-xs text-slate-500">電話</span>
+                      <input
+                        value={editForm.phone}
+                        onChange={(e) => setEditForm((prev) => ({ ...prev, phone: e.target.value }))}
+                        className={fieldClass('mt-1')}
+                      />
+                    </label>
+                    <label className="text-sm">
+                      <span className="text-xs text-slate-500">電郵</span>
+                      <input
+                        value={editForm.email}
+                        onChange={(e) => setEditForm((prev) => ({ ...prev, email: e.target.value }))}
+                        className={fieldClass('mt-1')}
+                      />
+                    </label>
+                    <label className="text-sm">
+                      <span className="text-xs text-slate-500">會員類別</span>
+                      <select
+                        value={editForm.level}
+                        onChange={(e) => setEditForm((prev) => ({ ...prev, level: e.target.value }))}
+                        className={fieldClass('mt-1')}
+                      >
+                        {MEMBER_LEVELS.map((lv) => (
+                          <option key={lv.id} value={lv.id}>
+                            {lv.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-sm">
+                      <span className="text-xs text-slate-500">出生日期（日）</span>
+                      <input
+                        value={editForm.birthDay}
+                        onChange={(e) => setEditForm((prev) => ({ ...prev, birthDay: e.target.value }))}
+                        className={fieldClass('mt-1')}
+                        placeholder="1–31"
+                      />
+                    </label>
+                    <label className="text-sm">
+                      <span className="text-xs text-slate-500">出生月份</span>
+                      <input
+                        value={editForm.birthMonth}
+                        onChange={(e) => setEditForm((prev) => ({ ...prev, birthMonth: e.target.value }))}
+                        className={fieldClass('mt-1')}
+                        placeholder="1–12"
+                      />
+                    </label>
+                    <label className="text-sm sm:col-span-2">
+                      <span className="text-xs text-slate-500">備註</span>
+                      <textarea
+                        value={editForm.remark}
+                        onChange={(e) => setEditForm((prev) => ({ ...prev, remark: e.target.value }))}
+                        className={textareaClass('mt-1')}
+                      />
+                    </label>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button type="button" disabled={savingProfile} onClick={() => void saveProfile()} className={btnClass({ variant: 'primary' })}>
+                      {savingProfile ? '儲存中…' : '儲存資料'}
+                    </button>
+                    <div className="text-xs text-slate-500">狀態：{memberStatusLabel(selectedMember.active)} · 積分 {Number(selectedMember.points || 0).toLocaleString()}</div>
                   </div>
                   {canEdit && (
                     <div className="flex flex-wrap gap-2">
@@ -392,14 +483,24 @@ export function MembersPage() {
                 placeholder="8 位香港電話"
                 className={fieldClass()}
               />
+              <input
+                value={addForm.email}
+                onChange={(e) => setAddForm((prev) => ({ ...prev, email: e.target.value }))}
+                placeholder="電郵（選填）"
+                className={fieldClass()}
+              />
               <select
                 value={addForm.level}
                 onChange={(e) => setAddForm((prev) => ({ ...prev, level: e.target.value }))}
                 className={fieldClass()}
               >
-                <option value="normal">一般會員</option>
-                <option value="vip">VIP 會員</option>
+                {MEMBER_LEVELS.map((lv) => (
+                  <option key={lv.id} value={lv.id}>
+                    {lv.label}
+                  </option>
+                ))}
               </select>
+              <p className="text-xs text-slate-500">{memberLevelNote(addForm.level)}</p>
               <textarea
                 value={addForm.remark}
                 onChange={(e) => setAddForm((prev) => ({ ...prev, remark: e.target.value }))}

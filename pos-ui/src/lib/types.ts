@@ -36,6 +36,15 @@ export interface PosProduct {
   updatedAt?: string
 }
 
+export interface MemberPricing {
+  level?: string
+  rate?: number
+  fold?: string
+  isRedDay?: boolean
+  isWeekend?: boolean
+  date?: string
+}
+
 export interface PosMember {
   id: string
   memberNo?: string
@@ -48,6 +57,7 @@ export interface PosMember {
   email?: string
   birthDay?: string
   birthMonth?: string
+  pricing?: MemberPricing
   createdAt?: string
   updatedAt?: string
 }
@@ -85,6 +95,10 @@ export interface PosTransaction {
   paymentStatus?: string
   memberName?: string
   memberPhone?: string
+  memberLevel?: string
+  memberDiscount?: number
+  memberDiscountRate?: number
+  memberDiscountFold?: string
   status?: string
   orderStatus?: string
   pointsBalanceAfter?: number | null

@@ -5255,9 +5255,115 @@ async function submitChangePassword(){
       const el = document.getElementById(id); if(el) el.value = '';
     });
     alert2('密碼已更新。下次請用新密碼登入。');
+  }catch(e){ alert2('更改失敗：'+(e.message||e)); }
+}
+
+var systemSettingsState = { loaded: false, loading: false, holidays: [], canEdit: false, error: '', today: null };
+
+async function loadSystemSettings(force){
+  if(systemSettingsState.loading) return systemSettingsState;
+  if(systemSettingsState.loaded && !force) return systemSettingsState;
+  systemSettingsState.loading = true;
+  systemSettingsState.error = '';
+  try{
+    const res = await apiFetch('/api/system/settings');
+    systemSettingsState.holidays = (res && res.settings && res.settings.holidays) || [];
+    systemSettingsState.canEdit = !!(res && res.canEdit);
+    systemSettingsState.today = (res && res.today) || null;
+    systemSettingsState.loaded = true;
   }catch(e){
-    alert2('更改密碼失敗：'+(e.message||e));
+    systemSettingsState.error = (e && e.message) || String(e);
+    systemSettingsState.loaded = true;
+  }finally{
+    systemSettingsState.loading = false;
   }
+  return systemSettingsState;
+}
+
+function holidayWeekdayLabel(ymd){
+  const p = String(ymd||'').split('-');
+  if(p.length !== 3) return '';
+  const d = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2])));
+  const names = ['日','一','二','三','四','五','六'];
+  return '星期' + names[d.getUTCDay()];
+}
+
+function vSystemSettings(){
+  if(!currentUser){
+    return '<div class="card"><h2>⚙️ 設置</h2><p>請先登入。</p></div>';
+  }
+  if(!systemSettingsState.loaded && !systemSettingsState.loading){
+    loadSystemSettings().then(function(){ if(typeof render==='function') render(); });
+  }
+  const rows = systemSettingsState.holidays || [];
+  const canEdit = !!systemSettingsState.canEdit;
+  const today = systemSettingsState.today || {};
+  const editHtml = canEdit
+    ? ('<div class="actions" style="margin:12px 0 0;display:flex;flex-wrap:wrap;gap:8px;align-items:end">'
+      +'<div><label>日期</label><input type="date" id="sys-holiday-date"></div>'
+      +'<div style="flex:1;min-width:160px"><label>名稱（選填）</label><input type="text" id="sys-holiday-name" placeholder="例如 國慶日"></div>'
+      +'<button type="button" class="btn sm" data-call="addSystemHoliday">加入紅日</button>'
+      +'</div>')
+    : '<p style="font-size:13px;color:#666">只有管理員／主管可新增或刪除紅日。</p>';
+  return `<div class="card">
+    <h2>⚙️ 系統設置</h2>
+    <p style="font-size:13px;color:#666;line-height:1.6;margin:0 0 8px">此處設定全系統共用內容。紅日會影響<strong>長者會員</strong>折扣：平日 75 折，星期六日及紅日 85 折。</p>
+    <p style="font-size:13px;color:#666;margin:0">今日（香港）：${escHtml(today.date||'—')}　${today.isWeekend||today.isRedDay?'紅日／週末':'平日'}　長者折扣 ${escHtml(today.fold||'—')}</p>
+  </div>
+  <div class="card">
+    <h2>📅 紅日假期</h2>
+    ${systemSettingsState.loading ? '<p>載入中…</p>' : ''}
+    ${systemSettingsState.error ? '<p style="color:#c00">'+escHtml(systemSettingsState.error)+'</p>' : ''}
+    ${rows.length
+      ? '<div class="table-wrap"><table><tr><th>日期</th><th>星期</th><th>名稱</th>'+(canEdit?'<th></th>':'')+'</tr>'
+        + rows.map(function(h){
+          return '<tr><td>'+escHtml(h.date)+'</td><td>'+escHtml(holidayWeekdayLabel(h.date))+'</td><td>'+escHtml(h.name||'—')+'</td>'
+            + (canEdit ? '<td><button type="button" class="btn gray sm" data-call="removeSystemHoliday" data-arg0="'+escHtml(h.date)+'">刪除</button></td>' : '')
+            + '</tr>';
+        }).join('')
+        + '</table></div>'
+      : '<p style="color:#888">尚未設定紅日。加入後，該日會按週末／紅日折扣計算。</p>'}
+    ${editHtml}
+  </div>`;
+}
+
+async function addSystemHoliday(){
+  if(!systemSettingsState.canEdit){ alert2('只有管理員／主管可修改紅日。'); return; }
+  const date = ((document.getElementById('sys-holiday-date')||{}).value||'').trim();
+  const name = ((document.getElementById('sys-holiday-name')||{}).value||'').trim();
+  if(!date){ alert2('請選擇日期。'); return; }
+  const holidays = (systemSettingsState.holidays||[]).filter(function(h){ return h.date !== date; });
+  holidays.push({ date, name });
+  try{
+    const res = await apiFetch('/api/system/settings', {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ holidays })
+    });
+    systemSettingsState.holidays = (res && res.settings && res.settings.holidays) || holidays;
+    systemSettingsState.canEdit = !!(res && res.canEdit);
+    systemSettingsState.today = (res && res.today) || systemSettingsState.today;
+    systemSettingsState.loaded = true;
+    render();
+  }catch(e){ alert2('儲存失敗：'+(e.message||e)); }
+}
+
+async function removeSystemHoliday(date){
+  if(!systemSettingsState.canEdit){ alert2('只有管理員／主管可修改紅日。'); return; }
+  if(!confirm('確定刪除 '+date+' 的紅日？')) return;
+  const holidays = (systemSettingsState.holidays||[]).filter(function(h){ return h.date !== date; });
+  try{
+    const res = await apiFetch('/api/system/settings', {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ holidays })
+    });
+    systemSettingsState.holidays = (res && res.settings && res.settings.holidays) || holidays;
+    systemSettingsState.canEdit = !!(res && res.canEdit);
+    systemSettingsState.today = (res && res.today) || systemSettingsState.today;
+    systemSettingsState.loaded = true;
+    render();
+  }catch(e){ alert2('刪除失敗：'+(e.message||e)); }
 }
 
 /* ═══════════ 創建員工（電話 = 主鍵／登入） ═══════════ */
@@ -5990,6 +6096,7 @@ function setModule(m){
   else if(m==='push'){ currentView='pushAll'; pushFilterCat='全部'; pushFilterRead='全部'; pushFilterKw=''; }
   else if(m==='createStaff'){ currentView='createStaff'; }
   else if(m==='settings'){ currentView='settings'; }
+  else if(m==='systemSettings'){ currentView='systemSettings'; }
   else if(m==='transfer'){ currentView='transferProducts'; }
   else if(m==='pos'){ currentView='posCashier'; }
   else {
@@ -6008,6 +6115,7 @@ function getSidebarTree(){
   ];
   if(canCreateEmployee()) features.push({ mod:'createStaff', label:'創建員工' });
   features.push({ mod:'settings', label:'個人設置' });
+  features.push({ mod:'systemSettings', label:'設置' });
   const products = [];
   if(!isPersonal()) products.push({ mod:'production', label:'開發及生產' });
   products.push({ mod:'replenishment', label:'補貨' });
@@ -6110,6 +6218,7 @@ function getSidebarItemsForModule(mod){
   }
   if(mod==='createStaff') return [['createStaff','創建員工']];
   if(mod==='settings') return [['settings','更改密碼']];
+  if(mod==='systemSettings') return [['systemSettings','紅日假期']];
   if(mod==='transfer'){
     return [
       ['transferProducts','貨品'],
@@ -6276,6 +6385,7 @@ function render(){
     pushLogs: vPushLogs,
     createStaff: vCreateStaff,
     settings: vPersonalSettings,
+    systemSettings: vSystemSettings,
     transferInventory: vTransferInventory,
     transferApply: vTransferApply,
     transferHistory: vTransferHistory,
@@ -6325,6 +6435,7 @@ function go(v){
   if(v==='pushNotify' || v==='pushAll' || v==='pushUnread' || v==='pushRead' || v==='pushEnded' || v==='pushMine' || v==='pushCreate' || v==='pushDetail' || v==='pushStats' || v==='pushLogs'){ currentModule='push'; }
   if(v==='createStaff'){ currentModule='createStaff'; }
   if(v==='settings'){ currentModule='settings'; }
+  if(v==='systemSettings'){ currentModule='systemSettings'; }
   if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProductLog' || v==='transferProducts'){ currentModule='transfer'; }
   if(v==='dailyToday' || v==='dailyProgress' || v==='dailyUnit' || v==='dailyHistory' || v==='dailyRecords' || v==='dailyNew' || v==='dailyRecurring' || v==='dailyOpLogs'){ currentModule='daily'; }
   if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posSettlement' || v==='posReport' || v==='posReset'){ currentModule='pos'; }

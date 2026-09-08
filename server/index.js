@@ -78,6 +78,8 @@ import {
   rejectPosSettlement,
   getPosPointsSettings,
   updatePosPointsSettings,
+  getSystemSettings,
+  updateSystemSettings,
   listPosCatalogOptions,
   addPosSellable,
   addPosSellablesBatch,
@@ -879,6 +881,24 @@ app.get('/api/pos/points-settings', requireAuth, async (req, res) => {
 app.put('/api/pos/points-settings', requireAuth, async (req, res) => {
   try {
     res.json(await updatePosPointsSettings(req.user, req.body || {}));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/system/settings', requireAuth, async (req, res) => {
+  try {
+    res.json(await getSystemSettings(req.user));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.put('/api/system/settings', requireAuth, async (req, res) => {
+  try {
+    res.json(await updateSystemSettings(req.user, req.body || {}));
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });

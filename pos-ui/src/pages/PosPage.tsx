@@ -226,9 +226,14 @@ export function PosPage() {
     () => cart.reduce((s, l) => s + l.unitPrice * l.qty, 0),
     [cart],
   )
+  const memberRate = member ? Number(member.pricing?.rate ?? 1) : 1
+  const memberDiscount = member && memberRate < 1
+    ? Math.round(subtotal * (1 - memberRate) * 100) / 100
+    : 0
+  const afterMember = Math.round((subtotal - memberDiscount) * 100) / 100
   const n = Math.max(1, pointsSettings.pointsPerDollar || 100)
   const pointsDiscount = pointsSettings.redeemEnabled ? pointsToRedeem / n : 0
-  const grandTotal = Math.max(0, Math.round((subtotal - pointsDiscount) * 100) / 100)
+  const grandTotal = Math.max(0, Math.round((afterMember - pointsDiscount) * 100) / 100)
   const cashRecv = Number(cashReceived)
   const change =
     paymentMethod === 'cash' && isFinite(cashRecv) ? Math.round((cashRecv - grandTotal) * 100) / 100 : 0
@@ -345,9 +350,9 @@ export function PosPage() {
   const maxRedeemable = useMemo(() => {
     if (!member || !pointsSettings.redeemEnabled) return 0
     const bal = Math.max(0, Number(member.points) || 0)
-    const maxByTotal = Math.floor(subtotal) * n
+    const maxByTotal = Math.floor(afterMember) * n
     return Math.min(bal, maxByTotal - (maxByTotal % n))
-  }, [member, pointsSettings.redeemEnabled, subtotal, n])
+  }, [member, pointsSettings.redeemEnabled, afterMember, n])
 
   const openPay = () => {
     if (!store) {
@@ -720,8 +725,11 @@ export function PosPage() {
                   <div>
                     <p className="text-sm font-medium">{member.name}</p>
                     <p className="text-xs text-slate-500">
-                      {member.level || '一般會員'} · {member.phone}
+                      {member.level || '新會員'} · {member.phone}
                     </p>
+                    {member.pricing?.fold && member.pricing.rate !== 1 ? (
+                      <p className="text-[11px] text-sky-700">今日 {member.pricing.fold}</p>
+                    ) : null}
                   </div>
                 </div>
                 <button
@@ -797,6 +805,12 @@ export function PosPage() {
             <span className="text-slate-500">商品小計</span>
             <span className="tabular-nums">{formatHKD(subtotal)}</span>
           </div>
+          {memberDiscount > 0 && (
+            <div className="flex justify-between text-emerald-700">
+              <span>會員折扣{member?.pricing?.fold ? `（${member.pricing.fold}）` : ''}</span>
+              <span className="tabular-nums">-{formatHKD(memberDiscount)}</span>
+            </div>
+          )}
           {pointsDiscount > 0 && (
             <div className="flex justify-between text-red-600">
               <span>積分折抵</span>
