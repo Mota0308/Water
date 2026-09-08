@@ -310,7 +310,7 @@ export function PosPage() {
     )
     const list = res.members || []
     return (
-      list.find((x) => x.id === q || x.phone === q) ||
+      list.find((x) => x.id === q || x.phone === q || x.memberNo === q) ||
       list.find((x) => String(x.phone).includes(q)) ||
       list[0] ||
       null

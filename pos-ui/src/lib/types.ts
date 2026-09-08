@@ -45,6 +45,9 @@ export interface PosMember {
   points?: number
   active?: boolean
   remark?: string
+  email?: string
+  birthDay?: string
+  birthMonth?: string
   createdAt?: string
   updatedAt?: string
 }

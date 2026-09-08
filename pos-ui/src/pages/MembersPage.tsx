@@ -6,7 +6,7 @@ import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, btnCl
 import type { PosMember, PosPointLedger, PosTransaction } from '@/lib/types'
 
 function memberNoFor(member: PosMember) {
-  return member.memberNo || `M${String(member.phone || member.id).padStart(8, '0')}`
+  return member.memberNo || member.id || `M${String(member.phone || '').padStart(8, '0')}`
 }
 
 function memberLevelLabel(level?: string) {
@@ -153,11 +153,9 @@ export function MembersPage() {
           <h1 className="text-2xl font-bold text-slate-900">會員管理</h1>
           <p className="mt-1 text-sm text-slate-500">會員列表、積分流水與購買記錄集中在同一頁處理。</p>
         </div>
-        {canEdit && (
-          <button type="button" onClick={() => setShowAddDialog(true)} className={btnClass({ variant: 'primary' })}>
-            新增會員
-          </button>
-        )}
+        <button type="button" onClick={() => setShowAddDialog(true)} className={btnClass({ variant: 'primary' })}>
+          新增會員
+        </button>
       </div>
 
       <Card>
@@ -169,7 +167,7 @@ export function MembersPage() {
           <input
             value={kw}
             onChange={(e) => setKw(e.target.value)}
-            placeholder="搜尋姓名 / 電話"
+            placeholder="搜尋姓名 / 電話 / 會員編號"
             className={fieldClass()}
           />
           <select value={levelFilter} onChange={(e) => setLevelFilter(e.target.value)} className={fieldClass()}>
@@ -262,6 +260,10 @@ export function MembersPage() {
                     <div>
                       <div className="text-xs text-slate-500">電話</div>
                       <div className="mt-1">{selectedMember.phone}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-500">電郵</div>
+                      <div className="mt-1">{selectedMember.email || '—'}</div>
                     </div>
                     <div>
                       <div className="text-xs text-slate-500">狀態</div>
@@ -375,7 +377,7 @@ export function MembersPage() {
           <div className="w-full max-w-md rounded-3xl bg-white p-5 shadow-xl">
             <div className="mb-4">
               <div className="text-lg font-semibold text-slate-900">新增會員</div>
-              <div className="mt-1 text-sm text-slate-500">建立後即可在 POS 搜尋與累積積分。</div>
+              <div className="mt-1 text-sm text-slate-500">會員編號會自動編成 8 位數字；建立後即可在 POS 搜尋與累積積分。</div>
             </div>
             <div className="space-y-3">
               <input

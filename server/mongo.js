@@ -5627,6 +5627,12 @@ function memberPointsCol() {
 }
 async function ensureMembersReady() {
   await membersCol().createIndex({ phone: 1 }, { unique: true });
+  try {
+    await membersCol().createIndex({ id: 1 }, { unique: true });
+  } catch (e) {
+    console.warn('pos_members unique id index:', e.message || e);
+  }
+  await membersCol().createIndex({ memberNo: 1 });
   await membersCol().createIndex({ name: 1 });
   await membersCol().createIndex({ active: 1, updatedAtMs: -1 });
   await memberPointsCol().createIndex({ memberId: 1, createdAtMs: -1 });
@@ -5637,12 +5643,46 @@ function stripMember(doc) {
   if (!doc) return null;
   const { _id, ...rest } = doc;
   if (rest.points == null) rest.points = 0;
+  if (!rest.memberNo) rest.memberNo = isSequentialMemberId(rest.id) ? rest.id : '';
   return rest;
 }
 function normalizeMemberLevel(raw) {
   const s = String(raw || '').trim();
-  if (s === 'VIP' || s === 'VIP 會員' || s === 'vip') return 'VIP 會員';
+  if (/vip/i.test(s)) return 'VIP 會員';
   return '一般會員';
+}
+export function formatMemberId(n) {
+  const num = Number(n);
+  if (!Number.isInteger(num) || num < 1 || num > 99999999) throw new Error('會員編號無效');
+  return String(num).padStart(8, '0');
+}
+function isSequentialMemberId(id) {
+  return /^0\d{7}$/.test(String(id || ''));
+}
+async function maxSequentialMemberNum() {
+  const docs = await membersCol()
+    .find(
+      { $or: [{ id: /^0\d{7}$/ }, { memberNo: /^0\d{7}$/ }, { _id: /^0\d{7}$/ }] },
+      { projection: { id: 1, memberNo: 1, _id: 1 } }
+    )
+    .toArray();
+  let max = 0;
+  for (const d of docs) {
+    for (const v of [d.id, d.memberNo, d._id]) {
+      if (!isSequentialMemberId(v)) continue;
+      const n = parseInt(String(v), 10);
+      if (n > max) max = n;
+    }
+  }
+  return max;
+}
+async function allocateNextMemberId() {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const next = formatMemberId((await maxSequentialMemberNum()) + 1);
+    const clash = await membersCol().findOne({ $or: [{ _id: next }, { id: next }, { memberNo: next }] });
+    if (!clash) return next;
+  }
+  throw new Error('無法分配會員編號');
 }
 function pointsFromAmount(amount) {
   const n = Number(amount);
@@ -5650,9 +5690,14 @@ function pointsFromAmount(amount) {
   return Math.floor(n);
 }
 async function findMemberDoc(idOrPhone) {
-  const phoneKey = normalizePhone(idOrPhone) || String(idOrPhone || '').trim();
-  if (!phoneKey) return null;
-  return membersCol().findOne({ $or: [{ id: phoneKey }, { phone: phoneKey }, { _id: phoneKey }] });
+  const raw = String(idOrPhone || '').trim();
+  if (!raw) return null;
+  const phoneKey = normalizePhone(raw);
+  const or = [{ id: raw }, { phone: raw }, { _id: raw }, { memberNo: raw }];
+  if (phoneKey && phoneKey !== raw) {
+    or.push({ id: phoneKey }, { phone: phoneKey }, { _id: phoneKey });
+  }
+  return membersCol().findOne({ $or: or });
 }
 function stripPointLedger(doc) {
   if (!doc) return null;
@@ -5735,13 +5780,17 @@ export async function listMembers(user, { q, includeInactive } = {}) {
   const kw = String(q || '').trim();
   if (kw) {
     const phone = normalizePhone(kw);
+    const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     filter.$or = [
-      { name: { $regex: kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } },
+      { name: { $regex: escaped, $options: 'i' } },
+      { id: kw },
+      { memberNo: kw },
       { phone: phone || kw },
-      { remark: { $regex: kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } },
+      { email: { $regex: escaped, $options: 'i' } },
+      { remark: { $regex: escaped, $options: 'i' } },
     ];
   }
-  const docs = await membersCol().find(filter).sort({ updatedAtMs: -1, name: 1 }).limit(300).toArray();
+  const docs = await membersCol().find(filter).sort({ id: 1, name: 1 }).limit(10000).toArray();
   return {
     members: docs.map(stripMember),
     canEdit: posCanManageCatalog(user),
@@ -5807,15 +5856,19 @@ export async function createMember(user, input = {}) {
   if (!phone) throw new Error('請填寫有效的 8 位香港電話');
   const existing = await membersCol().findOne({ phone });
   if (existing) throw new Error('此電話已登記為會員：' + (existing.name || phone));
+  const memberId = await allocateNextMemberId();
   const now = new Date();
   const time = formatHkDateTime(now);
+  const email = String(input.email || '').trim();
   const doc = {
-    _id: phone,
-    id: phone,
+    _id: memberId,
+    id: memberId,
+    memberNo: memberId,
     phone,
     name,
     level: normalizeMemberLevel(input.level),
     remark: String(input.remark || '').trim(),
+    email,
     points: 0,
     active: true,
     createdAt: time,
@@ -5830,7 +5883,7 @@ export async function createMember(user, input = {}) {
     module: 'pos',
     time,
     action: '新增會員',
-    detail: `${name}｜${phone}`,
+    detail: `${memberId}｜${name}｜${phone}`,
     userId: me.id,
     userName: me.name || me.login,
     user: me.name || me.login,
@@ -5862,42 +5915,18 @@ export async function updateMember(user, id, input = {}) {
     if (!newPhone) throw new Error('新電話無效');
     if (newPhone !== existing.phone) {
       const clash = await membersCol().findOne({ phone: newPhone });
-      if (clash) throw new Error('新電話已被其他會員使用');
-      const now = new Date();
-      const time = formatHkDateTime(now);
-      const next = {
-        ...existing,
-        _id: newPhone,
-        id: newPhone,
-        phone: newPhone,
-        name: $set.name || existing.name,
-        level: $set.level || existing.level,
-        remark: $set.remark != null ? $set.remark : existing.remark,
-        points: Number(existing.points) || 0,
-        updatedAt: time,
-        updatedAtMs: now.getTime(),
-        updatedBy: String(me.id),
-      };
-      next.active = existing.active !== false;
-      await membersCol().insertOne(next);
-      await membersCol().deleteOne({ _id: existing._id });
-      await memberPointsCol().updateMany(
-        { memberId: String(existing.id || existing.phone) },
-        { $set: { memberId: newPhone, memberPhone: newPhone, memberName: next.name } }
-      );
-      await appendModuleLog({
-        module: 'pos',
-        time,
-        action: '編輯會員',
-        detail: `${next.name}｜${existing.phone}→${newPhone}`,
-        userId: me.id,
-        userName: me.name || me.login,
-        user: me.name || me.login,
-      });
-      return stripMember(next);
+      if (clash && String(clash._id) !== String(existing._id)) throw new Error('新電話已被其他會員使用');
+      $set.phone = newPhone;
     }
   }
+  if (input.email != null) $set.email = String(input.email).trim();
   await membersCol().updateOne({ _id: existing._id }, { $set });
+  if ($set.phone) {
+    await memberPointsCol().updateMany(
+      { memberId: String(existing.id || existing.memberNo || existing.phone) },
+      { $set: { memberPhone: $set.phone, memberName: $set.name || existing.name } }
+    );
+  }
   const updated = await membersCol().findOne({ _id: existing._id });
   await appendModuleLog({
     module: 'pos',
@@ -5934,6 +5963,147 @@ export async function setMemberActive(user, id, active) {
     user: me.name || me.login,
   });
   return stripMember(updated);
+}
+
+export async function importPosMembers(records, { actorName = 'Excel 導入', dryRun = false } = {}) {
+  await connectMongo();
+  await ensureMembersReady();
+  const now = new Date();
+  const time = formatHkDateTime(now);
+  const summary = {
+    total: Array.isArray(records) ? records.length : 0,
+    inserted: 0,
+    skippedExisting: 0,
+    skippedInvalid: 0,
+    startId: '',
+    endId: '',
+    skipped: [],
+  };
+  const valid = [];
+  const seenPhone = new Set();
+  for (const rec of records || []) {
+    const name = String(rec?.name || '').trim();
+    const phone = normalizePhone(rec?.phone);
+    if (!name || !phone) {
+      summary.skippedInvalid += 1;
+      summary.skipped.push({ reason: !name ? 'missing_name' : 'invalid_phone', name, phone: rec?.phone || '' });
+      continue;
+    }
+    if (seenPhone.has(phone)) {
+      summary.skippedInvalid += 1;
+      summary.skipped.push({ reason: 'duplicate_in_file', name, phone });
+      continue;
+    }
+    seenPhone.add(phone);
+    valid.push({ rec, name, phone });
+  }
+  const existingPhones = valid.length
+    ? await membersCol()
+        .find({ phone: { $in: valid.map((x) => x.phone) } }, { projection: { phone: 1, name: 1 } })
+        .toArray()
+    : [];
+  const existingSet = new Set(existingPhones.map((d) => d.phone));
+  const toInsert = [];
+  for (const row of valid) {
+    if (existingSet.has(row.phone)) {
+      summary.skippedExisting += 1;
+      summary.skipped.push({ reason: 'existing_phone', name: row.name, phone: row.phone });
+      continue;
+    }
+    toInsert.push(row);
+  }
+  const startNum = (await maxSequentialMemberNum()) + 1;
+  const docs = [];
+  const ledgers = [];
+  toInsert.forEach((row, i) => {
+    const memberId = formatMemberId(startNum + i);
+    const rec = row.rec || {};
+    const points = Math.max(0, Math.floor(Number(rec.points) || 0));
+    const email = String(rec.email || '').trim();
+    const birthDay = String(rec.birthDay || '').trim();
+    const birthMonth = String(rec.birthMonth || '').trim();
+    const referrer = String(rec.referrer || '').trim();
+    const customerGroup = String(rec.customerGroup || '').trim();
+    const balance = Number(rec.balance);
+    const remark = String(rec.remark || '').trim();
+    const doc = {
+      _id: memberId,
+      id: memberId,
+      memberNo: memberId,
+      phone: row.phone,
+      name: row.name,
+      level: normalizeMemberLevel(rec.level || customerGroup),
+      remark,
+      email,
+      birthDay,
+      birthMonth,
+      referrer,
+      customerGroup,
+      balance: Number.isFinite(balance) ? balance : 0,
+      points,
+      active: true,
+      source: 'excel-import',
+      createdAt: time,
+      createdAtMs: now.getTime(),
+      updatedAt: time,
+      updatedAtMs: now.getTime(),
+      createdBy: 'import',
+      createdByName: actorName,
+    };
+    docs.push(doc);
+    if (points > 0) {
+      const lid = `pt_import_${memberId}`;
+      ledgers.push({
+        _id: lid,
+        id: lid,
+        memberId,
+        memberPhone: row.phone,
+        memberName: row.name,
+        delta: points,
+        requestedDelta: points,
+        balanceBefore: 0,
+        balanceAfter: points,
+        clamped: false,
+        type: 'adjust',
+        reason: '舊系統導入',
+        amountBase: null,
+        posTransactionId: '',
+        posOrderNo: '',
+        returnId: '',
+        createdAt: time,
+        createdAtMs: now.getTime(),
+        createdBy: 'import',
+        createdByName: actorName,
+      });
+    }
+  });
+  summary.inserted = docs.length;
+  if (docs.length) {
+    summary.startId = docs[0].id;
+    summary.endId = docs[docs.length - 1].id;
+  }
+  if (dryRun) return summary;
+  const chunk = 250;
+  for (let i = 0; i < docs.length; i += chunk) {
+    await membersCol().insertMany(docs.slice(i, i + chunk), { ordered: true });
+  }
+  for (let i = 0; i < ledgers.length; i += chunk) {
+    try {
+      await memberPointsCol().insertMany(ledgers.slice(i, i + chunk), { ordered: false });
+    } catch (e) {
+      if (e?.code !== 11000) throw e;
+    }
+  }
+  await appendModuleLog({
+    module: 'pos',
+    time,
+    action: '導入會員',
+    detail: `${summary.startId || '—'}–${summary.endId || '—'}｜新增 ${summary.inserted}｜略過已存在 ${summary.skippedExisting}｜無效 ${summary.skippedInvalid}`,
+    userId: 'import',
+    userName: actorName,
+    user: actorName,
+  });
+  return summary;
 }
 
 function stripPosDraft(doc) {

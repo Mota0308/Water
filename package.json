@@ -7,7 +7,8 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "build:pos-ui": "npm --prefix pos-ui ci && npm --prefix pos-ui run build",
-    "test:daily-persist": "node scripts/repro-daily-persist.mjs"
+    "test:daily-persist": "node scripts/repro-daily-persist.mjs",
+    "import:customers": "node scripts/import-customer-list.mjs"
   },
   "engines": {
     "node": ">=18"
