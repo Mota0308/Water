@@ -42,6 +42,7 @@ export interface MemberPricing {
   fold?: string
   isRedDay?: boolean
   isWeekend?: boolean
+  isBirthday?: boolean
   date?: string
 }
 

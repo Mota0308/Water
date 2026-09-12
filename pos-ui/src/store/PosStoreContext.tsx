@@ -10,7 +10,7 @@ import {
 import { apiJson } from '@/lib/api'
 
 const STORAGE_KEY = 'store-web-pos-current-store-v1'
-const FALLBACK_STORES = ['觀塘', '荔枝角', '灣仔', '屯門', '屯門中轉倉', '觀塘中轉倉', '國內倉(秋冬)', '國內倉(春夏)']
+const FALLBACK_STORES = ['觀塘', '荔枝角', '灣仔', '屯門']
 
 type PosStoreContextValue = {
   stores: string[]
@@ -56,7 +56,7 @@ export function PosStoreProvider({ children }: { children: ReactNode }) {
     setError('')
     try {
       const res = await apiJson<{ stores?: string[] }>('/api/pos/products')
-      const list = (res.stores || []).filter(Boolean)
+      const list = (res.stores || []).filter((s) => s && !String(s).includes('倉'))
       const nextStores = list.length ? list : FALLBACK_STORES
       setStores(nextStores)
       setStoreState((prev) => {

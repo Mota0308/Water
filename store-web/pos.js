@@ -6,7 +6,7 @@ var POS_PAYMENTS = [
   { id: 'octopus', name: '八達通' },
   { id: 'fps', name: 'FPS' }
 ];
-var POS_STORES_FALLBACK = ['觀塘', '荔枝角', '灣仔', '屯門', '屯門中轉倉', '觀塘中轉倉', '國內倉(秋冬)', '國內倉(春夏)'];
+var POS_STORES_FALLBACK = ['觀塘', '荔枝角', '灣仔', '屯門'];
 
 var posCart = [];
 var posSelectedStore = '';
@@ -42,7 +42,7 @@ var posPointsSettings = {
   loaded: false,
   loading: false,
   error: '',
-  pointsPerDollar: 100,
+  pointsPerDollar: 1,
   redeemEnabled: true,
   canEdit: false
 };
@@ -245,7 +245,7 @@ async function posRefreshPointsSettings(force) {
   try {
     var res = await apiFetch('/api/pos/points-settings');
     var s = (res && res.settings) || res || {};
-    posPointsSettings.pointsPerDollar = Math.max(1, Math.floor(Number(s.pointsPerDollar) || 100));
+    posPointsSettings.pointsPerDollar = 1;
     posPointsSettings.redeemEnabled = s.redeemEnabled !== false;
     posPointsSettings.canEdit = !!(res && res.canEdit);
     posPointsSettings.loaded = true;
@@ -270,7 +270,7 @@ function posSetPointsToRedeem(v) {
   if (typeof render === 'function') render();
 }
 function posPointsDiscountPreview(pts) {
-  var n = Math.max(1, Number(posPointsSettings.pointsPerDollar) || 100);
+  var n = Math.max(1, Number(posPointsSettings.pointsPerDollar) || 1);
   var p = Number(pts) || 0;
   if (p <= 0) return 0;
   return Math.round((p / n) * 100) / 100;

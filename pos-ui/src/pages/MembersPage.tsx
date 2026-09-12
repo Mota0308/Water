@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { apiJson } from '@/lib/api'
 import { formatDateTime, formatHKD } from '@/lib/format'
@@ -19,7 +20,7 @@ function memberStatusLabel(active?: boolean) {
 }
 
 const emptyAddForm = { name: '', phone: '', email: '', birthDay: '', birthMonth: '', level: '新會員', remark: '', referrerQuery: '' }
-const emptyEditForm = { name: '', phone: '', email: '', birthDay: '', birthMonth: '', level: '新會員', remark: '' }
+const emptyEditForm = { name: '', phone: '', email: '', birthDay: '', birthMonth: '', level: '新會員', remark: '', points: '' }
 
 function memberReferrerLabel(member?: Pick<PosMember, 'referrerName' | 'referrerPhone' | 'referrerId' | 'referrer'> | null) {
   if (!member) return ''
@@ -31,8 +32,12 @@ function memberReferrerLabel(member?: Pick<PosMember, 'referrerName' | 'referrer
   return bits.join(' · ')
 }
 
+const MEMBER_PAGE_SIZE = 50
+
 export function MembersPage() {
+  const navigate = useNavigate()
   const [kw, setKw] = useState('')
+  const [memberPage, setMemberPage] = useState(1)
   const [members, setMembers] = useState<PosMember[]>([])
   const [transactions, setTransactions] = useState<PosTransaction[]>([])
   const [selectedId, setSelectedId] = useState('')
@@ -109,6 +114,7 @@ export function MembersPage() {
       birthMonth: selectedMember.birthMonth || '',
       level: normalizeMemberLevel(selectedMember.level),
       remark: selectedMember.remark || '',
+      points: String(Math.max(0, Math.floor(Number(selectedMember.points) || 0))),
     })
   }, [selectedMember])
 
@@ -169,6 +175,16 @@ export function MembersPage() {
     })
   }, [levelFilter, members, statusFilter])
 
+  useEffect(() => {
+    setMemberPage(1)
+  }, [kw, levelFilter, statusFilter])
+
+  const memberPageCount = Math.max(1, Math.ceil(filteredMembers.length / MEMBER_PAGE_SIZE))
+  const pagedMembers = filteredMembers.slice(
+    (memberPage - 1) * MEMBER_PAGE_SIZE,
+    memberPage * MEMBER_PAGE_SIZE,
+  )
+
   const purchases = useMemo(() => {
     if (!selectedMember) return []
     return transactions
@@ -221,6 +237,7 @@ export function MembersPage() {
       })
       toast.success('已更新會員資料')
       await load()
+      await loadLedger(selectedMember.id)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
@@ -317,7 +334,9 @@ export function MembersPage() {
         <Card className="overflow-hidden">
           <CardHeader>
             <CardTitle>會員列表</CardTitle>
-            <CardDescription>共 {filteredMembers.length} 位會員</CardDescription>
+            <CardDescription>
+              共 {filteredMembers.length} 位會員 · 每頁 {MEMBER_PAGE_SIZE} 位
+            </CardDescription>
           </CardHeader>
           <div className="overflow-x-auto">
             <table className="min-w-full text-left text-sm">
@@ -332,7 +351,7 @@ export function MembersPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredMembers.map((member) => (
+                {pagedMembers.map((member) => (
                   <tr
                     key={member.id}
                     onClick={() => setSelectedId(member.id)}
@@ -360,6 +379,31 @@ export function MembersPage() {
               </tbody>
             </table>
           </div>
+          {filteredMembers.length > MEMBER_PAGE_SIZE && (
+            <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 text-sm">
+              <span className="text-slate-500">
+                第 {memberPage} / {memberPageCount} 頁
+              </span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={memberPage <= 1}
+                  onClick={() => setMemberPage((p) => Math.max(1, p - 1))}
+                  className={btnClass({ variant: 'outline' })}
+                >
+                  上一頁
+                </button>
+                <button
+                  type="button"
+                  disabled={memberPage >= memberPageCount}
+                  onClick={() => setMemberPage((p) => Math.min(memberPageCount, p + 1))}
+                  className={btnClass({ variant: 'outline' })}
+                >
+                  下一頁
+                </button>
+              </div>
+            </div>
+          )}
         </Card>
 
         <Card>
@@ -429,6 +473,17 @@ export function MembersPage() {
                       </select>
                     </label>
                     <label className="text-sm">
+                      <span className="text-xs text-slate-500">積分</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={editForm.points}
+                        onChange={(e) => setEditForm((prev) => ({ ...prev, points: e.target.value }))}
+                        className={fieldClass('mt-1')}
+                      />
+                    </label>
+                    <label className="text-sm">
                       <span className="text-xs text-slate-500">出生日期（日）</span>
                       <input
                         value={editForm.birthDay}
@@ -470,29 +525,28 @@ export function MembersPage() {
                   )}
                 </div>
 
-                {canEdit && (
-                  <div className="space-y-3 rounded-2xl border border-slate-200 p-4">
-                    <div className="text-sm font-medium text-slate-900">手動調整積分</div>
-                    <div className="grid gap-3 sm:grid-cols-[140px_1fr]">
-                      <input
-                        type="number"
-                        value={pointDelta}
-                        onChange={(e) => setPointDelta(e.target.value)}
-                        placeholder="例如 +100 / -50"
-                        className={fieldClass()}
-                      />
-                      <input
-                        value={pointReason}
-                        onChange={(e) => setPointReason(e.target.value)}
-                        placeholder="調分原因"
-                        className={fieldClass()}
-                      />
-                    </div>
-                    <button type="button" onClick={() => void adjustPoints()} className={btnClass({ variant: 'secondary' })}>
-                      送出調分
-                    </button>
+                <div className="space-y-3 rounded-2xl border border-slate-200 p-4">
+                  <div className="text-sm font-medium text-slate-900">手動調整積分</div>
+                  <p className="text-xs text-slate-500">可直接加減積分；原因會寫入積分流水。也可在上方把積分改成指定數字後按「儲存資料」。</p>
+                  <div className="grid gap-3 sm:grid-cols-[140px_1fr]">
+                    <input
+                      type="number"
+                      value={pointDelta}
+                      onChange={(e) => setPointDelta(e.target.value)}
+                      placeholder="例如 +100 / -50"
+                      className={fieldClass()}
+                    />
+                    <input
+                      value={pointReason}
+                      onChange={(e) => setPointReason(e.target.value)}
+                      placeholder="調分原因"
+                      className={fieldClass()}
+                    />
                   </div>
-                )}
+                  <button type="button" onClick={() => void adjustPoints()} className={btnClass({ variant: 'secondary' })}>
+                    送出調分
+                  </button>
+                </div>
 
                 <div className="space-y-3">
                   <div className="text-sm font-medium text-slate-900">介紹名單</div>
@@ -563,7 +617,19 @@ export function MembersPage() {
                   <div className="max-h-72 space-y-2 overflow-y-auto">
                     {purchases.length ? (
                       purchases.map((tx) => (
-                        <div key={tx.id} className="rounded-2xl border border-slate-200 px-4 py-3 text-sm">
+                        <div
+                          key={tx.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => navigate(`/receipt/${encodeURIComponent(tx.id)}`)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              navigate(`/receipt/${encodeURIComponent(tx.id)}`)
+                            }
+                          }}
+                          className="cursor-pointer rounded-2xl border border-slate-200 px-4 py-3 text-sm transition hover:border-sky-300 hover:bg-sky-50/50"
+                        >
                           <div className="flex items-center justify-between gap-3">
                             <div>
                               <div className="font-mono text-xs text-slate-500">{tx.receiptNo || tx.orderNo || tx.id}</div>

@@ -1,9 +1,9 @@
 export const MEMBER_LEVELS = [
-  { id: '新會員', label: '新會員', note: '原價，無會員折扣' },
-  { id: '普通會員', label: '普通會員', note: '購買 95 折' },
-  { id: '尊貴會員', label: '尊貴會員', note: '購買 85 折' },
-  { id: '教練會員', label: '教練會員', note: '購買 85 折' },
-  { id: '長者會員', label: '長者會員', note: '平日 75 折，星期六日及紅日 85 折' },
+  { id: '新會員', label: '新會員', note: '原價，無會員折扣；生日當日及其前後 3 日 75 折' },
+  { id: '普通會員', label: '普通會員', note: '購買 95 折；生日當日及其前後 3 日 75 折' },
+  { id: '尊貴會員', label: '尊貴會員', note: '購買 85 折；生日當日及其前後 3 日 75 折' },
+  { id: '教練會員', label: '教練會員', note: '購買 85 折；生日當日及其前後 3 日 75 折' },
+  { id: '長者會員', label: '長者會員', note: '平日 75 折，星期六日及紅日 85 折；生日當日及其前後 3 日 75 折' },
 ] as const
 
 export type MemberLevelId = (typeof MEMBER_LEVELS)[number]['id']

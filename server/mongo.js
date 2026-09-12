@@ -353,6 +353,14 @@ export const TRANSFER_STORES = [
   '國內倉(秋冬)',
   '國內倉(春夏)',
 ];
+function isWarehouseStore(name) {
+  return String(name || '').includes('倉');
+}
+function retailStoresFrom(list) {
+  const src = Array.isArray(list) ? list : [];
+  const out = src.filter((s) => s && !isWarehouseStore(s));
+  return out.length ? out : ['觀塘', '荔枝角', '灣仔', '屯門'];
+}
 export const TRANSFER_CATEGORIES = [
   '男士及膝泳褲',
   '男士平腳泳褲',
@@ -2564,7 +2572,9 @@ export async function createTransferProduct(actor, input) {
       { field: 'SKU', before: '', after: Object.values(skus).join('、') || '—' },
       { field: 'UPC', before: '', after: upcList.join('、') || extras.upc || '—' },
       { field: '原價', before: '', after: fmtAttrChange(extras.priceOriginal) },
-      { field: '優惠價', before: '', after: fmtAttrChange(extras.priceSale) },
+      { field: '售價', before: '', after: fmtAttrChange(extras.priceRetail) },
+      { field: '特價', before: '', after: fmtAttrChange(extras.priceSpecial) },
+      { field: '折實價', before: '', after: fmtAttrChange(extras.priceNet) },
       { field: '剔剔積分類', before: '', after: extras.tickieCategory || '—' },
       { field: '剔剔積分', before: '', after: fmtAttrChange(extras.tickiePoints) },
       { field: '英文', before: '', after: extras.nameEn || '—' },
@@ -2591,6 +2601,9 @@ export const TRANSFER_PRODUCT_ATTR_DEFS = [
   { key: 'name', label: '商品名', type: 'text', excel: '商品名', core: true },
   { key: 'sizes', label: '商品選項', type: 'sizes', excel: '商品選項', core: true },
   { key: 'priceOriginal', label: '原價', type: 'number', excel: '原價' },
+  { key: 'priceRetail', label: '售價', type: 'number', excel: '售價' },
+  { key: 'priceSpecial', label: '特價', type: 'number', excel: '特價' },
+  { key: 'priceNet', label: '折實價', type: 'number', excel: '折實價' },
   { key: 'priceSale', label: '優惠價', type: 'number', excel: '優惠價' },
   { key: 'category', label: '產品分類', type: 'text', excel: '產品分類', core: true },
   { key: 'tickieCategory', label: '剔剔積分類', type: 'text', excel: '剔剔積分類' },
@@ -2839,6 +2852,18 @@ function normalizeTransferProductExtras(input, existing = {}) {
     input?.priceOriginal != null ? input.priceOriginal : existing.priceOriginal,
     '原價'
   );
+  const priceRetail = parseOptionalNonNegNumber(
+    input?.priceRetail != null ? input.priceRetail : existing.priceRetail,
+    '售價'
+  );
+  const priceSpecial = parseOptionalNonNegNumber(
+    input?.priceSpecial != null ? input.priceSpecial : existing.priceSpecial,
+    '特價'
+  );
+  const priceNet = parseOptionalNonNegNumber(
+    input?.priceNet != null ? input.priceNet : existing.priceNet,
+    '折實價'
+  );
   const priceSale = parseOptionalNonNegNumber(
     input?.priceSale != null ? input.priceSale : existing.priceSale,
     '優惠價'
@@ -2856,6 +2881,9 @@ function normalizeTransferProductExtras(input, existing = {}) {
     imageFileId,
     tickieCategory,
     priceOriginal,
+    priceRetail,
+    priceSpecial,
+    priceNet,
     priceSale,
     tickiePoints,
   };
@@ -3103,6 +3131,9 @@ export async function updateTransferProduct(actor, oldProductId, input) {
   const extraLabels = {
     brand: '品牌',
     priceOriginal: '原價',
+    priceRetail: '售價',
+    priceSpecial: '特價',
+    priceNet: '折實價',
     priceSale: '優惠價',
     tickieCategory: '剔剔積分類',
     tickiePoints: '剔剔積分',
@@ -3749,12 +3780,12 @@ function posDraftsCol() {
 async function getPosPointsSettingsInternal() {
   await posMetaCol().updateOne(
     { _id: 'points' },
-    { $setOnInsert: { _id: 'points', pointsPerDollar: 100, redeemEnabled: true } },
+    { $set: { pointsPerDollar: 1 }, $setOnInsert: { _id: 'points', redeemEnabled: true } },
     { upsert: true }
   );
   const doc = await posMetaCol().findOne({ _id: 'points' });
   return {
-    pointsPerDollar: Math.max(1, Math.floor(Number(doc?.pointsPerDollar) || 100)),
+    pointsPerDollar: 1,
     redeemEnabled: doc?.redeemEnabled !== false,
   };
 }
@@ -3773,8 +3804,8 @@ function posUserStores(user) {
   const me = publicUser(user);
   let units = Array.isArray(me?.units) ? me.units.filter(Boolean) : [];
   if (!units.length && me?.unit) units = [me.unit];
-  const list = units.filter((u) => POS_STORES.includes(u));
-  if (!list.length && posCanManageCatalog(me)) return POS_STORES.slice();
+  const list = units.filter((u) => POS_STORES.includes(u) && !isWarehouseStore(u));
+  if (!list.length && posCanManageCatalog(me)) return retailStoresFrom(POS_STORES);
   return list;
 }
 function stripPosProduct(doc) {
@@ -3898,12 +3929,26 @@ function stockFromMap(qtyMap, transferProductId, size) {
   return stock;
 }
 
+function resolveTransferSellPrice(product) {
+  const candidates = [
+    product?.priceNet,
+    product?.priceSpecial,
+    product?.priceRetail,
+    product?.priceSale,
+    product?.priceOriginal,
+  ];
+  for (const raw of candidates) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return Math.round(n * 100) / 100;
+  }
+  return 0;
+}
+
 async function syncPosSellablesForTransferProduct(product) {
   if (!product || !product.id) return;
   const tpid = String(product._id || product.id);
   const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : ['均碼'];
-  const salePrice = Number(product.priceSale != null ? product.priceSale : product.priceOriginal);
-  const price = Number.isFinite(salePrice) && salePrice >= 0 ? Math.round(salePrice * 100) / 100 : 0;
+  const price = resolveTransferSellPrice(product);
   const now = formatHkDateTime();
   const existing = await posProductsCol().find({
     $or: [{ transferProductId: tpid }, { transferProductId: product.id }],
@@ -4003,6 +4048,9 @@ export async function listPosProducts(user) {
       imageUrl: tp.imageUrl || '',
       imageFileId: tp.imageFileId || '',
       priceOriginal: tp.priceOriginal != null ? tp.priceOriginal : null,
+      priceRetail: tp.priceRetail != null ? tp.priceRetail : null,
+      priceSpecial: tp.priceSpecial != null ? tp.priceSpecial : null,
+      priceNet: tp.priceNet != null ? tp.priceNet : null,
       tickiePoints: tp.tickiePoints != null ? tp.tickiePoints : null,
       safetyStock: Number(tp.safetyStock) || 0,
       sizes: Array.isArray(tp.sizes) && tp.sizes.length ? tp.sizes.slice() : [d.size].filter(Boolean),
@@ -4250,8 +4298,13 @@ export async function checkoutPos(user, payload = {}) {
     if (memberDoc.active === false) throw new Error('會員已停用');
   }
   const holidayDates = await holidayDatesNow();
-  const pricing = memberPricingFor(memberDoc?.level, { holidayDates, at: now });
-  const memberDiscount = memberDoc ? Math.round(subtotal * (1 - pricing.rate) * 100) / 100 : 0;
+  const pricing = memberPricingFor(memberDoc?.level, {
+    holidayDates,
+    at: now,
+    birthDay: memberDoc?.birthDay,
+    birthMonth: memberDoc?.birthMonth,
+  });
+  const memberDiscount = memberDoc ? Math.round(subtotal * (1 - pricing.rate)) : 0;
   const afterMember = Math.round((subtotal - memberDiscount) * 100) / 100;
 
   let pointsRedeemed = 0;
@@ -4354,14 +4407,14 @@ export async function checkoutPos(user, payload = {}) {
         tx.pointsRedeemed = Math.abs(red.actualDelta);
         tx.pointsDiscount = pointsDiscount;
       }
-      const earnBase = Math.max(0, afterMember - pointsDiscount);
+      const earnBase = Math.max(0, orderTotal);
       const earn = pointsFromAmount(earnBase);
       if (earn > 0) {
         const pts = await applyMemberPoints({
           memberId: memberKey,
           delta: earn,
           type: 'earn',
-          reason: `消費累積｜${orderNo}`,
+          reason: `消費累積｜${orderNo}｜實收$${orderTotal}×5%`,
           actor: me,
           posTransactionId: id,
           posOrderNo: orderNo,
@@ -5532,11 +5585,7 @@ export async function updatePosPointsSettings(user, input = {}) {
   if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可修改積分設定');
   const me = publicUser(user);
   const $set = { updatedAt: formatHkDateTime(), updatedBy: String(me.id) };
-  if (input.pointsPerDollar != null) {
-    const n = Math.floor(Number(input.pointsPerDollar));
-    if (!Number.isInteger(n) || n < 1) throw new Error('每 N 分＝$1 的 N 須為 ≥1 的整數');
-    $set.pointsPerDollar = n;
-  }
+  $set.pointsPerDollar = 1;
   if (input.redeemEnabled != null) $set.redeemEnabled = !!input.redeemEnabled;
   await posMetaCol().updateOne({ _id: 'points' }, { $set, $setOnInsert: { _id: 'points' } }, { upsert: true });
   const settings = await getPosPointsSettingsInternal();
@@ -5614,15 +5663,36 @@ async function holidayDatesNow() {
 }
 
 export const MEMBER_LEVELS = [
-  { id: '新會員', label: '新會員', note: '原價，無會員折扣' },
-  { id: '普通會員', label: '普通會員', note: '購買 95 折' },
-  { id: '尊貴會員', label: '尊貴會員', note: '購買 85 折' },
-  { id: '教練會員', label: '教練會員', note: '購買 85 折' },
-  { id: '長者會員', label: '長者會員', note: '平日 75 折，星期六日及紅日 85 折' },
+  { id: '新會員', label: '新會員', note: '原價，無會員折扣；生日當日及其前後 3 日 75 折' },
+  { id: '普通會員', label: '普通會員', note: '購買 95 折；生日當日及其前後 3 日 75 折' },
+  { id: '尊貴會員', label: '尊貴會員', note: '購買 85 折；生日當日及其前後 3 日 75 折' },
+  { id: '教練會員', label: '教練會員', note: '購買 85 折；生日當日及其前後 3 日 75 折' },
+  { id: '長者會員', label: '長者會員', note: '平日 75 折，星期六日及紅日 85 折；生日當日及其前後 3 日 75 折' },
 ];
 const MEMBER_LEVEL_IDS = new Set(MEMBER_LEVELS.map((x) => x.id));
 
-export function memberPricingFor(level, { holidayDates = [], at = new Date() } = {}) {
+function daysInMonthUtc(year, month) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+export function isBirthdayWindow(birthDay, birthMonth, at = new Date()) {
+  const day = Number(birthDay);
+  const month = Number(birthMonth);
+  if (!Number.isInteger(day) || !Number.isInteger(month)) return false;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const info = hkDateInfo(at);
+  const [y, m, d] = info.ymd.split('-').map(Number);
+  const todayUtc = Date.UTC(y, m - 1, d);
+  const dayMs = 86400000;
+  for (const year of [y - 1, y, y + 1]) {
+    const clamped = Math.min(day, daysInMonthUtc(year, month));
+    const bdayUtc = Date.UTC(year, month - 1, clamped);
+    if (Math.abs(Math.round((todayUtc - bdayUtc) / dayMs)) <= 3) return true;
+  }
+  return false;
+}
+
+export function memberPricingFor(level, { holidayDates = [], at = new Date(), birthDay, birthMonth } = {}) {
   const lv = normalizeMemberLevel(level);
   const info = hkDateInfo(at);
   const isRedDay = info.isWeekend || (holidayDates || []).includes(info.ymd);
@@ -5643,12 +5713,20 @@ export function memberPricingFor(level, { holidayDates = [], at = new Date() } =
       fold = '75折（平日）';
     }
   }
+  const birthday = isBirthdayWindow(birthDay, birthMonth, at);
+  if (birthday && rate > 0.75) {
+    rate = 0.75;
+    fold = '75折（生日優惠）';
+  } else if (birthday) {
+    fold = fold.includes('生日') ? fold : `${fold}／生日優惠`;
+  }
   return {
     level: lv,
     rate,
     fold,
     isRedDay,
     isWeekend: info.isWeekend,
+    isBirthday: birthday,
     date: info.ymd,
   };
 }
@@ -5817,6 +5895,8 @@ function stripMember(doc, ctx = {}) {
   rest.pricing = memberPricingFor(rest.level, {
     holidayDates: ctx.holidayDates || [],
     at: ctx.at || new Date(),
+    birthDay: rest.birthDay,
+    birthMonth: rest.birthMonth,
   });
   rest.referrerId = String(rest.referrerId || '').trim();
   rest.referrerName = String(rest.referrerName || rest.referrer || '').trim();
@@ -5918,7 +5998,7 @@ async function allocateNextMemberId() {
 function pointsFromAmount(amount) {
   const n = Number(amount);
   if (!isFinite(n) || n <= 0) return 0;
-  return Math.floor(n);
+  return Math.round(n * 0.05);
 }
 async function findMemberDoc(idOrPhone) {
   const raw = String(idOrPhone || '').trim();
@@ -6115,8 +6195,8 @@ export async function getMember(user, id) {
 export async function adjustMemberPoints(user, id, input = {}) {
   await connectMongo();
   await ensureMembersReady();
-  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可手動調分');
   const me = publicUser(user);
+  if (!me?.id) throw new Error('未登入');
   const delta = Number(input.delta);
   if (!Number.isInteger(delta) || delta === 0) throw new Error('請輸入非零整數積分（可正可負）');
   const reason = String(input.reason || '').trim();
@@ -6226,6 +6306,13 @@ export async function updateMember(user, id, input = {}) {
       $set.phone = newPhone;
     }
   }
+  let pointsDelta = 0;
+  if (input.points != null && input.points !== '') {
+    const n = Math.floor(Number(input.points));
+    if (!Number.isInteger(n) || n < 0) throw new Error('積分須為 0 或以上的整數');
+    const before = Math.max(0, Number(existing.points) || 0);
+    if (n !== before) pointsDelta = n - before;
+  }
   await membersCol().updateOne({ _id: existing._id }, { $set });
   if ($set.phone || $set.name) {
     await memberPointsCol().updateMany(
@@ -6233,12 +6320,21 @@ export async function updateMember(user, id, input = {}) {
       { $set: { memberPhone: $set.phone || existing.phone, memberName: $set.name || existing.name } }
     );
   }
+  if (pointsDelta) {
+    await applyMemberPoints({
+      memberId: String(existing.id || existing.memberNo || existing.phone),
+      delta: pointsDelta,
+      type: 'adjust',
+      reason: String(input.pointReason || '').trim() || '編輯會員積分',
+      actor: me,
+    });
+  }
   const updated = await membersCol().findOne({ _id: existing._id });
   await appendModuleLog({
     module: 'pos',
     time: $set.updatedAt,
     action: '編輯會員',
-    detail: `${updated.name}｜${updated.phone}｜${updated.level || ''}`,
+    detail: `${updated.name}｜${updated.phone}｜${updated.level || ''}${pointsDelta ? `｜積分${pointsDelta > 0 ? '+' : ''}${pointsDelta}` : ''}`,
     userId: me.id,
     userName: me.name || me.login,
     user: me.name || me.login,
@@ -6465,7 +6561,7 @@ export async function savePosDraft(user, payload = {}) {
   if (!posCanAccessStore(me, store)) throw new Error('無權在此店舖保存草稿');
   const items = normalizeDraftItems(payload.items);
   if (!items.length) throw new Error('購物車是空的，無法保存草稿');
-  const label = String(payload.label || payload.title || '').trim();
+  const label = String(payload.label || payload.title || payload.memberName || '').trim();
   const remark = String(payload.remark || '').trim();
   const paymentMethod = String(payload.paymentMethod || 'cash');
   const pointsToRedeem = Math.max(0, Math.floor(Number(payload.pointsToRedeem) || 0));

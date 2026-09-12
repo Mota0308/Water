@@ -3111,7 +3111,9 @@ function collectTransferProductForm(){
   const nameEn = ((document.getElementById('tp-name-en')||{}).value||'').trim();
   const tickieCategory = ((document.getElementById('tp-tickie-cat')||{}).value||'').trim();
   const priceOriginalRaw = ((document.getElementById('tp-price-original')||{}).value||'').trim();
-  const priceSaleRaw = ((document.getElementById('tp-price-sale')||{}).value||'').trim();
+  const priceRetailRaw = ((document.getElementById('tp-price-retail')||{}).value||'').trim();
+  const priceSpecialRaw = ((document.getElementById('tp-price-special')||{}).value||'').trim();
+  const priceNetRaw = ((document.getElementById('tp-price-net')||{}).value||'').trim();
   const tickiePointsRaw = ((document.getElementById('tp-tickie-points')||{}).value||'').trim();
   const sizes = getTransferProductFormSizes();
   const firstDraft = ensureTransferVariantDraft(color);
@@ -3132,7 +3134,9 @@ function collectTransferProductForm(){
     images: (firstDraft.images||[]).slice(),
     tickieCategory,
     priceOriginal: priceOriginalRaw==='' ? null : Number(priceOriginalRaw),
-    priceSale: priceSaleRaw==='' ? null : Number(priceSaleRaw),
+    priceRetail: priceRetailRaw==='' ? null : Number(priceRetailRaw),
+    priceSpecial: priceSpecialRaw==='' ? null : Number(priceSpecialRaw),
+    priceNet: priceNetRaw==='' ? null : Number(priceNetRaw),
     tickiePoints: tickiePointsRaw==='' ? null : Number(tickiePointsRaw),
     variantDrafts: transferVariantDrafts
   };
@@ -3151,7 +3155,9 @@ function validateTransferProductForm(form){
     return true;
   }
   if(!okNum(form.priceOriginal, '原價')) return false;
-  if(!okNum(form.priceSale, '優惠價')) return false;
+  if(!okNum(form.priceRetail, '售價')) return false;
+  if(!okNum(form.priceSpecial, '特價')) return false;
+  if(!okNum(form.priceNet, '折實價')) return false;
   if(!okNum(form.tickiePoints, '剔剔積分')) return false;
   return true;
 }
@@ -3568,7 +3574,9 @@ async function prepareTransferProductVariants(form){
       images: uploaded,
       tickieCategory: base.tickieCategory,
       priceOriginal: base.priceOriginal,
-      priceSale: base.priceSale,
+      priceRetail: base.priceRetail,
+      priceSpecial: base.priceSpecial,
+      priceNet: base.priceNet,
       tickiePoints: base.tickiePoints
     });
   }
@@ -3956,7 +3964,9 @@ function transferProductAttrFieldsHtml(p){
     +transferOptionFieldLabelHtml('品牌', 'brand')
     +transferBrandSelectHtml(val('brand'))
     +'<label>原價</label><input type="number" id="tp-price-original" min="0" step="0.01" value="'+escHtml(val('priceOriginal'))+'" placeholder="可留空">'
-    +'<label>優惠價</label><input type="number" id="tp-price-sale" min="0" step="0.01" value="'+escHtml(val('priceSale'))+'" placeholder="可留空">'
+    +'<label>售價</label><input type="number" id="tp-price-retail" min="0" step="0.01" value="'+escHtml(val('priceRetail'))+'" placeholder="可留空">'
+    +'<label>特價</label><input type="number" id="tp-price-special" min="0" step="0.01" value="'+escHtml(val('priceSpecial'))+'" placeholder="可留空">'
+    +'<label>折實價</label><input type="number" id="tp-price-net" min="0" step="0.01" value="'+escHtml(val('priceNet'))+'" placeholder="可留空">'
     +'<label>剔剔積分類</label><input type="text" id="tp-tickie-cat" value="'+escHtml(val('tickieCategory'))+'" placeholder="可留空">'
     +'<label>剔剔積分</label><input type="number" id="tp-tickie-points" min="0" step="0.5" value="'+escHtml(val('tickiePoints'))+'" placeholder="例如 2">'
     +'</div>';
@@ -4097,7 +4107,9 @@ function fillTransferProductFormFields(form){
   setVal('tp-name', form.name);
   setVal('tp-name-en', form.nameEn);
   setVal('tp-price-original', form.priceOriginal);
-  setVal('tp-price-sale', form.priceSale);
+  setVal('tp-price-retail', form.priceRetail);
+  setVal('tp-price-special', form.priceSpecial);
+  setVal('tp-price-net', form.priceNet);
   setVal('tp-tickie-cat', form.tickieCategory);
   setVal('tp-tickie-points', form.tickiePoints);
   setVal('tp-safety', form.safetyStock!=null?form.safetyStock:0);
@@ -4877,7 +4889,7 @@ function transferProductCardHtml(p, invMap, stores){
     +escHtml(p.brand||'—')+'｜'+escHtml(p.color||'—')+'｜'+escHtml(p.id)+'｜'+escHtml(p.category||'')
     +'</div></div></div>'
     +'<div style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:#607d8b;margin:10px 0 8px">'
-    +'<span>選項 '+escHtml(sizes)+'</span>'
+    +'<span>選項 <b>'+escHtml(sizes)+'</b></span>'
     +'<span>原價 '+escHtml(transferProductTableVal(p.priceOriginal))+'</span>'
     +'</div>'
     +'<div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
@@ -4956,7 +4968,7 @@ function vTransferProducts(){
         +'<td><b>'+(expanded?'▾ ':'▸ ')+escHtml(p.id)+'</b></td>'
         +'<td>'+escHtml(p.name||'')+(p.nameEn?'<div style="font-size:11px;color:#888">'+escHtml(p.nameEn)+'</div>':'')+lowMark+'</td>'
         +'<td>'+escHtml(p.category||'')+'</td>'
-        +'<td>'+escHtml(sizes)+'</td>'
+        +'<td><b>'+escHtml(sizes)+'</b></td>'
         +'<td>'+escHtml(transferProductTableVal(p.priceOriginal))+'</td>'
         +'<td style="white-space:nowrap">'
         +'<button type="button" class="btn sm" data-call="openEditTransferProductModal" data-arg0="'+escHtml(transferProductUid(p))+'">編輯</button> '
@@ -5150,12 +5162,16 @@ function vTransferStockLog(){
   const body = !rows.length
     ? '<tr><td colspan="6" style="color:#888;text-align:center">尚無庫存校正記錄。</td></tr>'
     : rows.map(function(a){
-      const detail = TRANSFER_STORES_FE.map(function(s){
+      const storeKeys = {};
+      TRANSFER_STORES_FE.forEach(function(s){ storeKeys[s] = true; });
+      if(a.before && typeof a.before==='object') Object.keys(a.before).forEach(function(s){ storeKeys[s] = true; });
+      if(a.after && typeof a.after==='object') Object.keys(a.after).forEach(function(s){ storeKeys[s] = true; });
+      const detail = Object.keys(storeKeys).map(function(s){
         const b = a.before && a.before[s]!=null ? a.before[s] : '—';
         const n = a.after && a.after[s]!=null ? a.after[s] : '—';
-        if(String(b)===String(n)) return '<span style="color:#90a4ae">'+escHtml(s)+' '+escHtml(String(b))+'</span>';
+        if(String(b)===String(n)) return '';
         return '<b>'+escHtml(s)+' '+escHtml(String(b))+'→'+escHtml(String(n))+'</b>';
-      }).join(' ｜ ');
+      }).filter(Boolean).join(' ｜ ') || '—';
       const typ = a.reason || a.type || '庫存校正';
       const typExtra = a.posOrderNo ? ('｜'+a.posOrderNo) : '';
       return '<tr>'
@@ -5884,6 +5900,24 @@ function afterProjectChatRender(){
 
 /* ═══════════ 賬號所屬門市（頂欄，套用各功能） ═══════════ */
 const WORKING_STORE_LS = 'store-web-pos-current-store-v1';
+function isWarehouseStoreName(name){
+  return String(name||'').indexOf('倉')>=0;
+}
+function retailStoreList(list){
+  const src = Array.isArray(list) ? list : [];
+  const out = src.filter(function(s){ return s && !isWarehouseStoreName(s); });
+  return out.length ? out : ['觀塘','荔枝角','灣仔','屯門'];
+}
+function fillLoginStoreSelect(){
+  const sel = document.getElementById('login-store');
+  if(!sel) return;
+  const stores = retailStoreList(typeof TRANSFER_STORES_FE!=='undefined' ? TRANSFER_STORES_FE : []);
+  const cur = readWorkingStoreLs();
+  const pick = stores.indexOf(cur)>=0 ? cur : '';
+  sel.innerHTML = '<option value="">請選擇門市</option>'+stores.map(function(s){
+    return '<option value="'+escHtml(s)+'"'+(s===pick?' selected':'')+'>'+escHtml(s)+'</option>';
+  }).join('');
+}
 function accountStoreOptions(user){
   user = user || currentUser;
   if(!user) return [];
@@ -5891,11 +5925,11 @@ function accountStoreOptions(user){
     ? TRANSFER_STORES_FE.slice()
     : (typeof STORE_UNITS!=='undefined' ? STORE_UNITS.slice() : STAFF_REGIONS.slice());
   const units = userUnits(user);
-  const list = units.filter(function(u){ return all.indexOf(u)>=0; });
+  const list = units.filter(function(u){ return all.indexOf(u)>=0 && !isWarehouseStoreName(u); });
   if(!list.length && (user.role==='system_admin' || user.role==='manager' || user.position==='經理' || user.position==='主管')){
-    return all.slice();
+    return retailStoreList(all);
   }
-  return list;
+  return list.length ? list : retailStoreList(all);
 }
 function readWorkingStoreLs(){
   try{ return String(localStorage.getItem(WORKING_STORE_LS)||'').trim(); }catch(e){ return ''; }
@@ -6012,7 +6046,9 @@ function enterAppAs(user, opts){
 async function doLogin(){
   const u = document.getElementById('login-user').value.trim();
   const p = document.getElementById('login-pw').value;
+  const loginStore = ((document.getElementById('login-store')||{}).value||'').trim();
   const err = document.getElementById('login-err');
+  if(!loginStore){ err.style.color='#c62828'; err.textContent='請選擇門市。'; err.style.display='block'; return; }
   if(!apiReady){ err.style.color='#c62828'; err.textContent='資料儲存仍在初始化，請稍候再登入。'; err.style.display='block'; return; }
   if(!apiEnabled){
     err.style.color='#c62828';
@@ -6036,12 +6072,14 @@ async function doLogin(){
     if(result.needsPhoneBind || userNeedsPhoneBind(result.user)){
       err.style.display='none';
       currentUser = normalizeUser(result.user);
+      writeWorkingStoreLs(loginStore);
       showBindPhoneGate();
       return;
     }
     err.textContent='正在載入雲端資料…';
     await loadCloudAppData();
     err.style.display='none'; err.style.color='';
+    writeWorkingStoreLs(loginStore);
     enterAppAs(result.user);
     // 登入後不再整包回寫項目：載入失敗時的空列表 PUT 曾清掉全部項目
     try{ await persistDailyNow(); }catch(e){ noteCloudError(e); }
@@ -6074,6 +6112,7 @@ async function logout(){
   document.getElementById('app').classList.add('hidden');
   document.getElementById('page-login').classList.remove('hidden');
   document.getElementById('login-pw').value='';
+  fillLoginStoreSelect();
 }
 
 /* ═══════════ 導航及渲染 ═══════════ */
@@ -9984,6 +10023,7 @@ go = function(v){
 };
 
 (async function bootCloud(){
+  fillLoginStoreSelect();
   const err = document.getElementById('login-err');
   if(err){
     err.style.display = 'block';

@@ -115,7 +115,7 @@ export function PosPage() {
   const [memberPhone, setMemberPhone] = useState('')
   const [showMemberDialog, setShowMemberDialog] = useState(false)
   const [pointsSettings, setPointsSettings] = useState<PointsSettings>({
-    pointsPerDollar: 100,
+    pointsPerDollar: 1,
     redeemEnabled: true,
   })
   const [pointsToRedeem, setPointsToRedeem] = useState(0)
@@ -141,7 +141,7 @@ export function PosPage() {
       const [prods, pts] = await Promise.all([
         apiJson<{ products: PosProduct[]; stores: string[] }>('/api/pos/products'),
         apiJson<{ settings: PointsSettings }>('/api/pos/points-settings').catch(() => ({
-          settings: { pointsPerDollar: 100, redeemEnabled: true },
+          settings: { pointsPerDollar: 1, redeemEnabled: true },
         })),
       ])
       setProducts(prods.products || [])
@@ -228,10 +228,10 @@ export function PosPage() {
   )
   const memberRate = member ? Number(member.pricing?.rate ?? 1) : 1
   const memberDiscount = member && memberRate < 1
-    ? Math.round(subtotal * (1 - memberRate) * 100) / 100
+    ? Math.round(subtotal * (1 - memberRate))
     : 0
   const afterMember = Math.round((subtotal - memberDiscount) * 100) / 100
-  const n = Math.max(1, pointsSettings.pointsPerDollar || 100)
+  const n = Math.max(1, pointsSettings.pointsPerDollar || 1)
   const pointsDiscount = pointsSettings.redeemEnabled ? pointsToRedeem / n : 0
   const grandTotal = Math.max(0, Math.round((afterMember - pointsDiscount) * 100) / 100)
   const cashRecv = Number(cashReceived)
@@ -386,8 +386,13 @@ export function PosPage() {
       toast.error('購物車是空的，無法保存草稿')
       return
     }
-    const labelInput = prompt('草稿暱稱（選填）', activeDraft?.label || '')
-    if (labelInput === null) return
+    const memberLabel = String(member?.name || '').trim()
+    let label = memberLabel
+    if (!label) {
+      const labelInput = prompt('草稿暱稱（選填）', activeDraft?.label || '')
+      if (labelInput === null) return
+      label = labelInput.trim()
+    }
     setSavingDraft(true)
     try {
       const res = await apiJson<{ draft: PosDraft }>('/api/pos/drafts', {
@@ -395,7 +400,7 @@ export function PosPage() {
         body: JSON.stringify({
           id: activeDraftId || undefined,
           store,
-          label: labelInput.trim(),
+          label,
           remark,
           paymentMethod,
           pointsToRedeem,
@@ -542,7 +547,7 @@ export function PosPage() {
   return (
     <div className="flex h-full min-h-0 bg-slate-50 text-slate-900">
       {/* Left: products */}
-      <div className="flex w-[340px] shrink-0 flex-col border-r border-slate-200 bg-white lg:w-[380px]">
+      <div className="flex w-[420px] shrink-0 flex-col border-r border-slate-200 bg-white lg:w-[560px]">
         <div className="space-y-2 border-b border-slate-200 p-3">
           <form onSubmit={handleBarcode} className="flex gap-2">
             <div className="relative flex-1">
@@ -573,7 +578,7 @@ export function PosPage() {
           </div>
         </div>
         <div className="flex-1 overflow-y-auto p-3">
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
             {grouped.map((group) => {
               const avail = group.items.reduce((sum, item) => sum + stockOf(item, store), 0)
               const thumb = groupThumbSrc(group)
@@ -700,7 +705,18 @@ export function PosPage() {
                         </button>
                       </div>
                       <div className="text-right text-sm font-semibold tabular-nums">
-                        {formatHKD(item.unitPrice * item.qty)}
+                        {memberRate < 1 ? (
+                          <div>
+                            <div className="text-xs font-normal text-slate-400 line-through">
+                              {formatHKD(item.unitPrice * item.qty)}
+                            </div>
+                            <div>
+                              {formatHKD((Math.round(item.unitPrice * memberRate * 100) / 100) * item.qty)}
+                            </div>
+                          </div>
+                        ) : (
+                          formatHKD(item.unitPrice * item.qty)
+                        )}
                       </div>
                     </div>
                   </div>
@@ -821,6 +837,12 @@ export function PosPage() {
             <span>應收</span>
             <span className="tabular-nums text-sky-700">{formatHKD(grandTotal)}</span>
           </div>
+          {member && grandTotal > 0 && (
+            <div className="flex justify-between text-xs text-slate-500">
+              <span>預計獲得積分（實收 5%）</span>
+              <span className="tabular-nums">{Math.round(grandTotal * 0.05)}</span>
+            </div>
+          )}
           <label className="mt-2 block text-xs text-slate-500">備註</label>
           <input
             value={remark}
