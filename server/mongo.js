@@ -5795,6 +5795,7 @@ async function ensureMembersReady() {
   await membersCol().createIndex({ active: 1, updatedAtMs: -1 });
   await memberPointsCol().createIndex({ memberId: 1, createdAtMs: -1 });
   await memberPointsCol().createIndex({ id: 1 }, { unique: true });
+  await membersCol().createIndex({ referrerId: 1 });
   await membersCol().updateMany({ points: { $exists: false } }, { $set: { points: 0 } });
   await membersCol().updateMany(
     { source: 'excel-import', level: { $in: ['VIP 會員', 'VIP', 'vip'] } },
@@ -5817,7 +5818,58 @@ function stripMember(doc, ctx = {}) {
     holidayDates: ctx.holidayDates || [],
     at: ctx.at || new Date(),
   });
+  rest.referrerId = String(rest.referrerId || '').trim();
+  rest.referrerName = String(rest.referrerName || rest.referrer || '').trim();
+  rest.referrerPhone = String(rest.referrerPhone || '').trim();
+  if (Array.isArray(ctx.referredMembers)) rest.referredMembers = ctx.referredMembers;
   return rest;
+}
+
+function compactReferredMember(doc, ctx = {}) {
+  const m = stripMember(doc, ctx);
+  if (!m) return null;
+  return {
+    id: m.id,
+    memberNo: m.memberNo || m.id,
+    name: m.name || '',
+    phone: m.phone || '',
+    points: Number(m.points) || 0,
+    active: m.active !== false,
+    createdAt: m.createdAt || '',
+  };
+}
+
+async function listReferredMembers(referrerId) {
+  const id = String(referrerId || '').trim();
+  if (!id) return [];
+  const docs = await membersCol()
+    .find({ referrerId: id })
+    .sort({ createdAtMs: -1, id: 1 })
+    .limit(500)
+    .toArray();
+  const holidayDates = await holidayDatesNow();
+  const at = new Date();
+  return docs.map((d) => compactReferredMember(d, { holidayDates, at })).filter(Boolean);
+}
+
+async function resolveReferrerDoc(raw, { excludeId } = {}) {
+  const q = String(raw || '').trim();
+  if (!q) return null;
+  const doc = await findMemberDoc(q);
+  if (!doc) throw new Error('找不到介紹人：請輸入已登記會員的電話或會員編號');
+  const id = String(doc.id || doc.memberNo || doc._id || '').trim();
+  if (excludeId && id && String(excludeId) === id) throw new Error('不可將自己設為介紹人');
+  if (doc.active === false) throw new Error('介紹人會員已停用');
+  return doc;
+}
+
+function referrerFieldsFromDoc(doc) {
+  if (!doc) return { referrerId: '', referrerName: '', referrerPhone: '' };
+  return {
+    referrerId: String(doc.id || doc.memberNo || doc._id || '').trim(),
+    referrerName: String(doc.name || '').trim(),
+    referrerPhone: String(doc.phone || '').trim(),
+  };
 }
 function normalizeMemberLevel(raw) {
   const s = String(raw || '').trim();
@@ -5895,6 +5947,9 @@ async function applyMemberPoints({
   posOrderNo,
   returnId,
   amountBase,
+  skipReferral,
+  sourceMemberId,
+  sourceMemberName,
 } = {}) {
   const member = await findMemberDoc(memberId);
   if (!member) throw new Error('找不到會員');
@@ -5946,8 +6001,34 @@ async function applyMemberPoints({
     createdAtMs: now.getTime(),
     createdBy: String(actor?.id || ''),
     createdByName: actor?.name || actor?.login || '',
+    sourceMemberId: sourceMemberId ? String(sourceMemberId) : '',
+    sourceMemberName: sourceMemberName ? String(sourceMemberName) : '',
   };
   await memberPointsCol().insertOne(entry);
+  if (!skipReferral && actual > 0 && type === 'earn') {
+    const referrerId = String(member.referrerId || '').trim();
+    const selfId = String(member.id || member.memberNo || member._id || '').trim();
+    if (referrerId && referrerId !== selfId) {
+      try {
+        await applyMemberPoints({
+          memberId: referrerId,
+          delta: actual,
+          type: 'referral_earn',
+          reason: `介紹獎勵｜${member.name || selfId}｜${String(reason || '').trim()}`.replace(/｜+$/, ''),
+          actor,
+          posTransactionId,
+          posOrderNo,
+          returnId,
+          amountBase,
+          skipReferral: true,
+          sourceMemberId: selfId,
+          sourceMemberName: member.name || '',
+        });
+      } catch (e) {
+        console.warn('POS referral points skipped:', e.message || e);
+      }
+    }
+  }
   return { member: stripMember({ ...member, points: after }), entry: stripPointLedger(entry), clamped, actualDelta: actual };
 }
 
@@ -5993,9 +6074,40 @@ export async function listMemberPoints(user, id) {
     .limit(200)
     .toArray();
   const holidayDates = await holidayDatesNow();
+  const referredMembers = await listReferredMembers(String(member.id || member.memberNo || ''));
   return {
-    member: stripMember(member, { holidayDates, at: new Date() }),
+    member: stripMember(member, { holidayDates, at: new Date(), referredMembers }),
     ledger: docs.map(stripPointLedger),
+    referredMembers,
+    canEdit: posCanManageCatalog(user),
+  };
+}
+
+export async function lookupMember(user, q) {
+  await connectMongo();
+  await ensureMembersReady();
+  const me = publicUser(user);
+  if (!me?.id) throw new Error('未登入');
+  const raw = String(q || '').trim();
+  if (!raw) return { member: null };
+  const doc = await findMemberDoc(raw);
+  if (!doc) return { member: null };
+  const holidayDates = await holidayDatesNow();
+  return { member: stripMember(doc, { holidayDates, at: new Date() }) };
+}
+
+export async function getMember(user, id) {
+  await connectMongo();
+  await ensureMembersReady();
+  const me = publicUser(user);
+  if (!me?.id) throw new Error('未登入');
+  const member = await findMemberDoc(id);
+  if (!member) throw new Error('找不到會員');
+  const holidayDates = await holidayDatesNow();
+  const referredMembers = await listReferredMembers(String(member.id || member.memberNo || ''));
+  return {
+    member: stripMember(member, { holidayDates, at: new Date(), referredMembers }),
+    referredMembers,
     canEdit: posCanManageCatalog(user),
   };
 }
@@ -6045,6 +6157,9 @@ export async function createMember(user, input = {}) {
   const email = String(input.email || '').trim();
   const birthDay = String(input.birthDay || '').trim();
   const birthMonth = String(input.birthMonth || '').trim();
+  const referrerRaw = String(input.referrerId || input.referrer || input.referrerQuery || '').trim();
+  const referrerDoc = await resolveReferrerDoc(referrerRaw);
+  const referral = referrerFieldsFromDoc(referrerDoc);
   const doc = {
     _id: memberId,
     id: memberId,
@@ -6056,6 +6171,7 @@ export async function createMember(user, input = {}) {
     email,
     birthDay,
     birthMonth,
+    ...referral,
     points: 0,
     active: true,
     createdAt: time,
@@ -6070,7 +6186,7 @@ export async function createMember(user, input = {}) {
     module: 'pos',
     time,
     action: '新增會員',
-    detail: `${memberId}｜${name}｜${phone}｜${doc.level}`,
+    detail: `${memberId}｜${name}｜${phone}｜${doc.level}${referral.referrerId ? `｜介紹人 ${referral.referrerId}` : ''}`,
     userId: me.id,
     userName: me.name || me.login,
     user: me.name || me.login,

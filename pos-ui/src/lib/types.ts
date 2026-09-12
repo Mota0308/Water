@@ -58,8 +58,23 @@ export interface PosMember {
   birthDay?: string
   birthMonth?: string
   pricing?: MemberPricing
+  referrerId?: string
+  referrerName?: string
+  referrerPhone?: string
+  referrer?: string
+  referredMembers?: PosReferredMember[]
   createdAt?: string
   updatedAt?: string
+}
+
+export interface PosReferredMember {
+  id: string
+  memberNo?: string
+  name: string
+  phone: string
+  points?: number
+  active?: boolean
+  createdAt?: string
 }
 
 export interface PosCartLine {
@@ -127,6 +142,8 @@ export interface PosPointLedger {
   posTransactionId?: string
   posOrderNo?: string
   returnId?: string
+  sourceMemberId?: string
+  sourceMemberName?: string
   createdAt: string
   createdAtMs?: number
   createdBy?: string

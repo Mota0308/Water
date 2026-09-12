@@ -4,7 +4,7 @@ import { apiJson } from '@/lib/api'
 import { formatDateTime, formatHKD } from '@/lib/format'
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, btnClass, fieldClass, textareaClass } from '@/components/ui'
 import { MEMBER_LEVELS, memberLevelNote, memberLevelTone, normalizeMemberLevel } from '@/lib/members'
-import type { PosMember, PosPointLedger, PosTransaction } from '@/lib/types'
+import type { PosMember, PosPointLedger, PosReferredMember, PosTransaction } from '@/lib/types'
 
 function memberNoFor(member: PosMember) {
   return member.memberNo || member.id || `M${String(member.phone || '').padStart(8, '0')}`
@@ -18,8 +18,18 @@ function memberStatusLabel(active?: boolean) {
   return active === false ? '已停用' : '啟用中'
 }
 
-const emptyAddForm = { name: '', phone: '', email: '', birthDay: '', birthMonth: '', level: '新會員', remark: '' }
+const emptyAddForm = { name: '', phone: '', email: '', birthDay: '', birthMonth: '', level: '新會員', remark: '', referrerQuery: '' }
 const emptyEditForm = { name: '', phone: '', email: '', birthDay: '', birthMonth: '', level: '新會員', remark: '' }
+
+function memberReferrerLabel(member?: Pick<PosMember, 'referrerName' | 'referrerPhone' | 'referrerId' | 'referrer'> | null) {
+  if (!member) return ''
+  const name = String(member.referrerName || member.referrer || '').trim()
+  const no = String(member.referrerId || '').trim()
+  const phone = String(member.referrerPhone || '').trim()
+  if (!name && !no && !phone) return ''
+  const bits = [name, no, phone].filter(Boolean)
+  return bits.join(' · ')
+}
 
 export function MembersPage() {
   const [kw, setKw] = useState('')
@@ -38,6 +48,11 @@ export function MembersPage() {
   const [savingProfile, setSavingProfile] = useState(false)
   const [pointDelta, setPointDelta] = useState('')
   const [pointReason, setPointReason] = useState('')
+  const [referredMembers, setReferredMembers] = useState<PosReferredMember[]>([])
+  const [referrerLookup, setReferrerLookup] = useState<{
+    status: 'idle' | 'loading' | 'found' | 'miss'
+    member: PosMember | null
+  }>({ status: 'idle', member: null })
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -69,6 +84,18 @@ export function MembersPage() {
     [members, selectedId],
   )
 
+  const selectedReferrerLabel = useMemo(() => {
+    if (!selectedMember) return ''
+    const live = selectedMember.referrerId
+      ? members.find((member) => member.id === selectedMember.referrerId)
+      : null
+    return memberReferrerLabel(
+      live
+        ? { referrerId: live.id, referrerName: live.name, referrerPhone: live.phone }
+        : selectedMember,
+    )
+  }, [members, selectedMember])
+
   useEffect(() => {
     if (!selectedMember) {
       setEditForm(emptyEditForm)
@@ -88,16 +115,50 @@ export function MembersPage() {
   const loadLedger = useCallback(async (memberId: string) => {
     if (!memberId) return
     try {
-      const res = await apiJson<{ ledger: PosPointLedger[] }>(`/api/pos/members/${encodeURIComponent(memberId)}/points`)
+      const res = await apiJson<{ ledger: PosPointLedger[]; referredMembers?: PosReferredMember[] }>(
+        `/api/pos/members/${encodeURIComponent(memberId)}/points`,
+      )
       setLedger(res.ledger || [])
+      setReferredMembers(res.referredMembers || [])
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
     }
   }, [])
 
   useEffect(() => {
-    if (selectedId) void loadLedger(selectedId)
+    if (selectedId) {
+      void loadLedger(selectedId)
+    } else {
+      setReferredMembers([])
+    }
   }, [loadLedger, selectedId])
+
+  useEffect(() => {
+    const q = addForm.referrerQuery.trim()
+    if (!showAddDialog) return
+    if (!q) {
+      setReferrerLookup({ status: 'idle', member: null })
+      return
+    }
+    let cancelled = false
+    setReferrerLookup((prev) => ({ ...prev, status: 'loading' }))
+    const timer = window.setTimeout(() => {
+      void apiJson<{ member: PosMember | null }>(`/api/pos/members/lookup?q=${encodeURIComponent(q)}`)
+        .then((res) => {
+          if (cancelled) return
+          setReferrerLookup(res.member ? { status: 'found', member: res.member } : { status: 'miss', member: null })
+        })
+        .catch((e) => {
+          if (cancelled) return
+          setReferrerLookup({ status: 'miss', member: null })
+          toast.error(e instanceof Error ? e.message : String(e))
+        })
+    }, 350)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [addForm.referrerQuery, showAddDialog])
 
   const filteredMembers = useMemo(() => {
     return members.filter((member) => {
@@ -117,12 +178,32 @@ export function MembersPage() {
 
   const createMember = async () => {
     try {
+      const referrerQuery = addForm.referrerQuery.trim()
+      if (referrerQuery && referrerLookup.status === 'loading') {
+        toast.error('正在核對介紹人，請稍候')
+        return
+      }
+      if (referrerQuery && referrerLookup.status !== 'found') {
+        toast.error('找不到介紹人：請輸入已登記會員的電話或會員編號')
+        return
+      }
+      const payload = {
+        name: addForm.name,
+        phone: addForm.phone,
+        email: addForm.email,
+        birthDay: addForm.birthDay,
+        birthMonth: addForm.birthMonth,
+        level: addForm.level,
+        remark: addForm.remark,
+        referrerId: referrerLookup.member?.id || '',
+      }
       await apiJson<{ member: PosMember }>('/api/pos/members', {
         method: 'POST',
-        body: JSON.stringify(addForm),
+        body: JSON.stringify(payload),
       })
       toast.success('已新增會員')
       setAddForm(emptyAddForm)
+      setReferrerLookup({ status: 'idle', member: null })
       setShowAddDialog(false)
       await load()
     } catch (e) {
@@ -185,7 +266,15 @@ export function MembersPage() {
           <h1 className="text-2xl font-bold text-slate-900">會員管理</h1>
           <p className="mt-1 text-sm text-slate-500">會員列表、積分流水與購買記錄集中在同一頁處理。</p>
         </div>
-        <button type="button" onClick={() => setShowAddDialog(true)} className={btnClass({ variant: 'primary' })}>
+        <button
+          type="button"
+          onClick={() => {
+            setAddForm(emptyAddForm)
+            setReferrerLookup({ status: 'idle', member: null })
+            setShowAddDialog(true)
+          }}
+          className={btnClass({ variant: 'primary' })}
+        >
           新增會員
         </button>
       </div>
@@ -297,6 +386,9 @@ export function MembersPage() {
                   {selectedMember.pricing?.fold ? (
                     <p className="text-xs text-sky-700">今日結帳：{selectedMember.pricing.fold}</p>
                   ) : null}
+                  <p className="text-xs text-slate-600">
+                    介紹人：{selectedReferrerLabel || '無'}
+                  </p>
                   <div className="grid gap-3 sm:grid-cols-2">
                     <label className="text-sm">
                       <span className="text-xs text-slate-500">姓名</span>
@@ -403,6 +495,36 @@ export function MembersPage() {
                 )}
 
                 <div className="space-y-3">
+                  <div className="text-sm font-medium text-slate-900">介紹名單</div>
+                  <p className="text-xs text-slate-500">此會員作為介紹人，其介紹的會員消費獲得積分時，這裡的介紹人也會獲得同等積分。</p>
+                  <div className="max-h-56 space-y-2 overflow-y-auto">
+                    {referredMembers.length ? (
+                      referredMembers.map((row) => (
+                        <button
+                          key={row.id}
+                          type="button"
+                          onClick={() => setSelectedId(row.id)}
+                          className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-200 px-4 py-3 text-left text-sm hover:bg-slate-50"
+                        >
+                          <div>
+                            <div className="font-medium text-slate-900">{row.name}</div>
+                            <div className="mt-1 font-mono text-xs text-slate-500">
+                              {row.memberNo || row.id} · {row.phone}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="font-semibold tabular-nums">{Number(row.points || 0).toLocaleString()} 分</div>
+                            <div className="mt-1 text-xs text-slate-500">{row.active === false ? '已停用' : '啟用中'}</div>
+                          </div>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="rounded-2xl bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">尚未介紹其他會員</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-3">
                   <div className="text-sm font-medium text-slate-900">積分流水</div>
                   <div className="max-h-72 space-y-2 overflow-y-auto">
                     {ledger.length ? (
@@ -410,7 +532,12 @@ export function MembersPage() {
                         <div key={entry.id} className="rounded-2xl border border-slate-200 px-4 py-3 text-sm">
                           <div className="flex items-start justify-between gap-3">
                             <div>
-                              <div className="font-medium text-slate-900">{entry.reason || entry.type}</div>
+                              <div className="font-medium text-slate-900">
+                                {entry.type === 'referral_earn' ? '介紹獎勵' : entry.reason || entry.type}
+                              </div>
+                              {entry.type === 'referral_earn' && entry.reason ? (
+                                <div className="mt-1 text-xs text-slate-500">{entry.reason}</div>
+                              ) : null}
                               <div className="mt-1 text-xs text-slate-500">
                                 {formatDateTime(entry.createdAt)} | 結餘 {Number(entry.balanceAfter || 0).toLocaleString()}
                               </div>
@@ -507,9 +634,38 @@ export function MembersPage() {
                 placeholder="備註（選填）"
                 className={textareaClass()}
               />
+              <div>
+                <input
+                  value={addForm.referrerQuery}
+                  onChange={(e) => setAddForm((prev) => ({ ...prev, referrerQuery: e.target.value }))}
+                  placeholder="介紹人電話或會員編號（選填）"
+                  className={fieldClass()}
+                />
+                <div className="mt-1 text-xs">
+                  {!addForm.referrerQuery.trim() ? (
+                    <span className="text-slate-500">輸入後會自動核對已有會員；一位介紹人可介紹多位會員。</span>
+                  ) : referrerLookup.status === 'loading' ? (
+                    <span className="text-slate-500">正在核對介紹人…</span>
+                  ) : referrerLookup.status === 'found' && referrerLookup.member ? (
+                    <span className="text-emerald-700">
+                      已找到：{referrerLookup.member.name} · {memberNoFor(referrerLookup.member)} · {referrerLookup.member.phone}
+                    </span>
+                  ) : (
+                    <span className="text-red-600">找不到此電話／會員編號的會員</span>
+                  )}
+                </div>
+              </div>
             </div>
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setShowAddDialog(false)} className={btnClass({ variant: 'outline' })}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAddDialog(false)
+                  setAddForm(emptyAddForm)
+                  setReferrerLookup({ status: 'idle', member: null })
+                }}
+                className={btnClass({ variant: 'outline' })}
+              >
                 取消
               </button>
               <button type="button" onClick={() => void createMember()} className={btnClass({ variant: 'primary' })}>

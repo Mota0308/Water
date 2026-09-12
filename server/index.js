@@ -85,6 +85,8 @@ import {
   addPosSellablesBatch,
   adjustPosProductsBatch,
   listMembers,
+  lookupMember,
+  getMember,
   createMember,
   updateMember,
   setMemberActive,
@@ -916,6 +918,24 @@ app.get('/api/pos/members', requireAuth, async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/pos/members/lookup', requireAuth, async (req, res) => {
+  try {
+    res.json(await lookupMember(req.user, req.query?.q));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/pos/members/:id', requireAuth, async (req, res) => {
+  try {
+    res.json(await getMember(req.user, req.params.id));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
   }
 });
 
