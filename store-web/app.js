@@ -5109,8 +5109,8 @@ function transferInvSizeCardsHtml(g, stores){
   const sizeRows = (g.sizes||[]).slice().sort(function(a,b){ return compareTransferSizes(a.size, b.size); });
   const pid = escHtml(String((g && g.productId) || (sizeRows[0] && sizeRows[0].productId) || ''));
   const head = '<tr><th style="text-align:left;white-space:nowrap">地點</th>'
-    +sizeRows.map(function(r){ return '<th style="text-align:center;white-space:nowrap">'+escHtml(String(r.size))+'</th>'; }).join('')
-    +'<th style="text-align:center;white-space:nowrap">合計</th></tr>';
+    +sizeRows.map(function(r){ return '<th style="text-align:center;white-space:nowrap;font-weight:700">'+escHtml(String(r.size))+'</th>'; }).join('')
+    +'<th style="text-align:center;white-space:nowrap;font-weight:700">合計</th></tr>';
   const body = stores.map(function(store){
     let total = 0;
     const cells = sizeRows.map(function(r){

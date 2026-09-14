@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils'
 import type { PosCartLine, PosMember, PosProduct, PointsSettings } from '@/lib/types'
 import { PAYMENT_METHODS } from '@/lib/types'
 import { resolveMemberUnitPrice } from '@/lib/pricing'
+import { MEMBER_LEVELS, memberLevelNote } from '@/lib/members'
 import { usePosStore } from '@/store/PosStoreContext'
 
 type PosDraft = {
@@ -101,6 +102,14 @@ function groupThumbSrc(group: { imageFileId?: string; imageUrl?: string }) {
   return group.imageUrl || ''
 }
 
+const emptyCreateMember = {
+  name: '',
+  phone: '',
+  birthDay: '',
+  birthMonth: '',
+  level: '新會員',
+}
+
 export function PosPage() {
   const navigate = useNavigate()
   const barcodeRef = useRef<HTMLInputElement>(null)
@@ -115,6 +124,9 @@ export function PosPage() {
   const [member, setMember] = useState<PosMember | null>(null)
   const [memberPhone, setMemberPhone] = useState('')
   const [showMemberDialog, setShowMemberDialog] = useState(false)
+  const [showCreateMemberDialog, setShowCreateMemberDialog] = useState(false)
+  const [createMemberForm, setCreateMemberForm] = useState(emptyCreateMember)
+  const [creatingMember, setCreatingMember] = useState(false)
   const [pointsSettings, setPointsSettings] = useState<PointsSettings>({
     pointsPerDollar: 1,
     redeemEnabled: true,
@@ -355,6 +367,53 @@ export function PosPage() {
       toast.success(`已登入會員：${m.name}`)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const openCreateMember = () => {
+    setCreateMemberForm({
+      ...emptyCreateMember,
+      phone: memberPhone.trim(),
+    })
+    setShowMemberDialog(false)
+    setShowCreateMemberDialog(true)
+  }
+
+  const createMember = async () => {
+    const name = createMemberForm.name.trim()
+    const phone = createMemberForm.phone.trim()
+    if (!name) {
+      toast.error('請填寫姓名')
+      return
+    }
+    if (!phone) {
+      toast.error('請填寫電話')
+      return
+    }
+    setCreatingMember(true)
+    try {
+      const res = await apiJson<{ member: PosMember }>('/api/pos/members', {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          phone,
+          birthDay: createMemberForm.birthDay,
+          birthMonth: createMemberForm.birthMonth,
+          level: createMemberForm.level,
+        }),
+      })
+      const created = res.member
+      if (!created) throw new Error('新增會員失敗')
+      setMember(created)
+      setMemberPhone(created.phone || phone)
+      setPointsToRedeem(0)
+      setShowCreateMemberDialog(false)
+      setCreateMemberForm(emptyCreateMember)
+      toast.success(`已新增並登入：${created.name}`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setCreatingMember(false)
     }
   }
 
@@ -814,14 +873,23 @@ export function PosPage() {
               </div>
             </div>
           ) : (
-            <button
-              type="button"
-              onClick={() => setShowMemberDialog(true)}
-              className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-dashed border-slate-300 text-sm text-slate-500 transition-colors hover:border-sky-400 hover:text-sky-700"
-            >
-              <UserPlus className="size-4" />
-              輸入會員電話
-            </button>
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => setShowMemberDialog(true)}
+                className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-dashed border-slate-300 text-sm text-slate-500 transition-colors hover:border-sky-400 hover:text-sky-700"
+              >
+                <UserPlus className="size-4" />
+                輸入會員電話
+              </button>
+              <button
+                type="button"
+                onClick={openCreateMember}
+                className="flex h-10 w-full items-center justify-center gap-2 rounded-md border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                新增會員
+              </button>
+            </div>
           )}
         </div>
 
@@ -975,6 +1043,95 @@ export function PosPage() {
             >
               搜尋並登入
             </button>
+            <button
+              type="button"
+              onClick={openCreateMember}
+              className="mt-2 h-10 w-full rounded-md border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              新增會員
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showCreateMemberDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-lg bg-white p-4 shadow-xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="font-semibold">新增會員</h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCreateMemberDialog(false)
+                  setCreateMemberForm(emptyCreateMember)
+                }}
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="space-y-3">
+              <input
+                value={createMemberForm.name}
+                onChange={(e) => setCreateMemberForm((prev) => ({ ...prev, name: e.target.value }))}
+                placeholder="姓名"
+                className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm"
+                autoFocus
+              />
+              <input
+                value={createMemberForm.phone}
+                onChange={(e) => setCreateMemberForm((prev) => ({ ...prev, phone: e.target.value }))}
+                placeholder="8 位香港電話"
+                className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm"
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  value={createMemberForm.birthMonth}
+                  onChange={(e) => setCreateMemberForm((prev) => ({ ...prev, birthMonth: e.target.value }))}
+                  placeholder="生日月份 1–12"
+                  inputMode="numeric"
+                  className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm"
+                />
+                <input
+                  value={createMemberForm.birthDay}
+                  onChange={(e) => setCreateMemberForm((prev) => ({ ...prev, birthDay: e.target.value }))}
+                  placeholder="生日日期 1–31"
+                  inputMode="numeric"
+                  className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm"
+                />
+              </div>
+              <select
+                value={createMemberForm.level}
+                onChange={(e) => setCreateMemberForm((prev) => ({ ...prev, level: e.target.value }))}
+                className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm"
+              >
+                {MEMBER_LEVELS.map((lv) => (
+                  <option key={lv.id} value={lv.id}>
+                    {lv.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-500">{memberLevelNote(createMemberForm.level)}</p>
+            </div>
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCreateMemberDialog(false)
+                  setCreateMemberForm(emptyCreateMember)
+                }}
+                className="h-10 flex-1 rounded-md border border-slate-200 bg-white text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={creatingMember}
+                onClick={() => void createMember()}
+                className="h-10 flex-1 rounded-md bg-sky-600 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-40"
+              >
+                {creatingMember ? '新增中…' : '確認新增'}
+              </button>
+            </div>
           </div>
         </div>
       )}

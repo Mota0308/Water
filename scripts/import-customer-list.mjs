@@ -25,11 +25,13 @@ function loadEnvFile(filePath) {
 loadEnvFile(path.join(root, '.env'));
 loadEnvFile(path.join(root, 'server', '.env'));
 
-const DEFAULT_XLSX = 'c:/Users/Dolphin/Downloads/CustomerList_20260908T153735.xlsx';
 const args = process.argv.slice(2).filter((a) => a !== '--');
 const dryRun = args.includes('--dry-run');
-const xlsxArg = args.find((a) => !a.startsWith('--'));
-const xlsxPath = path.resolve(xlsxArg || DEFAULT_XLSX);
+const xlsxPaths = args.filter((a) => !a.startsWith('--')).map((a) => path.resolve(a));
+if (!xlsxPaths.length) {
+  console.error('請指定至少一個 Excel 檔路徑。');
+  process.exit(1);
+}
 
 function decodeXml(s) {
   return String(s || '')
@@ -42,8 +44,7 @@ function decodeXml(s) {
 
 function extractXlsx(file) {
   if (!fs.existsSync(file)) throw new Error('找不到 Excel 檔：' + file);
-  const tmp = path.join(process.env.TEMP || '/tmp', `customer-xlsx-${Date.now()}`);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  const tmp = path.join(process.env.TEMP || '/tmp', `customer-xlsx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
   fs.mkdirSync(tmp, { recursive: true });
   const unzip = spawnSync('tar', ['-xf', file, '-C', tmp], { encoding: 'utf8' });
   if (unzip.status !== 0) {
@@ -95,6 +96,37 @@ function excelPhone(raw) {
   return null;
 }
 
+function cell(row, col) {
+  if (!col) return '';
+  return String(row[col] ?? '').trim();
+}
+
+function birthPart(raw) {
+  const s = String(raw || '').trim();
+  if (!s || s === '0') return '';
+  const n = Number(s);
+  if (Number.isFinite(n) && n > 0) return String(Math.floor(n));
+  return s;
+}
+
+function mapHeader(header) {
+  const map = {};
+  Object.entries(header || {}).forEach(([col, label]) => {
+    const k = String(label || '').trim().toLowerCase();
+    if (k === 'name' || k === '姓名') map.name = col;
+    else if (k === 'customer group' || k === '會員類別' || k === '會員級別') map.group = col;
+    else if (k === 'phone' || k === '電話' || k === '手提電話') map.phone = col;
+    else if (k === 'e-mail' || k === 'email' || k === '電郵') map.email = col;
+    else if (k === 'birth day' || k === '生日日期' || k === '出生日') map.birthDay = col;
+    else if (k === 'birth month' || k === '生日月份' || k === '出生月') map.birthMonth = col;
+    else if (k === '積分' || k === 'reward balance' || k === 'points') map.points = col;
+    else if (k === '餘額' || k === 'credit balance' || k === 'balance') map.balance = col;
+    else if (k === '推薦人' || k === 'used referral code' || k === 'referrer') map.referrer = col;
+    else if (k === 'custom remark' || k === '備註' || k === 'remark') map.remark = col;
+  });
+  return map;
+}
+
 function parseCustomerList(file) {
   const tmp = extractXlsx(file);
   try {
@@ -103,21 +135,27 @@ function parseCustomerList(file) {
     const sheetPath = path.join(tmp, 'xl/worksheets/sheet1.xml');
     if (!fs.existsSync(sheetPath)) throw new Error('Excel 沒有 sheet1');
     const rows = parseSheetRows(fs.readFileSync(sheetPath, 'utf8'), strings);
-    const data = rows.slice(1);
-    return data.map((r, idx) => {
-      const customerGroup = String(r.C || '').trim();
+    const header = rows[0] || {};
+    const cols = mapHeader(header);
+    if (!cols.name || !cols.phone) {
+      throw new Error(`${path.basename(file)} 找不到姓名／電話欄`);
+    }
+    return rows.slice(1).map((r, idx) => {
+      const customerGroup = cell(r, cols.group);
       return {
+        file: path.basename(file),
         excelRow: idx + 2,
-        name: String(r.B || '').trim(),
+        name: cell(r, cols.name),
         customerGroup,
-        level: /vip/i.test(customerGroup) ? 'VIP 會員' : '一般會員',
-        email: String(r.D || '').trim(),
-        phone: excelPhone(r.E) || String(r.E || '').trim(),
-        birthDay: String(r.F || '').trim(),
-        birthMonth: String(r.G || '').trim(),
-        points: Number(r.H) || 0,
-        balance: Number(r.I) || 0,
-        referrer: String(r.J || '').trim(),
+        level: customerGroup,
+        email: cell(r, cols.email),
+        phone: excelPhone(cell(r, cols.phone)) || cell(r, cols.phone),
+        birthDay: birthPart(cell(r, cols.birthDay)),
+        birthMonth: birthPart(cell(r, cols.birthMonth)),
+        points: Number(cell(r, cols.points)) || 0,
+        balance: Number(cell(r, cols.balance)) || 0,
+        referrer: cell(r, cols.referrer),
+        remark: cell(r, cols.remark),
       };
     });
   } finally {
@@ -125,9 +163,52 @@ function parseCustomerList(file) {
   }
 }
 
-const records = parseCustomerList(xlsxPath);
-console.log(`Excel：${xlsxPath}`);
-console.log(`列數：${records.length}${dryRun ? '（dry-run，不會寫入）' : ''}`);
+const LEVEL_RANK = {
+  尊貴會員: 5,
+  教練會員: 4,
+  長者會員: 3,
+  普通會員: 2,
+  新會員: 1,
+};
+
+function mergeRecords(lists) {
+  const byPhone = new Map();
+  const fileStats = [];
+  for (const { file, records } of lists) {
+    let valid = 0;
+    for (const rec of records) {
+      const phone = excelPhone(rec.phone);
+      const name = String(rec.name || '').trim();
+      if (!name || !phone) continue;
+      valid += 1;
+      const next = { ...rec, phone };
+      const prev = byPhone.get(phone);
+      if (!prev) {
+        byPhone.set(phone, next);
+        continue;
+      }
+      const prevRank = LEVEL_RANK[prev.level] || 0;
+      const nextRank = LEVEL_RANK[next.level] || 0;
+      const keep = nextRank > prevRank ? next : prev;
+      const other = keep === next ? prev : next;
+      keep.email = keep.email || other.email;
+      keep.birthDay = keep.birthDay || other.birthDay;
+      keep.birthMonth = keep.birthMonth || other.birthMonth;
+      keep.referrer = keep.referrer || other.referrer;
+      keep.remark = keep.remark || other.remark;
+      keep.points = Math.max(Number(keep.points) || 0, Number(other.points) || 0);
+      keep.balance = Math.max(Number(keep.balance) || 0, Number(other.balance) || 0);
+      byPhone.set(phone, keep);
+    }
+    fileStats.push({ file: path.basename(file), rows: records.length, valid });
+  }
+  return { records: [...byPhone.values()], fileStats };
+}
+
+const lists = xlsxPaths.map((file) => ({ file, records: parseCustomerList(file) }));
+const merged = mergeRecords(lists);
+console.log(`檔案數：${xlsxPaths.length}${dryRun ? '（dry-run，不會寫入）' : ''}`);
+console.log(JSON.stringify({ files: merged.fileStats, uniquePhones: merged.records.length }, null, 2));
 
 const { mongoConfigured, importPosMembers, closeMongo } = await import('../server/mongo.js');
 if (!mongoConfigured()) {
@@ -136,10 +217,15 @@ if (!mongoConfigured()) {
 }
 
 try {
-  const summary = await importPosMembers(records, { actorName: 'Excel 導入', dryRun });
+  const summary = await importPosMembers(merged.records, { actorName: 'Excel 導入', dryRun });
   const skipReasons = {};
   for (const s of summary.skipped || []) {
     skipReasons[s.reason] = (skipReasons[s.reason] || 0) + 1;
+  }
+  const levels = {};
+  for (const rec of merged.records) {
+    const lv = rec.level || rec.customerGroup || '(empty)';
+    levels[lv] = (levels[lv] || 0) + 1;
   }
   console.log(
     JSON.stringify(
@@ -151,8 +237,8 @@ try {
         skippedInvalid: summary.skippedInvalid,
         startId: summary.startId,
         endId: summary.endId,
+        levels,
         skipReasons,
-        skippedSample: (summary.skipped || []).slice(0, 20),
       },
       null,
       2
