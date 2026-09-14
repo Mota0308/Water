@@ -29,6 +29,21 @@ export interface PosProduct {
   imageUrl?: string
   imageFileId?: string
   priceOriginal?: number | null
+  priceRetail?: number | null
+  priceSpecial?: number | null
+  priceNet?: number | null
+  priceNetNew?: number | null
+  priceNetNormal?: number | null
+  priceNetVip?: number | null
+  priceNetSenior?: number | null
+  priceNetSeniorRed?: number | null
+  priceNets?: {
+    new: number
+    normal: number
+    vip: number
+    senior: number
+    seniorRed: number
+  }
   tickiePoints?: number | null
   safetyStock?: number
   sizes?: string[]

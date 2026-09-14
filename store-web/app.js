@@ -3113,7 +3113,12 @@ function collectTransferProductForm(){
   const priceOriginalRaw = ((document.getElementById('tp-price-original')||{}).value||'').trim();
   const priceRetailRaw = ((document.getElementById('tp-price-retail')||{}).value||'').trim();
   const priceSpecialRaw = ((document.getElementById('tp-price-special')||{}).value||'').trim();
-  const priceNetRaw = ((document.getElementById('tp-price-net')||{}).value||'').trim();
+  if(typeof applyTransferProductNetDefaults==='function') applyTransferProductNetDefaults(false);
+  const priceNetNewRaw = ((document.getElementById('tp-price-net-new')||{}).value||'').trim();
+  const priceNetNormalRaw = ((document.getElementById('tp-price-net-normal')||{}).value||'').trim();
+  const priceNetVipRaw = ((document.getElementById('tp-price-net-vip')||{}).value||'').trim();
+  const priceNetSeniorRaw = ((document.getElementById('tp-price-net-senior')||{}).value||'').trim();
+  const priceNetSeniorRedRaw = ((document.getElementById('tp-price-net-senior-red')||{}).value||'').trim();
   const tickiePointsRaw = ((document.getElementById('tp-tickie-points')||{}).value||'').trim();
   const sizes = getTransferProductFormSizes();
   const firstDraft = ensureTransferVariantDraft(color);
@@ -3136,7 +3141,12 @@ function collectTransferProductForm(){
     priceOriginal: priceOriginalRaw==='' ? null : Number(priceOriginalRaw),
     priceRetail: priceRetailRaw==='' ? null : Number(priceRetailRaw),
     priceSpecial: priceSpecialRaw==='' ? null : Number(priceSpecialRaw),
-    priceNet: priceNetRaw==='' ? null : Number(priceNetRaw),
+    priceNetNew: priceNetNewRaw==='' ? null : Number(priceNetNewRaw),
+    priceNetNormal: priceNetNormalRaw==='' ? null : Number(priceNetNormalRaw),
+    priceNetVip: priceNetVipRaw==='' ? null : Number(priceNetVipRaw),
+    priceNetSenior: priceNetSeniorRaw==='' ? null : Number(priceNetSeniorRaw),
+    priceNetSeniorRed: priceNetSeniorRedRaw==='' ? null : Number(priceNetSeniorRedRaw),
+    priceNet: priceNetNewRaw==='' ? null : Number(priceNetNewRaw),
     tickiePoints: tickiePointsRaw==='' ? null : Number(tickiePointsRaw),
     variantDrafts: transferVariantDrafts
   };
@@ -3157,7 +3167,11 @@ function validateTransferProductForm(form){
   if(!okNum(form.priceOriginal, '原價')) return false;
   if(!okNum(form.priceRetail, '售價')) return false;
   if(!okNum(form.priceSpecial, '特價')) return false;
-  if(!okNum(form.priceNet, '折實價')) return false;
+  if(!okNum(form.priceNetNew, '折實價（新會員）')) return false;
+  if(!okNum(form.priceNetNormal, '折實價（普通會員）')) return false;
+  if(!okNum(form.priceNetVip, '折實價（尊貴／教練）')) return false;
+  if(!okNum(form.priceNetSenior, '折實價（長者平日）')) return false;
+  if(!okNum(form.priceNetSeniorRed, '折實價（長者紅日）')) return false;
   if(!okNum(form.tickiePoints, '剔剔積分')) return false;
   return true;
 }
@@ -3576,7 +3590,12 @@ async function prepareTransferProductVariants(form){
       priceOriginal: base.priceOriginal,
       priceRetail: base.priceRetail,
       priceSpecial: base.priceSpecial,
-      priceNet: base.priceNet,
+      priceNetNew: base.priceNetNew,
+      priceNetNormal: base.priceNetNormal,
+      priceNetVip: base.priceNetVip,
+      priceNetSenior: base.priceNetSenior,
+      priceNetSeniorRed: base.priceNetSeniorRed,
+      priceNet: base.priceNetNew,
       tickiePoints: base.tickiePoints
     });
   }
@@ -3966,10 +3985,83 @@ function transferProductAttrFieldsHtml(p){
     +'<label>原價</label><input type="number" id="tp-price-original" min="0" step="0.01" value="'+escHtml(val('priceOriginal'))+'" placeholder="可留空">'
     +'<label>售價</label><input type="number" id="tp-price-retail" min="0" step="0.01" value="'+escHtml(val('priceRetail'))+'" placeholder="可留空">'
     +'<label>特價</label><input type="number" id="tp-price-special" min="0" step="0.01" value="'+escHtml(val('priceSpecial'))+'" placeholder="可留空">'
-    +'<label>折實價</label><input type="number" id="tp-price-net" min="0" step="0.01" value="'+escHtml(val('priceNet'))+'" placeholder="可留空">'
+    +'<div style="margin:10px 0 6px;padding:10px 12px;border:1px solid #e0e6ed;border-radius:8px;background:#f7fafc">'
+    +'<div style="font-size:13px;font-weight:bold;color:#37474f">會員折實價</div>'
+    +'<p style="font-size:12px;color:#78909c;margin:4px 0 8px;line-height:1.45">預設跟特價／售價／原價及會員折扣自動帶出，可人手改。</p>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px">'
+    +'<div><label style="margin-top:0">新會員</label><input type="number" id="tp-price-net-new" min="0" step="0.01" value="'+escHtml(val('priceNetNew')||val('priceNet'))+'" placeholder="自動"></div>'
+    +'<div><label style="margin-top:0">普通會員（95折）</label><input type="number" id="tp-price-net-normal" min="0" step="0.01" value="'+escHtml(val('priceNetNormal'))+'" placeholder="自動"></div>'
+    +'<div><label style="margin-top:0">尊貴／教練（85折）</label><input type="number" id="tp-price-net-vip" min="0" step="0.01" value="'+escHtml(val('priceNetVip'))+'" placeholder="自動"></div>'
+    +'<div><label style="margin-top:0">長者平日（75折）</label><input type="number" id="tp-price-net-senior" min="0" step="0.01" value="'+escHtml(val('priceNetSenior'))+'" placeholder="自動"></div>'
+    +'<div style="grid-column:1 / -1"><label style="margin-top:0">長者星期六日／紅日（85折）</label><input type="number" id="tp-price-net-senior-red" min="0" step="0.01" value="'+escHtml(val('priceNetSeniorRed'))+'" placeholder="自動"></div>'
+    +'</div></div>'
     +'<label>剔剔積分類</label><input type="text" id="tp-tickie-cat" value="'+escHtml(val('tickieCategory'))+'" placeholder="可留空">'
     +'<label>剔剔積分</label><input type="number" id="tp-tickie-points" min="0" step="0.5" value="'+escHtml(val('tickiePoints'))+'" placeholder="例如 2">'
     +'</div>';
+}
+var TRANSFER_NET_PRICE_FIELDS = [
+  { id: 'tp-price-net-new', rate: 1 },
+  { id: 'tp-price-net-normal', rate: 0.95 },
+  { id: 'tp-price-net-vip', rate: 0.85 },
+  { id: 'tp-price-net-senior', rate: 0.75 },
+  { id: 'tp-price-net-senior-red', rate: 0.85 },
+];
+function transferFormMoney(id){
+  const raw = ((document.getElementById(id)||{}).value||'').trim();
+  if(!raw) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n>=0 ? Math.round(n*100)/100 : null;
+}
+function transferPriceBaseFromForm(){
+  const special = transferFormMoney('tp-price-special');
+  if(special!=null) return special;
+  const retail = transferFormMoney('tp-price-retail');
+  if(retail!=null) return retail;
+  const original = transferFormMoney('tp-price-original');
+  if(original!=null) return original;
+  return null;
+}
+function applyTransferProductNetDefaults(force){
+  const base = transferPriceBaseFromForm();
+  TRANSFER_NET_PRICE_FIELDS.forEach(function(spec){
+    const el = document.getElementById(spec.id);
+    if(!el) return;
+    if(!force && el.dataset.manual==='1') return;
+    if(base==null){
+      if(el.dataset.manual!=='1') el.value = '';
+      return;
+    }
+    el.value = String(Math.round(base * spec.rate * 100) / 100);
+  });
+}
+function markTransferProductNetManualState(){
+  const base = transferPriceBaseFromForm();
+  TRANSFER_NET_PRICE_FIELDS.forEach(function(spec){
+    const el = document.getElementById(spec.id);
+    if(!el) return;
+    const cur = String(el.value||'').trim();
+    if(!cur){ el.dataset.manual = ''; return; }
+    if(base==null){ el.dataset.manual = '1'; return; }
+    const expected = String(Math.round(base * spec.rate * 100) / 100);
+    el.dataset.manual = cur===expected ? '' : '1';
+  });
+}
+function bindTransferProductNetPriceAuto(){
+  ['tp-price-original','tp-price-retail','tp-price-special'].forEach(function(id){
+    const el = document.getElementById(id);
+    if(!el || el.dataset.netBound==='1') return;
+    el.dataset.netBound = '1';
+    el.addEventListener('input', function(){ applyTransferProductNetDefaults(false); });
+    el.addEventListener('change', function(){ applyTransferProductNetDefaults(false); });
+  });
+  TRANSFER_NET_PRICE_FIELDS.forEach(function(spec){
+    const el = document.getElementById(spec.id);
+    if(!el || el.dataset.netBound==='1') return;
+    el.dataset.netBound = '1';
+    el.addEventListener('input', function(){ el.dataset.manual = String(el.value||'').trim() ? '1' : ''; });
+  });
+  markTransferProductNetManualState();
+  applyTransferProductNetDefaults(false);
 }
 function transferProductSizeChecksHtml(selectedSizes){
   return transferSizeSelectHtml(selectedSizes);
@@ -4109,7 +4201,11 @@ function fillTransferProductFormFields(form){
   setVal('tp-price-original', form.priceOriginal);
   setVal('tp-price-retail', form.priceRetail);
   setVal('tp-price-special', form.priceSpecial);
-  setVal('tp-price-net', form.priceNet);
+  setVal('tp-price-net-new', form.priceNetNew != null ? form.priceNetNew : form.priceNet);
+  setVal('tp-price-net-normal', form.priceNetNormal);
+  setVal('tp-price-net-vip', form.priceNetVip);
+  setVal('tp-price-net-senior', form.priceNetSenior);
+  setVal('tp-price-net-senior-red', form.priceNetSeniorRed);
   setVal('tp-tickie-cat', form.tickieCategory);
   setVal('tp-tickie-points', form.tickiePoints);
   setVal('tp-safety', form.safetyStock!=null?form.safetyStock:0);
@@ -4130,6 +4226,7 @@ function fillTransferProductFormFields(form){
   if(Array.isArray(form.sizes)) transferComboSetMulti('tp-sizes', form.sizes);
   if(form.variantDrafts) resetTransferVariantDrafts(form);
   refreshTransferProductSkuPreview();
+  bindTransferProductNetPriceAuto();
 }
 function reopenTransferProductModalAfterOptions(){
   const ret = transferProductModalReturn;
@@ -4273,6 +4370,7 @@ function openAddTransferProductModal(prefillForm){
     if(modalEl) modalEl.classList.add('modal-wide');
     if(prefillForm) fillTransferProductFormFields(prefillForm);
     else refreshTransferProductSkuPreview();
+    bindTransferProductNetPriceAuto();
   };
   loadTransferProductOptions(true).then(open).catch(open);
 }
@@ -4341,6 +4439,7 @@ function openEditTransferProductModal(productId, prefillForm){
     if(!catKnown) onTransferProductCatChange();
     if(prefillForm) fillTransferProductFormFields(prefillForm);
     else refreshTransferProductSkuPreview();
+    bindTransferProductNetPriceAuto();
   };
   loadTransferProductOptions(true).then(open).catch(open);
 }

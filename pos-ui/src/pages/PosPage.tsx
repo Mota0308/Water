@@ -20,6 +20,7 @@ import { compareProductSizes, formatHKD } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { PosCartLine, PosMember, PosProduct, PointsSettings } from '@/lib/types'
 import { PAYMENT_METHODS } from '@/lib/types'
+import { resolveMemberUnitPrice } from '@/lib/pricing'
 import { usePosStore } from '@/store/PosStoreContext'
 
 type PosDraft = {
@@ -222,15 +223,25 @@ export function PosPage() {
     return groupPosProducts(active.filter((p) => matchedIds.has(productGroupId(p))))
   }, [products, searchQuery])
 
+  const productById = useMemo(() => new Map(products.map((p) => [p.id, p])), [products])
+  const lineMemberUnit = (line: PosCartLine) =>
+    resolveMemberUnitPrice(productById.get(line.productId) || { price: line.unitPrice }, member?.pricing)
   const subtotal = useMemo(
     () => cart.reduce((s, l) => s + l.unitPrice * l.qty, 0),
     [cart],
   )
-  const memberRate = member ? Number(member.pricing?.rate ?? 1) : 1
-  const memberDiscount = member && memberRate < 1
-    ? Math.round(subtotal * (1 - memberRate))
-    : 0
-  const afterMember = Math.round((subtotal - memberDiscount) * 100) / 100
+  const memberSubtotal = useMemo(
+    () =>
+      Math.round(
+        cart.reduce((s, l) => {
+          const p = productById.get(l.productId)
+          return s + resolveMemberUnitPrice(p || { price: l.unitPrice }, member?.pricing) * l.qty
+        }, 0) * 100,
+      ) / 100,
+    [cart, member, productById],
+  )
+  const memberDiscount = member ? Math.round((subtotal - memberSubtotal) * 100) / 100 : 0
+  const afterMember = Math.round((member ? memberSubtotal : subtotal) * 100) / 100
   const n = Math.max(1, pointsSettings.pointsPerDollar || 1)
   const pointsDiscount = pointsSettings.redeemEnabled ? pointsToRedeem / n : 0
   const grandTotal = Math.max(0, Math.round((afterMember - pointsDiscount) * 100) / 100)
@@ -582,7 +593,7 @@ export function PosPage() {
             {grouped.map((group) => {
               const avail = group.items.reduce((sum, item) => sum + stockOf(item, store), 0)
               const thumb = groupThumbSrc(group)
-              const prices = group.items.map((item) => Number(item.price) || 0)
+              const prices = group.items.map((item) => resolveMemberUnitPrice(item, member?.pricing))
               const minPrice = prices.length ? Math.min(...prices) : 0
               const maxPrice = prices.length ? Math.max(...prices) : 0
               const priceLabel = minPrice === maxPrice ? formatHKD(minPrice) : `${formatHKD(minPrice)}起`
@@ -705,14 +716,12 @@ export function PosPage() {
                         </button>
                       </div>
                       <div className="text-right text-sm font-semibold tabular-nums">
-                        {memberRate < 1 ? (
+                        {member && lineMemberUnit(item) !== item.unitPrice ? (
                           <div>
                             <div className="text-xs font-normal text-slate-400 line-through">
                               {formatHKD(item.unitPrice * item.qty)}
                             </div>
-                            <div>
-                              {formatHKD((Math.round(item.unitPrice * memberRate * 100) / 100) * item.qty)}
-                            </div>
+                            <div>{formatHKD(lineMemberUnit(item) * item.qty)}</div>
                           </div>
                         ) : (
                           formatHKD(item.unitPrice * item.qty)
@@ -924,7 +933,9 @@ export function PosPage() {
                       </p>
                     </div>
                     <div className="shrink-0 text-right">
-                      <p className="text-sm font-semibold text-sky-700">{formatHKD(Number(item.price) || 0)}</p>
+                      <p className="text-sm font-semibold text-sky-700">
+                        {formatHKD(resolveMemberUnitPrice(item, member?.pricing))}
+                      </p>
                       <p className={cn('text-[11px]', avail <= 0 ? 'text-red-600' : 'text-slate-400')}>
                         {avail <= 0 ? '缺貨' : '點擊加入'}
                       </p>

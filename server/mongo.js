@@ -2574,7 +2574,11 @@ export async function createTransferProduct(actor, input) {
       { field: '原價', before: '', after: fmtAttrChange(extras.priceOriginal) },
       { field: '售價', before: '', after: fmtAttrChange(extras.priceRetail) },
       { field: '特價', before: '', after: fmtAttrChange(extras.priceSpecial) },
-      { field: '折實價', before: '', after: fmtAttrChange(extras.priceNet) },
+      { field: '折實價（新會員）', before: '', after: fmtAttrChange(extras.priceNetNew) },
+      { field: '折實價（普通會員）', before: '', after: fmtAttrChange(extras.priceNetNormal) },
+      { field: '折實價（尊貴／教練）', before: '', after: fmtAttrChange(extras.priceNetVip) },
+      { field: '折實價（長者平日）', before: '', after: fmtAttrChange(extras.priceNetSenior) },
+      { field: '折實價（長者紅日）', before: '', after: fmtAttrChange(extras.priceNetSeniorRed) },
       { field: '剔剔積分類', before: '', after: extras.tickieCategory || '—' },
       { field: '剔剔積分', before: '', after: fmtAttrChange(extras.tickiePoints) },
       { field: '英文', before: '', after: extras.nameEn || '—' },
@@ -2603,6 +2607,11 @@ export const TRANSFER_PRODUCT_ATTR_DEFS = [
   { key: 'priceOriginal', label: '原價', type: 'number', excel: '原價' },
   { key: 'priceRetail', label: '售價', type: 'number', excel: '售價' },
   { key: 'priceSpecial', label: '特價', type: 'number', excel: '特價' },
+  { key: 'priceNetNew', label: '折實價（新會員）', type: 'number', excel: '折實價新會員' },
+  { key: 'priceNetNormal', label: '折實價（普通會員）', type: 'number', excel: '折實價普通會員' },
+  { key: 'priceNetVip', label: '折實價（尊貴／教練）', type: 'number', excel: '折實價尊貴教練' },
+  { key: 'priceNetSenior', label: '折實價（長者平日）', type: 'number', excel: '折實價長者平日' },
+  { key: 'priceNetSeniorRed', label: '折實價（長者紅日）', type: 'number', excel: '折實價長者紅日' },
   { key: 'priceNet', label: '折實價', type: 'number', excel: '折實價' },
   { key: 'priceSale', label: '優惠價', type: 'number', excel: '優惠價' },
   { key: 'category', label: '產品分類', type: 'text', excel: '產品分類', core: true },
@@ -2860,10 +2869,33 @@ function normalizeTransferProductExtras(input, existing = {}) {
     input?.priceSpecial != null ? input.priceSpecial : existing.priceSpecial,
     '特價'
   );
-  const priceNet = parseOptionalNonNegNumber(
-    input?.priceNet != null ? input.priceNet : existing.priceNet,
-    '折實價'
+  const priceNetNew = parseOptionalNonNegNumber(
+    input?.priceNetNew != null
+      ? input.priceNetNew
+      : input?.priceNet != null
+        ? input.priceNet
+        : existing.priceNetNew != null
+          ? existing.priceNetNew
+          : existing.priceNet,
+    '折實價（新會員）'
   );
+  const priceNetNormal = parseOptionalNonNegNumber(
+    input?.priceNetNormal != null ? input.priceNetNormal : existing.priceNetNormal,
+    '折實價（普通會員）'
+  );
+  const priceNetVip = parseOptionalNonNegNumber(
+    input?.priceNetVip != null ? input.priceNetVip : existing.priceNetVip,
+    '折實價（尊貴／教練）'
+  );
+  const priceNetSenior = parseOptionalNonNegNumber(
+    input?.priceNetSenior != null ? input.priceNetSenior : existing.priceNetSenior,
+    '折實價（長者平日）'
+  );
+  const priceNetSeniorRed = parseOptionalNonNegNumber(
+    input?.priceNetSeniorRed != null ? input.priceNetSeniorRed : existing.priceNetSeniorRed,
+    '折實價（長者紅日）'
+  );
+  const priceNet = priceNetNew;
   const priceSale = parseOptionalNonNegNumber(
     input?.priceSale != null ? input.priceSale : existing.priceSale,
     '優惠價'
@@ -2884,6 +2916,11 @@ function normalizeTransferProductExtras(input, existing = {}) {
     priceRetail,
     priceSpecial,
     priceNet,
+    priceNetNew,
+    priceNetNormal,
+    priceNetVip,
+    priceNetSenior,
+    priceNetSeniorRed,
     priceSale,
     tickiePoints,
   };
@@ -3134,6 +3171,11 @@ export async function updateTransferProduct(actor, oldProductId, input) {
     priceRetail: '售價',
     priceSpecial: '特價',
     priceNet: '折實價',
+    priceNetNew: '折實價（新會員）',
+    priceNetNormal: '折實價（普通會員）',
+    priceNetVip: '折實價（尊貴／教練）',
+    priceNetSenior: '折實價（長者平日）',
+    priceNetSeniorRed: '折實價（長者紅日）',
     priceSale: '優惠價',
     tickieCategory: '剔剔積分類',
     tickiePoints: '剔剔積分',
@@ -3929,19 +3971,55 @@ function stockFromMap(qtyMap, transferProductId, size) {
   return stock;
 }
 
-function resolveTransferSellPrice(product) {
-  const candidates = [
-    product?.priceNet,
+function firstMoney(...vals) {
+  for (const raw of vals) {
+    const n = Number(raw);
+    if (raw != null && raw !== '' && Number.isFinite(n) && n >= 0) return Math.round(n * 100) / 100;
+  }
+  return null;
+}
+
+function transferListPrice(product) {
+  return firstMoney(
     product?.priceSpecial,
     product?.priceRetail,
     product?.priceSale,
     product?.priceOriginal,
-  ];
-  for (const raw of candidates) {
-    const n = Number(raw);
-    if (Number.isFinite(n) && n >= 0) return Math.round(n * 100) / 100;
+  ) || 0;
+}
+
+function defaultMemberNet(list, rate) {
+  return Math.round(list * rate * 100) / 100;
+}
+
+export function transferPriceNets(product) {
+  const list = transferListPrice(product);
+  const walkIn = firstMoney(product?.priceNetNew, product?.priceNet, list) ?? 0;
+  return {
+    new: walkIn,
+    normal: firstMoney(product?.priceNetNormal) ?? defaultMemberNet(list || walkIn, 0.95),
+    vip: firstMoney(product?.priceNetVip) ?? defaultMemberNet(list || walkIn, 0.85),
+    senior: firstMoney(product?.priceNetSenior) ?? defaultMemberNet(list || walkIn, 0.75),
+    seniorRed: firstMoney(product?.priceNetSeniorRed) ?? defaultMemberNet(list || walkIn, 0.85),
+  };
+}
+
+export function resolveMemberUnitPrice(product, pricing) {
+  const list = transferListPrice(product) || Number(product?.price) || 0;
+  const nets = transferPriceNets(product);
+  const lv = pricing?.level || '';
+  let unit = nets.new;
+  if (lv === '普通會員') unit = nets.normal;
+  else if (lv === '尊貴會員' || lv === '教練會員') unit = nets.vip;
+  else if (lv === '長者會員') unit = pricing?.isRedDay ? nets.seniorRed : nets.senior;
+  if (pricing?.isBirthday && list > 0) {
+    unit = Math.min(unit, defaultMemberNet(list, 0.75));
   }
-  return 0;
+  return Math.round((Number.isFinite(unit) ? unit : 0) * 100) / 100;
+}
+
+function resolveTransferSellPrice(product) {
+  return resolveMemberUnitPrice(product, null);
 }
 
 async function syncPosSellablesForTransferProduct(product) {
@@ -4051,6 +4129,12 @@ export async function listPosProducts(user) {
       priceRetail: tp.priceRetail != null ? tp.priceRetail : null,
       priceSpecial: tp.priceSpecial != null ? tp.priceSpecial : null,
       priceNet: tp.priceNet != null ? tp.priceNet : null,
+      priceNetNew: tp.priceNetNew != null ? tp.priceNetNew : null,
+      priceNetNormal: tp.priceNetNormal != null ? tp.priceNetNormal : null,
+      priceNetVip: tp.priceNetVip != null ? tp.priceNetVip : null,
+      priceNetSenior: tp.priceNetSenior != null ? tp.priceNetSenior : null,
+      priceNetSeniorRed: tp.priceNetSeniorRed != null ? tp.priceNetSeniorRed : null,
+      priceNets: transferPriceNets(tp),
       tickiePoints: tp.tickiePoints != null ? tp.tickiePoints : null,
       safetyStock: Number(tp.safetyStock) || 0,
       sizes: Array.isArray(tp.sizes) && tp.sizes.length ? tp.sizes.slice() : [d.size].filter(Boolean),
@@ -4269,24 +4353,6 @@ export async function checkoutPos(user, payload = {}) {
     throw e;
   }
 
-  let subtotal = 0;
-  const items = deducted.map((d) => {
-    const unitPrice = Number(d.sellable.price) || 0;
-    const lineTotal = Math.round(unitPrice * d.qty * 100) / 100;
-    subtotal += lineTotal;
-    return {
-      qty: d.qty,
-      name: d.sellable.name,
-      sku: d.sellable.sku,
-      size: d.sellable.size,
-      unitPrice,
-      lineTotal,
-      productId: d.sellable.id,
-      transferProductId: d.sellable.transferProductId,
-    };
-  });
-  subtotal = Math.round(subtotal * 100) / 100;
-
   await ensureMembersReady();
   const ptsSettings = await getPosPointsSettingsInternal();
   const now = new Date();
@@ -4304,8 +4370,47 @@ export async function checkoutPos(user, payload = {}) {
     birthDay: memberDoc?.birthDay,
     birthMonth: memberDoc?.birthMonth,
   });
-  const memberDiscount = memberDoc ? Math.round(subtotal * (1 - pricing.rate)) : 0;
-  const afterMember = Math.round((subtotal - memberDiscount) * 100) / 100;
+
+  const tpIds = [...new Set(deducted.map((d) => String(d.sellable.transferProductId || '')).filter(Boolean))];
+  const transferDocs = tpIds.length
+    ? await transferProductsCol()
+        .find({ $or: [{ _id: { $in: tpIds } }, { id: { $in: tpIds } }] })
+        .toArray()
+    : [];
+  const tpMap = new Map();
+  transferDocs.forEach((p) => {
+    tpMap.set(String(p._id), p);
+    if (p.id) tpMap.set(String(p.id), p);
+  });
+
+  let listSubtotal = 0;
+  let memberSubtotal = 0;
+  const items = deducted.map((d) => {
+    const tp = tpMap.get(String(d.sellable.transferProductId || '')) || {};
+    const listUnit = transferListPrice(tp) || Number(d.sellable.price) || 0;
+    const unitPrice = resolveMemberUnitPrice(
+      Object.keys(tp).length ? tp : { price: d.sellable.price },
+      memberDoc ? pricing : null,
+    ) || listUnit;
+    const listLine = Math.round(listUnit * d.qty * 100) / 100;
+    const lineTotal = Math.round(unitPrice * d.qty * 100) / 100;
+    listSubtotal += listLine;
+    memberSubtotal += lineTotal;
+    return {
+      qty: d.qty,
+      name: d.sellable.name,
+      sku: d.sellable.sku,
+      size: d.sellable.size,
+      unitPrice,
+      listUnitPrice: listUnit,
+      lineTotal,
+      productId: d.sellable.id,
+      transferProductId: d.sellable.transferProductId,
+    };
+  });
+  const subtotal = Math.round(listSubtotal * 100) / 100;
+  const memberDiscount = memberDoc ? Math.round((subtotal - memberSubtotal) * 100) / 100 : 0;
+  const afterMember = Math.round((memberDoc ? memberSubtotal : subtotal) * 100) / 100;
 
   let pointsRedeemed = 0;
   let pointsDiscount = 0;
