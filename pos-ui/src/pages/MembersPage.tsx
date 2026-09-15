@@ -58,6 +58,13 @@ export function MembersPage() {
     status: 'idle' | 'loading' | 'found' | 'miss'
     member: PosMember | null
   }>({ status: 'idle', member: null })
+  const [showAddReferredDialog, setShowAddReferredDialog] = useState(false)
+  const [referredQuery, setReferredQuery] = useState('')
+  const [referredLookup, setReferredLookup] = useState<{
+    status: 'idle' | 'loading' | 'found' | 'miss'
+    member: PosMember | null
+  }>({ status: 'idle', member: null })
+  const [addingReferred, setAddingReferred] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -166,6 +173,33 @@ export function MembersPage() {
     }
   }, [addForm.referrerQuery, showAddDialog])
 
+  useEffect(() => {
+    const q = referredQuery.trim()
+    if (!showAddReferredDialog) return
+    if (!q) {
+      setReferredLookup({ status: 'idle', member: null })
+      return
+    }
+    let cancelled = false
+    setReferredLookup((prev) => ({ ...prev, status: 'loading' }))
+    const timer = window.setTimeout(() => {
+      void apiJson<{ member: PosMember | null }>(`/api/pos/members/lookup?q=${encodeURIComponent(q)}`)
+        .then((res) => {
+          if (cancelled) return
+          setReferredLookup(res.member ? { status: 'found', member: res.member } : { status: 'miss', member: null })
+        })
+        .catch((e) => {
+          if (cancelled) return
+          setReferredLookup({ status: 'miss', member: null })
+          toast.error(e instanceof Error ? e.message : String(e))
+        })
+    }, 350)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [referredQuery, showAddReferredDialog])
+
   const filteredMembers = useMemo(() => {
     return members.filter((member) => {
       if (levelFilter !== 'all' && normalizeMemberLevel(member.level) !== levelFilter) return false
@@ -224,6 +258,50 @@ export function MembersPage() {
       await load()
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const addReferredToList = async () => {
+    if (!selectedMember) return
+    const q = referredQuery.trim()
+    if (!q) {
+      toast.error('請輸入電話或會員編號')
+      return
+    }
+    if (referredLookup.status === 'loading') {
+      toast.error('正在搜尋會員，請稍候')
+      return
+    }
+    if (referredLookup.status !== 'found' || !referredLookup.member) {
+      toast.error('找不到會員：請輸入已登記的電話或會員編號')
+      return
+    }
+    const hit = referredLookup.member
+    if (hit.id === selectedMember.id) {
+      toast.error('不可將自己加入介紹名單')
+      return
+    }
+    const existingReferrer = String(hit.referrerId || '').trim()
+    if (existingReferrer && existingReferrer !== selectedMember.id) {
+      const ok = confirm(`此會員目前已有介紹人（${hit.referrerName || existingReferrer}），確定改為此會員介紹？`)
+      if (!ok) return
+    }
+    setAddingReferred(true)
+    try {
+      const res = await apiJson<{ referredMembers?: PosReferredMember[] }>(
+        `/api/pos/members/${encodeURIComponent(selectedMember.id)}/referred`,
+        { method: 'POST', body: JSON.stringify({ q }) },
+      )
+      setReferredMembers(res.referredMembers || [])
+      setShowAddReferredDialog(false)
+      setReferredQuery('')
+      setReferredLookup({ status: 'idle', member: null })
+      toast.success(`已加入介紹名單：${hit.name}`)
+      await load()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAddingReferred(false)
     }
   }
 
@@ -549,8 +627,23 @@ export function MembersPage() {
                 </div>
 
                 <div className="space-y-3">
-                  <div className="text-sm font-medium text-slate-900">介紹名單</div>
-                  <p className="text-xs text-slate-500">此會員作為介紹人，其介紹的會員消費獲得積分時，這裡的介紹人也會獲得同等積分。</p>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-slate-900">介紹名單</div>
+                      <p className="mt-1 text-xs text-slate-500">此會員作為介紹人，其介紹的會員消費獲得積分時，這裡的介紹人也會獲得同等積分。</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReferredQuery('')
+                        setReferredLookup({ status: 'idle', member: null })
+                        setShowAddReferredDialog(true)
+                      }}
+                      className={btnClass({ variant: 'outline', size: 'sm' })}
+                    >
+                      添加介紹人
+                    </button>
+                  </div>
                   <div className="max-h-56 space-y-2 overflow-y-auto">
                     {referredMembers.length ? (
                       referredMembers.map((row) => (
@@ -736,6 +829,66 @@ export function MembersPage() {
               </button>
               <button type="button" onClick={() => void createMember()} className={btnClass({ variant: 'primary' })}>
                 確認新增
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAddReferredDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white p-5 shadow-xl">
+            <div className="mb-4">
+              <div className="text-lg font-semibold text-slate-900">添加介紹人</div>
+              <div className="mt-1 text-sm text-slate-500">
+                以電話或會員編號搜尋已登記會員，加入 {selectedMember?.name || '此會員'} 的介紹名單。
+              </div>
+            </div>
+            <input
+              value={referredQuery}
+              onChange={(e) => setReferredQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void addReferredToList()
+              }}
+              placeholder="電話或會員編號"
+              className={fieldClass()}
+              autoFocus
+            />
+            <div className="mt-2 text-xs">
+              {!referredQuery.trim() ? (
+                <span className="text-slate-500">輸入後會自動搜尋會員。</span>
+              ) : referredLookup.status === 'loading' ? (
+                <span className="text-slate-500">正在搜尋…</span>
+              ) : referredLookup.status === 'found' && referredLookup.member ? (
+                <span className="text-emerald-700">
+                  已找到：{referredLookup.member.name} · {memberNoFor(referredLookup.member)} · {referredLookup.member.phone}
+                  {referredLookup.member.referrerId
+                    ? ` · 現有介紹人 ${referredLookup.member.referrerName || referredLookup.member.referrerId}`
+                    : ''}
+                </span>
+              ) : (
+                <span className="text-red-600">找不到此電話／會員編號的會員</span>
+              )}
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAddReferredDialog(false)
+                  setReferredQuery('')
+                  setReferredLookup({ status: 'idle', member: null })
+                }}
+                className={btnClass({ variant: 'outline' })}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={addingReferred}
+                onClick={() => void addReferredToList()}
+                className={btnClass({ variant: 'primary' })}
+              >
+                {addingReferred ? '加入中…' : '確認添加'}
               </button>
             </div>
           </div>

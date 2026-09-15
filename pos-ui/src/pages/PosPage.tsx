@@ -54,6 +54,17 @@ function stockOf(p: PosProduct, store: string) {
   return Number(p.stock?.[store] || 0)
 }
 
+const STOCK_STORE_ORDER = ['觀塘', '荔枝角', '灣仔', '屯門', '屯門中轉倉', '觀塘中轉倉', '國內倉(秋冬)', '國內倉(春夏)']
+
+function stockByLocation(p: PosProduct) {
+  const stock = p.stock || {}
+  const names = STOCK_STORE_ORDER.slice()
+  for (const key of Object.keys(stock)) {
+    if (!names.includes(key)) names.push(key)
+  }
+  return names.map((name) => ({ name, qty: Number(stock[name] || 0) }))
+}
+
 type PosProductGroup = {
   id: string
   name: string
@@ -959,7 +970,7 @@ export function PosPage() {
       {/* SKU picker */}
       {skuPickGroup && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-md rounded-lg bg-white p-4 shadow-xl">
+          <div className="w-full max-w-lg rounded-lg bg-white p-4 shadow-xl">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <h3 className="font-semibold">{skuPickGroup.name}</h3>
@@ -995,9 +1006,20 @@ export function PosPage() {
                         {item.size || '均碼'}
                         <span className="ml-2 font-mono text-xs text-slate-500">{item.sku}</span>
                       </p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        {store}庫存 {avail}
-                        {inCart ? ` · 購物車 ${inCart}` : ''}
+                      <p className="mt-1 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[11px] leading-relaxed">
+                        {stockByLocation(item).map((row) => (
+                          <span
+                            key={row.name}
+                            className={cn(
+                              row.name === store ? 'font-semibold text-slate-800' : 'text-slate-500',
+                              row.qty <= 0 && 'text-slate-400',
+                              row.qty > 0 && row.name !== store && 'text-slate-600',
+                            )}
+                          >
+                            {row.name} {row.qty}
+                          </span>
+                        ))}
+                        {inCart ? <span className="text-sky-700">購物車 {inCart}</span> : null}
                       </p>
                     </div>
                     <div className="shrink-0 text-right">

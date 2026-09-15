@@ -89,6 +89,7 @@ import {
   getMember,
   createMember,
   updateMember,
+  addReferredMember,
   setMemberActive,
   listMemberPoints,
   adjustMemberPoints,
@@ -951,6 +952,15 @@ app.post('/api/pos/members', requireAuth, async (req, res) => {
 app.put('/api/pos/members/:id', requireAuth, async (req, res) => {
   try {
     res.json({ member: await updateMember(req.user, req.params.id, req.body || {}) });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/pos/members/:id/referred', requireAuth, async (req, res) => {
+  try {
+    res.json(await addReferredMember(req.user, req.params.id, req.body?.q || req.body?.query || req.body?.phone || ''));
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });

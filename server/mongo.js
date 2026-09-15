@@ -6268,6 +6268,57 @@ export async function listMemberPoints(user, id) {
   };
 }
 
+export async function addReferredMember(user, referrerId, query) {
+  await connectMongo();
+  await ensureMembersReady();
+  const me = publicUser(user);
+  if (!me?.id) throw new Error('未登入');
+  const referrer = await findMemberDoc(referrerId);
+  if (!referrer) throw new Error('找不到會員');
+  const q = String(query || '').trim();
+  if (!q) throw new Error('請輸入電話或會員編號');
+  const referred = await findMemberDoc(q);
+  if (!referred) throw new Error('找不到會員：請輸入已登記的電話或會員編號');
+  const rid = String(referrer.id || referrer.memberNo || referrer._id || '').trim();
+  const tid = String(referred.id || referred.memberNo || referred._id || '').trim();
+  if (!rid || !tid) throw new Error('會員編號無效');
+  if (rid === tid) throw new Error('不可將自己加入介紹名單');
+  if (String(referrer.referrerId || '').trim() === tid) throw new Error('不可互相介紹');
+  if (referred.active === false) throw new Error('該會員已停用');
+  const already = String(referred.referrerId || '').trim();
+  if (already === rid) throw new Error('此會員已在介紹名單中');
+  const fields = referrerFieldsFromDoc(referrer);
+  const time = formatHkDateTime();
+  await membersCol().updateOne(
+    { _id: referred._id },
+    {
+      $set: {
+        ...fields,
+        referrer: fields.referrerName,
+        updatedAt: time,
+        updatedAtMs: Date.now(),
+        updatedBy: String(me.id),
+      },
+    }
+  );
+  await appendModuleLog({
+    module: 'pos',
+    time,
+    action: '加入介紹名單',
+    detail: `${referrer.name || rid}｜←｜${referred.name || tid}｜${referred.phone || q}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  const holidayDates = await holidayDatesNow();
+  const updated = await membersCol().findOne({ _id: referred._id });
+  return {
+    referred: compactReferredMember(updated, { holidayDates, at: new Date() }),
+    referredMembers: await listReferredMembers(rid),
+    replaced: !!already,
+  };
+}
+
 export async function lookupMember(user, q) {
   await connectMongo();
   await ensureMembersReady();
