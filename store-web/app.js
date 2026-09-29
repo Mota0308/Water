@@ -1125,6 +1125,7 @@ function refreshMailboxDetailUi(){
     : '｜來自 '+escHtml(item.fromName||'—');
   bodyEl.innerHTML =
     '<div class="md-meta">'+escHtml(item.category||'一般通知')+'｜'+notifPriorityTag(item.priority)
+    +(item.whatsappNotified?'｜已whatsApp通知':'')
     +'｜'+escHtml(item.createdAt||'')+metaTo+'</div>'
     +(isSentView
       ? '<div class="md-content">'+escHtml(item.content||'（無內容）')+'</div>'
@@ -1290,6 +1291,7 @@ function refreshMailboxUi(){
         +statusHtml
         +notifPriorityTag(item.priority)
         +(item.poll && item.poll.question?'<span class="tag" style="background:#f3e5f5;color:#6a1b9a">投票</span>':'')
+        +noticeWhatsappTag(item)
         +'<span class="mb-date">'+escHtml(item.createdAt||'')+'</span>'
         +'<span class="mb-title">'+escHtml(title)+'</span>'
         +who
@@ -1869,6 +1871,10 @@ function noticeCatTag(n){
   const m = NOTICE_CAT_META[k] || NOTICE_CAT_META.general;
   return '<span class="tag n-cat">'+m.icon+' '+escHtml(m.name)+'</span>';
 }
+function noticeWhatsappTag(n){
+  if(!n || !n.whatsappNotified) return '';
+  return '<span class="tag" style="background:#e8f5e9;color:#1b5e20">已whatsApp通知</span>';
+}
 function myNoticeReader(n){
   if(!currentUser || !n) return null;
   const uid = String(currentUser.id);
@@ -1955,6 +1961,7 @@ function noticeCardHtml(n){
     +noticeCatTag(n)
     +(n.priority==='緊急'?'<span class="tag n-pri-urgent">緊急</span>':n.priority==='重要'?'<span class="tag n-pri-important">重要</span>':'')
     +(n.poll && n.poll.question?'<span class="tag" style="background:#f3e5f5;color:#6a1b9a">投票</span>':'')
+    +noticeWhatsappTag(n)
     +'<span style="font-size:15px;flex:1;min-width:140px;'+(unread?'font-weight:bold':'')+'">'+(unread?'<span style="display:inline-block;width:8px;height:8px;background:#e53935;border-radius:50%;margin-right:6px"></span>':'')+escHtml(n.title||'（無標題）')+'</span>'
     +((noticeAttachmentsForDisplay(n).length)?'<span>📎</span>':'')
     +(isNoticeRecipient(n)?noticeReadStateTag(n):'<span class="tag">'+(escHtml(n.status||'進行中'))+'</span>')
@@ -2201,6 +2208,7 @@ function vPushDetail(){
     +'<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+noticeCatTag(n)
     +(n.priority==='緊急'?'<span class="tag n-pri-urgent">緊急</span>':n.priority==='重要'?'<span class="tag n-pri-important">重要</span>':'')
     +(n.poll && n.poll.question?'<span class="tag" style="background:#f3e5f5;color:#6a1b9a">投票</span>':'')
+    +noticeWhatsappTag(n)
     +'<span class="tag">'+escHtml(n.status||'')+'</span></div>'
     +'<h2 style="font-size:19px;margin-top:8px">'+escHtml(n.title||'（無標題）')+'</h2>'
     +'<div style="margin-top:8px;font-size:13px;color:#777;display:flex;gap:14px;flex-wrap:wrap">'
@@ -2704,6 +2712,7 @@ function confirmSendPush(){
     +(poll
       ? '投票：<b>'+escHtml(poll.question)+'</b>（'+poll.options.length+' 個選項，'+(poll.multiple?'可複選':'單選')+'）<br>'
       : '投票：無<br>')
+    +'已whatsApp通知：<b>'+(!!(document.getElementById('push-whatsapp')||{}).checked?'是':'否')+'</b><br>'
     +'附件：'+pushDraftFiles.length+' 個</p>'
     +'<div class="actions"><button type="button" class="btn gray sm" data-action="close-modal">取消</button>'
     +'<button type="button" class="btn green sm" data-action="submit-push-publish">確定發布</button></div>');
@@ -2732,7 +2741,8 @@ async function sendPushNotification(){
     content: content || (attachments.length?'（見附件）':''),
     contentSegments: segments.length ? segments : (attachments.length ? ['（見附件）'] : []),
     attachments, recipientIds: resolved.ids, recipientDesc: resolved.desc,
-    startDate, endDate, pinned: cat==='urgent' || priority==='緊急'
+    startDate, endDate, pinned: cat==='urgent' || priority==='緊急',
+    whatsappNotified: !!(document.getElementById('push-whatsapp')||{}).checked
   };
   if(cta) payload.cta = cta;
   if(pollPack.poll) payload.poll = pollPack.poll;
@@ -2801,6 +2811,7 @@ function vPushCreate(){
     +'<div id="push-poll-wrap" style="'+(pushDraftPoll.enabled?'':'display:none;')+'margin-top:8px;padding:12px;background:#f8f6fb;border:1px solid #e0d6ee;border-radius:8px">'
     +pushPollEditorInnerHtml()
     +'</div>'
+    +'<label style="display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer;font-size:14px;color:#37474f"><input type="checkbox" id="push-whatsapp" style="width:18px;height:18px"> 已whatsApp通知</label>'
     +'<label>附件</label><div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:6px 0">'
     +'<button type="button" class="btn green sm" onclick="document.getElementById(\'push-files\').click()">📎 添加附件</button>'
     +'<span style="font-size:12px;color:#888">可多次添加、可刪除；數量不限</span></div>'
@@ -6316,7 +6327,8 @@ function toggleSidebarL2(mod){
 function getSidebarItemsForModule(mod){
   if(mod==='daily'){
     const items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyHistory','歷史記錄'],['dailyRecords','我的記錄']];
-    if(isAdmin()||isManager()) items.push(['dailyNew','新增突發'],['dailyRecurring','恆常任務'],['dailyOpLogs','操作記錄']);
+    if(dailyCanCreateAdhoc(currentUser)) items.push(['dailyNew','新增突發']);
+    if(isAdmin()||isManager()) items.push(['dailyRecurring','恆常任務'],['dailyOpLogs','操作記錄']);
     return items;
   }
   if(mod==='pos'){
@@ -7157,10 +7169,74 @@ function tabFlow(p){
         ${s.returnReason?`<div class="row" style="color:#c62828">↩️ 退回原因：${s.returnReason}</div>`:''}
         ${s.files.length?`<div class="row">📎 文件：${s.files.map(f=>fileLinkHtml(f, f.name+(f.latest?' ✅':''))).join('、 ')}</div>`:''}
         ${!mine&&!isAdmin()?'<div class="row" style="color:#8d6e00">🔒 此階段由 '+escHtml(stageHandlersLabel(s))+' 負責，你只可查看。</div>':''}
-        <div class="actions-row">${actions}</div>
+        <div class="actions-row">${actions}${stageCommentBtnHtml(p,i)}</div>
       </div>
     </div>`;
   }).join('');
+}
+
+function stageCommentsOf(p, stageName){
+  return (p && Array.isArray(p.comments) ? p.comments : []).filter(function(c){
+    return c && !c.removed && String(c.stage||'')===String(stageName||'');
+  });
+}
+function stageCommentBtnHtml(p, idx){
+  const s = p && p.stages && p.stages[idx];
+  if(!s) return '';
+  const n = stageCommentsOf(p, s.name).length;
+  return '<button type="button" class="btn gray sm" data-call="askStageComments" data-arg0="'+escHtml(String(p.id))+'" data-arg1="'+idx+'">留言'+(n?('（'+n+'）'):'')+'</button>';
+}
+function stageCommentsListHtml(p, stageName){
+  const list = stageCommentsOf(p, stageName);
+  if(!list.length) return '<p style="color:#888;font-size:13px;margin:0 0 12px">此階段暫無留言。</p>';
+  return list.map(function(c){
+    const replies = (c.replies||[]).filter(function(r){ return r && !r.removed; });
+    return '<div class="msg" style="margin-bottom:10px">'
+      +'<div class="mhead"><span class="mname">'+escHtml(userName(c.by))+'</span>'
+      +'<span class="mtime">'+escHtml(c.time||'')+'</span></div>'
+      +'<div class="mbody">'+fmtMention(c.text)+'</div>'
+      +commentFileHtml(c.file)
+      +replies.map(function(r){
+        return '<div class="reply"><div class="mhead"><span class="mname">'+escHtml(userName(r.by))+'</span>'
+          +'<span class="mtime">'+escHtml(r.time||'')+'</span></div>'
+          +'<div class="mbody">'+fmtMention(r.text)+'</div></div>';
+      }).join('')
+      +'</div>';
+  }).join('');
+}
+function stageCommentsModalHtml(pid, idx){
+  const p = projects.find(function(x){ return x.id===pid; });
+  const s = p && p.stages && p.stages[idx];
+  if(!p || !s) return '<h3>留言</h3><p>找不到此階段。</p>';
+  return '<h3>💬 留言｜'+escHtml(s.name)+'</h3>'
+    +'<p style="font-size:12px;color:#888;margin:0 0 10px">'+escHtml(p.code||'')+' '+escHtml(p.name||'')+'</p>'
+    +'<div style="max-height:40vh;overflow:auto;margin-bottom:12px">'+stageCommentsListHtml(p, s.name)+'</div>'
+    +'<label>新留言</label>'
+    +'<textarea id="sc-text" placeholder="輸入此階段的留言… 可用 @ 提及同事"></textarea>'
+    +'<div class="actions">'
+    +'<button type="button" class="btn gray sm" onclick="closeModal()">關閉</button>'
+    +'<button type="button" class="btn sm" data-call="postStageComment" data-arg0="'+escHtml(String(p.id))+'" data-arg1="'+idx+'">發表留言</button>'
+    +'</div>';
+}
+function askStageComments(pid, idx){
+  showModal(stageCommentsModalHtml(pid, idx));
+  setTimeout(function(){ bindMentionInput('sc-text'); }, 0);
+}
+function postStageComment(pid, idx){
+  const p = projects.find(function(x){ return x.id===pid; });
+  const s = p && p.stages && p.stages[idx];
+  const ta = document.getElementById('sc-text');
+  const text = ta ? String(ta.value||'').trim() : '';
+  if(!p || !s){ alert2('找不到此階段。'); return; }
+  if(!text){ alert2('請輸入留言內容。'); return; }
+  if(!Array.isArray(p.comments)) p.comments = [];
+  p.comments.unshift({by:currentUser.id, time:nowStr(), stage:s.name, text:text, file:null, removed:false, removedBy:null, replies:[]});
+  addProjLog(p,'發表留言', s.name+'｜'+text.slice(0,30)+(text.length>30?'…':''));
+  const mentions = text.match(/@([^\s@，,。]+)/g);
+  if(mentions) addProjLog(p,'留言提及通知', mentions.join('、')+' 將收到系統通知');
+  persistProjects();
+  render();
+  askStageComments(pid, idx);
 }
 
 function projectAllHandlerIds(p){
@@ -8182,6 +8258,25 @@ function dailyUserUnits(user){ user=user||currentUser; return userUnits(user); }
 function dailyUserUnit(user){ const us=dailyUserUnits(user); return us[0]||null; }
 function dailyUserInUnit(user, unit){ return dailyUserUnits(user).indexOf(unit)>=0; }
 function dailyCanManage(user){ user=user||currentUser; return !!(user&&(user.role==='system_admin'||user.role==='manager')); }
+/** 全職賬號（員工／主管／經理／系統管理員）可建立突發；兼職除外 */
+function dailyIsFullTimeAccount(user){
+  user=user||currentUser;
+  if(!user || user.active===false) return false;
+  var pos=String(user.position||'');
+  if(pos==='兼職') return false;
+  return true;
+}
+function dailyCanCreateAdhoc(user){ return dailyIsFullTimeAccount(user||currentUser); }
+function dailyIsWorkCreator(w, user){
+  user=user||currentUser;
+  if(!w || !user) return false;
+  return String(w.createdBy||'')===String(dailyUserId(user));
+}
+function dailyCanAdminAdhoc(w, user){
+  user=user||currentUser;
+  if(dailyCanManage(user)) return true;
+  return !!(w && dailyCanCreateAdhoc(user) && dailyIsWorkCreator(w, user));
+}
 function dailyId(prefix){ return prefix+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7); }
 function dailyEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];}); }
 function dailyBaseState(){ return {version:2,works:[],recurringTemplates:[],opLogs:[]}; }
@@ -8566,7 +8661,7 @@ function completeDailyWork(id,user,checked,opts){
     saveDailyState(s);
     addDailyOpLog(w.kind==='settlement'?'完成結算':'完成工作', w.unit+'｜'+w.title+(w.attachments.length?'｜附件 '+w.attachments.length+' 個':''));
   }else{
-    if(!canTickWork(w,user)) return false;
+    if(!canTickWork(w,user) && !dailyCanAdminAdhoc(w,user)) return false;
     w.status='open';
     w.completedAt=null;
     w.completedBy=null;
@@ -8620,10 +8715,11 @@ function addAttachmentsToWork(id,files,user){
   return true;
 }
 function cancelAdhocWork(id,user){
-  if(!dailyCanManage(user||currentUser)) return false;
+  user=user||currentUser;
   var s=loadDailyState();
   var w=s.works.find(function(x){ return x.id===id; });
   if(!w||w.kind==='settlement') return false;
+  if(!dailyCanAdminAdhoc(w,user)) return false;
   w.status='cancelled';
   w.updatedAt=dailyNowStr();
   saveDailyState(s);
@@ -8631,10 +8727,11 @@ function cancelAdhocWork(id,user){
   return true;
 }
 function editWorkFields(id,data,user){
-  if(!dailyCanManage(user||currentUser)) return false;
+  user=user||currentUser;
   var s=loadDailyState();
   var w=s.works.find(function(x){ return x.id===id; });
   if(!w||w.status==='cancelled') return false;
+  if(!dailyCanAdminAdhoc(w,user)) return false;
   if(data.title!=null) w.title=String(data.title).trim()||w.title;
   if(data.content!=null) w.content=String(data.content);
   if(data.dueDate!=null) w.dueDate=data.dueDate;
@@ -8646,7 +8743,7 @@ function editWorkFields(id,data,user){
 }
 function createAdhocWork(data,user){
   user=user||currentUser;
-  if(!dailyCanManage(user)) return false;
+  if(!dailyCanCreateAdhoc(user)) return false;
   var title=(data.title||'').trim();
   var content=data.content||'';
   var dueDate=data.dueDate||dailyTodayStr();
@@ -9181,9 +9278,9 @@ async function dailySubmitAddFiles(id){
   render();
 }
 function dailyReopen(id){
-  if(!dailyCanManage(currentUser)){ alert2('只有管理層可以重新開啟工作。'); return; }
   var w=loadDailyState().works.find(function(x){ return x.id===id; });
   if(!w) return;
+  if(!dailyCanAdminAdhoc(w,currentUser)){ alert2('只有管理層或建立人可以重新開啟此工作。'); return; }
   if(w.kind==='settlement'){
     alert2('每日結算請到 POS「每日結算」解除鎖定後重交，不可在此重開。');
     return;
@@ -9196,7 +9293,8 @@ function dailyReopen(id){
   );
 }
 function dailyCancelWork(id){
-  if(!dailyCanManage(currentUser)) return;
+  var w=loadDailyState().works.find(function(x){ return x.id===id; });
+  if(!dailyCanAdminAdhoc(w,currentUser)) return alert2('只有管理層或建立人可以取消此工作。');
   cancelAdhocWork(id,currentUser);
   render();
 }
@@ -9278,9 +9376,10 @@ async function dailyUploadDescImagesFromInput(existingKeep){
   return out;
 }
 function dailyCreateAdhoc(){
-  if(!dailyCanManage(currentUser)) return alert2('只有管理層可以建立突發工作。');
+  if(!dailyCanCreateAdhoc(currentUser)) return alert2('只有全職賬號可以建立突發工作。');
   if(!requireCloud('建立突發工作')) return;
-  var defaultUnits=STORE_UNITS.slice();
+  var mine=dailyUserUnits(currentUser);
+  var defaultUnits=dailyCanManage(currentUser)||!mine.length?STORE_UNITS.slice():mine.slice();
   showModal(
     '<h3>🛠️ 建立突發工作</h3>'+
     '<label>標題</label><input id="d-title" type="text" placeholder="例如：臨時補貨核對">'+
@@ -9447,9 +9546,9 @@ async function dailySubmitRecurring(){
   }
 }
 function dailyEditWork(id){
-  if(!dailyCanManage(currentUser)) return;
   var w=loadDailyState().works.find(function(x){return x.id===id;});
   if(!w) return;
+  if(!dailyCanAdminAdhoc(w,currentUser)) return alert2('只有管理層或建立人可以編輯此工作。');
   showModal(
     '<h3>✏️ 編輯工作</h3>'+
     '<label>標題</label><input id="d-title" type="text" value="'+dailyEsc(w.title)+'">'+
@@ -9922,7 +10021,7 @@ function vDailyUnit(user){
     '</div><div class="card">'+dailyWorkRows(p.items,user,{readonly:readonly})+'</div>';
 }
 function vDailyNew(user){
-  if(!dailyCanManage(user)) return '<div class="card"><h2>➕ 管理工作</h2><p>個人賬號不可新增工作。</p></div>';
+  if(!dailyCanCreateAdhoc(user)) return '<div class="card"><h2>➕ 新增突發工作</h2><p>只有全職賬號可以新增突發工作。</p></div>';
   ensureDailySeed();
   var list=loadDailyState().works.filter(function(w){
     return w && w.kind==='adhoc' && w.status!=='cancelled';
@@ -9940,9 +10039,12 @@ function vDailyNew(user){
         var doneInfo=w.status==='done'
           ? dailyEsc(w.completedByName||'—')+'<div style="font-size:11px;color:#888">'+dailyEsc(w.completedAt||'')+'</div>'
           : '—';
-        var admin='<button class="btn gray sm" data-call="dailyEditWork" data-arg0="'+escHtml(String(w.id))+'">編輯</button> ';
-        if(w.status==='done') admin+='<button class="btn warn sm" data-call="dailyReopen" data-arg0="'+escHtml(String(w.id))+'">重開</button> ';
-        admin+='<button class="btn red sm" data-call="dailyCancelWork" data-arg0="'+escHtml(String(w.id))+'">取消</button>';
+        var admin='—';
+        if(dailyCanAdminAdhoc(w,user)){
+          admin='<button class="btn gray sm" data-call="dailyEditWork" data-arg0="'+escHtml(String(w.id))+'">編輯</button> ';
+          if(w.status==='done') admin+='<button class="btn warn sm" data-call="dailyReopen" data-arg0="'+escHtml(String(w.id))+'">重開</button> ';
+          admin+='<button class="btn red sm" data-call="dailyCancelWork" data-arg0="'+escHtml(String(w.id))+'">取消</button>';
+        }
         var filesHtml=dailyAttachHtml(w,user,false);
         return '<tr>'+
           '<td><b>'+dailyEsc(w.title)+'</b>'+(w.content?'<div style="font-size:12px;color:#777;margin-top:2px;white-space:pre-wrap">'+dailyEsc(w.content)+'</div>':'')+filesHtml+'</td>'+
@@ -9959,7 +10061,7 @@ function vDailyNew(user){
   return '<div class="card"><h2>➕ 新增突發工作</h2>'+
     '<p style="color:#666;font-size:13px;margin-bottom:10px">可指定多個單位、員工、期限與優先級；建立後即出現在下方清單，並自建立日起出現在對應單位「今日工作」（直至期限／完成）。說明圖會一併帶入信箱通知。</p>'+
     '<button class="btn" onclick="dailyCreateAdhoc()">🛠️ 建立突發工作</button> '+
-    '<button class="btn gray" data-call="goDailyView" data-arg0="recurring">前往恆常任務</button></div>'+
+    (dailyCanManage(user)?'<button class="btn gray" data-call="goDailyView" data-arg0="recurring">前往恆常任務</button>':'')+'</div>'+
     '<div class="card"><h3>已建立的突發工作（'+list.length+'）</h3>'+rows+'</div>';
 }
 function askDeleteTemplate(id){

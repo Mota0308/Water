@@ -1617,6 +1617,7 @@ export function normalizeNotification(raw) {
   n.logs = Array.isArray(n.logs) ? n.logs : [];
   n.cta = normalizeNoticeCta(n.cta);
   n.systemSource = !!n.systemSource;
+  n.whatsappNotified = !!n.whatsappNotified;
   n.attachments = Array.isArray(n.attachments) ? n.attachments : [];
   const poll = normalizeNoticePoll(n.poll);
   if (poll) n.poll = poll;
@@ -1874,6 +1875,8 @@ export async function createNotification(input) {
   if (cta) item.cta = cta;
   else delete item.cta;
   if (input?.systemSource) item.systemSource = true;
+  item.whatsappNotified = !!input?.whatsappNotified;
+  if (item.whatsappNotified) item.logs[0].detail += '｜已whatsApp通知';
   state.notifications.unshift(item);
   state.notifSeq = (state.notifSeq || 1) + 1;
   await saveNotificationsState(state);
