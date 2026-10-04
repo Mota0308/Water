@@ -20,7 +20,7 @@ function memberStatusLabel(active?: boolean) {
 }
 
 const emptyAddForm = { name: '', phone: '', email: '', birthDay: '', birthMonth: '', level: '新會員', remark: '', referrerQuery: '' }
-const emptyEditForm = { name: '', phone: '', email: '', birthDay: '', birthMonth: '', level: '新會員', remark: '', points: '' }
+const emptyEditForm = { name: '', phone: '', email: '', birthDay: '', birthMonth: '', level: '新會員', remark: '' }
 
 function memberReferrerLabel(member?: Pick<PosMember, 'referrerName' | 'referrerPhone' | 'referrerId' | 'referrer'> | null) {
   if (!member) return ''
@@ -51,8 +51,6 @@ export function MembersPage() {
   const [addForm, setAddForm] = useState(emptyAddForm)
   const [editForm, setEditForm] = useState(emptyEditForm)
   const [savingProfile, setSavingProfile] = useState(false)
-  const [pointDelta, setPointDelta] = useState('')
-  const [pointReason, setPointReason] = useState('')
   const [referredMembers, setReferredMembers] = useState<PosReferredMember[]>([])
   const [referrerLookup, setReferrerLookup] = useState<{
     status: 'idle' | 'loading' | 'found' | 'miss'
@@ -121,7 +119,6 @@ export function MembersPage() {
       birthMonth: selectedMember.birthMonth || '',
       level: normalizeMemberLevel(selectedMember.level),
       remark: selectedMember.remark || '',
-      points: String(Math.max(0, Math.floor(Number(selectedMember.points) || 0))),
     })
   }, [selectedMember])
 
@@ -309,9 +306,10 @@ export function MembersPage() {
     if (!selectedMember) return
     setSavingProfile(true)
     try {
+      const { name, phone, email, birthDay, birthMonth, level, remark } = editForm
       await apiJson<{ member: PosMember }>(`/api/pos/members/${encodeURIComponent(selectedMember.id)}`, {
         method: 'PUT',
-        body: JSON.stringify(editForm),
+        body: JSON.stringify({ name, phone, email, birthDay, birthMonth, level, remark }),
       })
       toast.success('已更新會員資料')
       await load()
@@ -320,23 +318,6 @@ export function MembersPage() {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setSavingProfile(false)
-    }
-  }
-
-  const adjustPoints = async () => {
-    if (!selectedMember) return
-    try {
-      await apiJson(`/api/pos/members/${encodeURIComponent(selectedMember.id)}/points`, {
-        method: 'POST',
-        body: JSON.stringify({ delta: Number(pointDelta), reason: pointReason }),
-      })
-      toast.success('已調整積分')
-      setPointDelta('')
-      setPointReason('')
-      await loadLedger(selectedMember.id)
-      await load()
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -550,17 +531,13 @@ export function MembersPage() {
                         ))}
                       </select>
                     </label>
-                    <label className="text-sm">
+                    <div className="text-sm">
                       <span className="text-xs text-slate-500">積分</span>
-                      <input
-                        type="number"
-                        min="0"
-                        step="1"
-                        value={editForm.points}
-                        onChange={(e) => setEditForm((prev) => ({ ...prev, points: e.target.value }))}
-                        className={fieldClass('mt-1')}
-                      />
-                    </label>
+                      <div className="mt-1 flex h-10 items-center rounded-xl bg-slate-50 px-3 font-semibold tabular-nums text-slate-900">
+                        {Number(selectedMember.points || 0).toLocaleString()}
+                      </div>
+                      <p className="mt-1 text-xs text-slate-500">積分只會隨交易自動增減，不能在此手動修改。</p>
+                    </div>
                     <label className="text-sm">
                       <span className="text-xs text-slate-500">出生日期（日）</span>
                       <input
@@ -601,29 +578,6 @@ export function MembersPage() {
                       </button>
                     </div>
                   )}
-                </div>
-
-                <div className="space-y-3 rounded-2xl border border-slate-200 p-4">
-                  <div className="text-sm font-medium text-slate-900">手動調整積分</div>
-                  <p className="text-xs text-slate-500">可直接加減積分；原因會寫入積分流水。也可在上方把積分改成指定數字後按「儲存資料」。</p>
-                  <div className="grid gap-3 sm:grid-cols-[140px_1fr]">
-                    <input
-                      type="number"
-                      value={pointDelta}
-                      onChange={(e) => setPointDelta(e.target.value)}
-                      placeholder="例如 +100 / -50"
-                      className={fieldClass()}
-                    />
-                    <input
-                      value={pointReason}
-                      onChange={(e) => setPointReason(e.target.value)}
-                      placeholder="調分原因"
-                      className={fieldClass()}
-                    />
-                  </div>
-                  <button type="button" onClick={() => void adjustPoints()} className={btnClass({ variant: 'secondary' })}>
-                    送出調分
-                  </button>
                 </div>
 
                 <div className="space-y-3">
@@ -766,7 +720,7 @@ export function MembersPage() {
               <input
                 value={addForm.phone}
                 onChange={(e) => setAddForm((prev) => ({ ...prev, phone: e.target.value }))}
-                placeholder="8 位香港電話"
+                placeholder="電話號碼（8 位或以上）"
                 className={fieldClass()}
               />
               <input

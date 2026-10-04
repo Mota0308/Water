@@ -1581,12 +1581,28 @@ function pushRemoveDraftFile(i){
 async function pushOnFilesPick(input){
   const files = input && input.files;
   if(!files || !files.length) return;
+  const list = Array.prototype.slice.call(files);
+  openUploadProgressUI({
+    title: '讀取附件',
+    name: list[0].name || '檔案',
+    total: list.length,
+    index: 1,
+    batch: list.length > 1
+  });
   try{
-    for(let i=0;i<files.length;i++){
-      const f = files[i];
-      pushDraftFiles.push({ name:f.name, dataUrl: await readFileAsDataUrl(f) });
+    for(let i=0;i<list.length;i++){
+      const f = list[i];
+      updateUploadProgressUI({ name: f.name || ('檔案 '+(i+1)), pct: 0, total: list.length, index: i+1 });
+      const dataUrl = await readFileAsDataUrl(f, function(pct){
+        updateUploadProgressUI({ name: f.name || ('檔案 '+(i+1)), pct: pct, total: list.length, index: i+1 });
+      });
+      updateUploadProgressUI({ name: f.name || ('檔案 '+(i+1)), pct: 100, total: list.length, index: i+1 });
+      pushDraftFiles.push({ name:f.name, dataUrl: dataUrl });
     }
-  }catch(e){ alert2('讀取附件失敗，請重試。'); }
+    await finishUploadProgressUI({ ok: true, message: '已加入 '+list.length+' 個附件' });
+  }catch(e){
+    await finishUploadProgressUI({ ok: false, message: '讀取附件失敗：'+((e && e.message) || e) });
+  }
   input.value = '';
   pushRenderFileList();
 }
@@ -1594,11 +1610,35 @@ async function uploadPushAttachments(){
   const out = [];
   if(!pushDraftFiles.length) return out;
   if(apiEnabled){
+    openUploadProgressUI({
+      title: '上傳推送附件',
+      name: '正在準備檔案…',
+      total: pushDraftFiles.length,
+      index: 1,
+      batch: pushDraftFiles.length > 1
+    });
     const files = [];
-    for(let i=0;i<pushDraftFiles.length;i++){
-      const f = pushDraftFiles[i];
-      const blob = await (await fetch(f.dataUrl)).blob();
-      files.push(new File([blob], f.name || 'file.bin', { type: blob.type || 'application/octet-stream' }));
+    try{
+      for(let i=0;i<pushDraftFiles.length;i++){
+        const f = pushDraftFiles[i];
+        updateUploadProgressUI({
+          name: '準備 '+(f.name || ('檔案 '+(i+1))),
+          pct: 0,
+          total: pushDraftFiles.length,
+          index: i+1
+        });
+        const blob = await (await fetch(f.dataUrl)).blob();
+        files.push(new File([blob], f.name || 'file.bin', { type: blob.type || 'application/octet-stream' }));
+        updateUploadProgressUI({
+          name: f.name || ('檔案 '+(i+1)),
+          pct: 100,
+          total: pushDraftFiles.length,
+          index: i+1
+        });
+      }
+    }catch(e){
+      await finishUploadProgressUI({ ok: false, message: '準備附件失敗：'+((e && e.message) || e) });
+      throw e;
     }
     const uploaded = await cloudUploadFiles(files, { title:'上傳推送附件' });
     for(let i=0;i<uploaded.length;i++){
@@ -3128,6 +3168,7 @@ function collectTransferProductForm(){
   const priceNetNewRaw = ((document.getElementById('tp-price-net-new')||{}).value||'').trim();
   const priceNetNormalRaw = ((document.getElementById('tp-price-net-normal')||{}).value||'').trim();
   const priceNetVipRaw = ((document.getElementById('tp-price-net-vip')||{}).value||'').trim();
+  const priceNetCoachRaw = ((document.getElementById('tp-price-net-coach')||{}).value||'').trim();
   const priceNetSeniorRaw = ((document.getElementById('tp-price-net-senior')||{}).value||'').trim();
   const priceNetSeniorRedRaw = ((document.getElementById('tp-price-net-senior-red')||{}).value||'').trim();
   const tickiePointsRaw = ((document.getElementById('tp-tickie-points')||{}).value||'').trim();
@@ -3155,6 +3196,7 @@ function collectTransferProductForm(){
     priceNetNew: priceNetNewRaw==='' ? null : Number(priceNetNewRaw),
     priceNetNormal: priceNetNormalRaw==='' ? null : Number(priceNetNormalRaw),
     priceNetVip: priceNetVipRaw==='' ? null : Number(priceNetVipRaw),
+    priceNetCoach: priceNetCoachRaw==='' ? null : Number(priceNetCoachRaw),
     priceNetSenior: priceNetSeniorRaw==='' ? null : Number(priceNetSeniorRaw),
     priceNetSeniorRed: priceNetSeniorRedRaw==='' ? null : Number(priceNetSeniorRedRaw),
     priceNet: priceNetNewRaw==='' ? null : Number(priceNetNewRaw),
@@ -3180,7 +3222,8 @@ function validateTransferProductForm(form){
   if(!okNum(form.priceSpecial, '特價')) return false;
   if(!okNum(form.priceNetNew, '折實價（新會員）')) return false;
   if(!okNum(form.priceNetNormal, '折實價（普通會員）')) return false;
-  if(!okNum(form.priceNetVip, '折實價（尊貴／教練）')) return false;
+  if(!okNum(form.priceNetVip, '折實價（尊貴會員）')) return false;
+  if(!okNum(form.priceNetCoach, '折實價（教練會員）')) return false;
   if(!okNum(form.priceNetSenior, '折實價（長者平日）')) return false;
   if(!okNum(form.priceNetSeniorRed, '折實價（長者紅日）')) return false;
   if(!okNum(form.tickiePoints, '剔剔積分')) return false;
@@ -3604,6 +3647,7 @@ async function prepareTransferProductVariants(form){
       priceNetNew: base.priceNetNew,
       priceNetNormal: base.priceNetNormal,
       priceNetVip: base.priceNetVip,
+      priceNetCoach: base.priceNetCoach,
       priceNetSenior: base.priceNetSenior,
       priceNetSeniorRed: base.priceNetSeniorRed,
       priceNet: base.priceNetNew,
@@ -4002,9 +4046,10 @@ function transferProductAttrFieldsHtml(p){
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 12px">'
     +'<div><label style="margin-top:0">新會員</label><input type="number" id="tp-price-net-new" min="0" step="0.01" value="'+escHtml(val('priceNetNew')||val('priceNet'))+'" placeholder="自動"></div>'
     +'<div><label style="margin-top:0">普通會員（95折）</label><input type="number" id="tp-price-net-normal" min="0" step="0.01" value="'+escHtml(val('priceNetNormal'))+'" placeholder="自動"></div>'
-    +'<div><label style="margin-top:0">尊貴／教練（85折）</label><input type="number" id="tp-price-net-vip" min="0" step="0.01" value="'+escHtml(val('priceNetVip'))+'" placeholder="自動"></div>'
+    +'<div><label style="margin-top:0">尊貴會員（85折）</label><input type="number" id="tp-price-net-vip" min="0" step="0.01" value="'+escHtml(val('priceNetVip'))+'" placeholder="自動"></div>'
+    +'<div><label style="margin-top:0">教練會員（85折）</label><input type="number" id="tp-price-net-coach" min="0" step="0.01" value="'+escHtml(val('priceNetCoach')||val('priceNetVip'))+'" placeholder="自動"></div>'
     +'<div><label style="margin-top:0">長者平日（75折）</label><input type="number" id="tp-price-net-senior" min="0" step="0.01" value="'+escHtml(val('priceNetSenior'))+'" placeholder="自動"></div>'
-    +'<div style="grid-column:1 / -1"><label style="margin-top:0">長者星期六日／紅日（85折）</label><input type="number" id="tp-price-net-senior-red" min="0" step="0.01" value="'+escHtml(val('priceNetSeniorRed'))+'" placeholder="自動"></div>'
+    +'<div><label style="margin-top:0">長者星期六日／紅日（85折）</label><input type="number" id="tp-price-net-senior-red" min="0" step="0.01" value="'+escHtml(val('priceNetSeniorRed'))+'" placeholder="自動"></div>'
     +'</div></div>'
     +'<label>剔剔積分類</label><input type="text" id="tp-tickie-cat" value="'+escHtml(val('tickieCategory'))+'" placeholder="可留空">'
     +'<label>剔剔積分</label><input type="number" id="tp-tickie-points" min="0" step="0.5" value="'+escHtml(val('tickiePoints'))+'" placeholder="例如 2">'
@@ -4014,6 +4059,7 @@ var TRANSFER_NET_PRICE_FIELDS = [
   { id: 'tp-price-net-new', rate: 1 },
   { id: 'tp-price-net-normal', rate: 0.95 },
   { id: 'tp-price-net-vip', rate: 0.85 },
+  { id: 'tp-price-net-coach', rate: 0.85 },
   { id: 'tp-price-net-senior', rate: 0.75 },
   { id: 'tp-price-net-senior-red', rate: 0.85 },
 ];
@@ -4215,6 +4261,7 @@ function fillTransferProductFormFields(form){
   setVal('tp-price-net-new', form.priceNetNew != null ? form.priceNetNew : form.priceNet);
   setVal('tp-price-net-normal', form.priceNetNormal);
   setVal('tp-price-net-vip', form.priceNetVip);
+  setVal('tp-price-net-coach', form.priceNetCoach != null && form.priceNetCoach !== '' ? form.priceNetCoach : form.priceNetVip);
   setVal('tp-price-net-senior', form.priceNetSenior);
   setVal('tp-price-net-senior-red', form.priceNetSeniorRed);
   setVal('tp-tickie-cat', form.tickieCategory);
@@ -5994,11 +6041,17 @@ function bindMentionInput(textareaId){
   });
   ta.addEventListener('blur', ()=> setTimeout(hide, 150));
 }
-function readFileAsDataUrl(file){
+function readFileAsDataUrl(file, onProgress){
   return new Promise((resolve,reject)=>{
     const r = new FileReader();
     r.onload = ()=> resolve(r.result);
     r.onerror = reject;
+    if(typeof onProgress === 'function'){
+      r.onprogress = function(e){
+        if(!e.lengthComputable || !e.total) return;
+        onProgress(Math.round((e.loaded / e.total) * 100));
+      };
+    }
     r.readAsDataURL(file);
   });
 }

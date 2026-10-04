@@ -465,7 +465,7 @@ function isSampleProject(p) {
   return false;
 }
 
-/** 香港 8 位電話；允許 +852／空格／橫線，存庫僅 8 位數字 */
+/** 香港 8 位電話；允許 +852／空格／橫線，存庫僅 8 位數字（員工登入） */
 export function normalizePhone(input) {
   if (input == null) return null;
   let s = String(input).trim();
@@ -474,6 +474,18 @@ export function normalizePhone(input) {
   if (s.startsWith('+852')) s = s.slice(4);
   else if (s.startsWith('852') && s.length === 11) s = s.slice(3);
   if (!/^\d{8}$/.test(s)) return null;
+  return s;
+}
+
+/** 會員電話：至少 8 位，可長於 8 位（例如內地 11 位）。+852 後接 8 位仍存成 8 位。 */
+export function normalizeMemberPhone(input) {
+  if (input == null) return null;
+  let s = String(input).trim();
+  if (!s) return null;
+  s = s.replace(/[\s\-()]/g, '');
+  if (s.startsWith('+')) s = s.slice(1);
+  if (s.startsWith('852') && s.length === 11) s = s.slice(3);
+  if (!/^\d{8,20}$/.test(s)) return null;
   return s;
 }
 
@@ -2579,7 +2591,8 @@ export async function createTransferProduct(actor, input) {
       { field: '特價', before: '', after: fmtAttrChange(extras.priceSpecial) },
       { field: '折實價（新會員）', before: '', after: fmtAttrChange(extras.priceNetNew) },
       { field: '折實價（普通會員）', before: '', after: fmtAttrChange(extras.priceNetNormal) },
-      { field: '折實價（尊貴／教練）', before: '', after: fmtAttrChange(extras.priceNetVip) },
+      { field: '折實價（尊貴）', before: '', after: fmtAttrChange(extras.priceNetVip) },
+      { field: '折實價（教練）', before: '', after: fmtAttrChange(extras.priceNetCoach) },
       { field: '折實價（長者平日）', before: '', after: fmtAttrChange(extras.priceNetSenior) },
       { field: '折實價（長者紅日）', before: '', after: fmtAttrChange(extras.priceNetSeniorRed) },
       { field: '剔剔積分類', before: '', after: extras.tickieCategory || '—' },
@@ -2612,7 +2625,8 @@ export const TRANSFER_PRODUCT_ATTR_DEFS = [
   { key: 'priceSpecial', label: '特價', type: 'number', excel: '特價' },
   { key: 'priceNetNew', label: '折實價（新會員）', type: 'number', excel: '折實價新會員' },
   { key: 'priceNetNormal', label: '折實價（普通會員）', type: 'number', excel: '折實價普通會員' },
-  { key: 'priceNetVip', label: '折實價（尊貴／教練）', type: 'number', excel: '折實價尊貴教練' },
+  { key: 'priceNetVip', label: '折實價（尊貴）', type: 'number', excel: '折實價尊貴' },
+  { key: 'priceNetCoach', label: '折實價（教練）', type: 'number', excel: '折實價教練' },
   { key: 'priceNetSenior', label: '折實價（長者平日）', type: 'number', excel: '折實價長者平日' },
   { key: 'priceNetSeniorRed', label: '折實價（長者紅日）', type: 'number', excel: '折實價長者紅日' },
   { key: 'priceNet', label: '折實價', type: 'number', excel: '折實價' },
@@ -2888,7 +2902,11 @@ function normalizeTransferProductExtras(input, existing = {}) {
   );
   const priceNetVip = parseOptionalNonNegNumber(
     input?.priceNetVip != null ? input.priceNetVip : existing.priceNetVip,
-    '折實價（尊貴／教練）'
+    '折實價（尊貴）'
+  );
+  const priceNetCoach = parseOptionalNonNegNumber(
+    input?.priceNetCoach != null ? input.priceNetCoach : existing.priceNetCoach,
+    '折實價（教練）'
   );
   const priceNetSenior = parseOptionalNonNegNumber(
     input?.priceNetSenior != null ? input.priceNetSenior : existing.priceNetSenior,
@@ -2922,6 +2940,7 @@ function normalizeTransferProductExtras(input, existing = {}) {
     priceNetNew,
     priceNetNormal,
     priceNetVip,
+    priceNetCoach,
     priceNetSenior,
     priceNetSeniorRed,
     priceSale,
@@ -3176,7 +3195,8 @@ export async function updateTransferProduct(actor, oldProductId, input) {
     priceNet: '折實價',
     priceNetNew: '折實價（新會員）',
     priceNetNormal: '折實價（普通會員）',
-    priceNetVip: '折實價（尊貴／教練）',
+    priceNetVip: '折實價（尊貴）',
+    priceNetCoach: '折實價（教練）',
     priceNetSenior: '折實價（長者平日）',
     priceNetSeniorRed: '折實價（長者紅日）',
     priceSale: '優惠價',
@@ -4002,6 +4022,7 @@ export function transferPriceNets(product) {
     new: walkIn,
     normal: firstMoney(product?.priceNetNormal) ?? defaultMemberNet(list || walkIn, 0.95),
     vip: firstMoney(product?.priceNetVip) ?? defaultMemberNet(list || walkIn, 0.85),
+    coach: firstMoney(product?.priceNetCoach) ?? firstMoney(product?.priceNetVip) ?? defaultMemberNet(list || walkIn, 0.85),
     senior: firstMoney(product?.priceNetSenior) ?? defaultMemberNet(list || walkIn, 0.75),
     seniorRed: firstMoney(product?.priceNetSeniorRed) ?? defaultMemberNet(list || walkIn, 0.85),
   };
@@ -4013,7 +4034,8 @@ export function resolveMemberUnitPrice(product, pricing) {
   const lv = pricing?.level || '';
   let unit = nets.new;
   if (lv === '普通會員') unit = nets.normal;
-  else if (lv === '尊貴會員' || lv === '教練會員') unit = nets.vip;
+  else if (lv === '尊貴會員') unit = nets.vip;
+  else if (lv === '教練會員') unit = nets.coach;
   else if (lv === '長者會員') unit = pricing?.isRedDay ? nets.seniorRed : nets.senior;
   if (pricing?.isBirthday && list > 0) {
     unit = Math.min(unit, defaultMemberNet(list, 0.75));
@@ -4031,9 +4053,8 @@ async function syncPosSellablesForTransferProduct(product) {
   const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : ['均碼'];
   const price = resolveTransferSellPrice(product);
   const now = formatHkDateTime();
-  const existing = await posProductsCol().find({
-    $or: [{ transferProductId: tpid }, { transferProductId: product.id }],
-  }).toArray();
+  // 只按商品文件 _id 對應。同型號不同顏色是獨立商品，不可再用共用型號 id 併成一筆。
+  const existing = await posProductsCol().find({ transferProductId: tpid }).toArray();
   const bySize = new Map(existing.map((d) => [String(d.size), d]));
   const keep = new Set(sizes.map((s) => String(s)));
   for (const size of sizes) {
@@ -4080,12 +4101,23 @@ async function syncPosSellablesForTransferProduct(product) {
 
 async function ensureMissingTransferProductsInPosCatalog() {
   const products = await transferProductsCol().find({ active: { $ne: false } }).toArray();
-  const linked = await posProductsCol().find({}).project({ transferProductId: 1, size: 1 }).toArray();
-  const linkedSet = new Set(linked.map((x) => `${x.transferProductId}__${x.size}`));
+  const linked = await posProductsCol()
+    .find({})
+    .project({ transferProductId: 1, size: 1, color: 1, sku: 1, active: 1 })
+    .toArray();
+  const byKey = new Map(linked.map((row) => [`${row.transferProductId}__${row.size}`, row]));
   for (const p of products) {
+    const uid = String(p._id || p.id);
     const sizes = Array.isArray(p.sizes) && p.sizes.length ? p.sizes : ['均碼'];
-    const missing = sizes.some((size) => !linkedSet.has(`${String(p._id || p.id)}__${size}`));
-    if (missing) await syncPosSellablesForTransferProduct(p);
+    const stale = sizes.some((size) => {
+      const hit = byKey.get(`${uid}__${size}`);
+      if (!hit || hit.active === false) return true;
+      if (String(hit.color || '') !== String(p.color || '')) return true;
+      const expectSku = (p.skus && p.skus[size]) || buildTransferSku(p.id, p.color, size);
+      if (expectSku && String(hit.sku || '') !== String(expectSku)) return true;
+      return false;
+    });
+    if (stale) await syncPosSellablesForTransferProduct(p);
   }
 }
 
@@ -4135,6 +4167,7 @@ export async function listPosProducts(user) {
       priceNetNew: tp.priceNetNew != null ? tp.priceNetNew : null,
       priceNetNormal: tp.priceNetNormal != null ? tp.priceNetNormal : null,
       priceNetVip: tp.priceNetVip != null ? tp.priceNetVip : null,
+      priceNetCoach: tp.priceNetCoach != null ? tp.priceNetCoach : null,
       priceNetSenior: tp.priceNetSenior != null ? tp.priceNetSenior : null,
       priceNetSeniorRed: tp.priceNetSeniorRed != null ? tp.priceNetSeniorRed : null,
       priceNets: transferPriceNets(tp),
@@ -6111,7 +6144,7 @@ function pointsFromAmount(amount) {
 async function findMemberDoc(idOrPhone) {
   const raw = String(idOrPhone || '').trim();
   if (!raw) return null;
-  const phoneKey = normalizePhone(raw);
+  const phoneKey = normalizeMemberPhone(raw);
   const or = [{ id: raw }, { phone: raw }, { _id: raw }, { memberNo: raw }];
   if (phoneKey && phoneKey !== raw) {
     or.push({ id: phoneKey }, { phone: phoneKey }, { _id: phoneKey });
@@ -6227,7 +6260,7 @@ export async function listMembers(user, { q, includeInactive } = {}) {
   if (!includeInactive) filter.active = { $ne: false };
   const kw = String(q || '').trim();
   if (kw) {
-    const phone = normalizePhone(kw);
+    const phone = normalizeMemberPhone(kw);
     const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     filter.$or = [
       { name: { $regex: escaped, $options: 'i' } },
@@ -6351,32 +6384,12 @@ export async function getMember(user, id) {
   };
 }
 
-export async function adjustMemberPoints(user, id, input = {}) {
+export async function adjustMemberPoints(user, _id, _input = {}) {
   await connectMongo();
   await ensureMembersReady();
   const me = publicUser(user);
   if (!me?.id) throw new Error('未登入');
-  const delta = Number(input.delta);
-  if (!Number.isInteger(delta) || delta === 0) throw new Error('請輸入非零整數積分（可正可負）');
-  const reason = String(input.reason || '').trim();
-  if (!reason) throw new Error('請填寫調分原因');
-  const result = await applyMemberPoints({
-    memberId: id,
-    delta,
-    type: 'adjust',
-    reason,
-    actor: me,
-  });
-  await appendModuleLog({
-    module: 'pos',
-    time: result.entry.createdAt,
-    action: '手動調分',
-    detail: `${result.member.name}｜${result.member.phone}｜${delta > 0 ? '+' : ''}${delta}｜${reason}`,
-    userId: me.id,
-    userName: me.name || me.login,
-    user: me.name || me.login,
-  });
-  return result;
+  throw new Error('會員積分不可手動修改，只會隨交易自動增減');
 }
 
 export async function createMember(user, input = {}) {
@@ -6386,8 +6399,8 @@ export async function createMember(user, input = {}) {
   if (!me?.id) throw new Error('未登入');
   const name = String(input.name || '').trim();
   if (!name) throw new Error('請填寫姓名');
-  const phone = normalizePhone(input.phone);
-  if (!phone) throw new Error('請填寫有效的 8 位香港電話');
+  const phone = normalizeMemberPhone(input.phone);
+  if (!phone) throw new Error('請填寫有效電話（至少 8 位數字，可長於 8 位）');
   const existing = await membersCol().findOne({ phone });
   if (existing) throw new Error('此電話已登記為會員：' + (existing.name || phone));
   const memberId = await allocateNextMemberId();
@@ -6457,20 +6470,13 @@ export async function updateMember(user, id, input = {}) {
   if (input.birthDay != null) $set.birthDay = String(input.birthDay).trim();
   if (input.birthMonth != null) $set.birthMonth = String(input.birthMonth).trim();
   if (input.phone != null && input.phone !== '') {
-    const newPhone = normalizePhone(input.phone);
-    if (!newPhone) throw new Error('新電話無效');
+    const newPhone = normalizeMemberPhone(input.phone);
+    if (!newPhone) throw new Error('新電話無效（至少 8 位數字）');
     if (newPhone !== existing.phone) {
       const clash = await membersCol().findOne({ phone: newPhone });
       if (clash && String(clash._id) !== String(existing._id)) throw new Error('新電話已被其他會員使用');
       $set.phone = newPhone;
     }
-  }
-  let pointsDelta = 0;
-  if (input.points != null && input.points !== '') {
-    const n = Math.floor(Number(input.points));
-    if (!Number.isInteger(n) || n < 0) throw new Error('積分須為 0 或以上的整數');
-    const before = Math.max(0, Number(existing.points) || 0);
-    if (n !== before) pointsDelta = n - before;
   }
   await membersCol().updateOne({ _id: existing._id }, { $set });
   if ($set.phone || $set.name) {
@@ -6479,21 +6485,12 @@ export async function updateMember(user, id, input = {}) {
       { $set: { memberPhone: $set.phone || existing.phone, memberName: $set.name || existing.name } }
     );
   }
-  if (pointsDelta) {
-    await applyMemberPoints({
-      memberId: String(existing.id || existing.memberNo || existing.phone),
-      delta: pointsDelta,
-      type: 'adjust',
-      reason: String(input.pointReason || '').trim() || '編輯會員積分',
-      actor: me,
-    });
-  }
   const updated = await membersCol().findOne({ _id: existing._id });
   await appendModuleLog({
     module: 'pos',
     time: $set.updatedAt,
     action: '編輯會員',
-    detail: `${updated.name}｜${updated.phone}｜${updated.level || ''}${pointsDelta ? `｜積分${pointsDelta > 0 ? '+' : ''}${pointsDelta}` : ''}`,
+    detail: `${updated.name}｜${updated.phone}｜${updated.level || ''}`,
     userId: me.id,
     userName: me.name || me.login,
     user: me.name || me.login,
@@ -6545,7 +6542,7 @@ export async function importPosMembers(records, { actorName = 'Excel 導入', dr
   const seenPhone = new Set();
   for (const rec of records || []) {
     const name = String(rec?.name || '').trim();
-    const phone = normalizePhone(rec?.phone);
+    const phone = normalizeMemberPhone(rec?.phone);
     if (!name || !phone) {
       summary.skippedInvalid += 1;
       summary.skipped.push({ reason: !name ? 'missing_name' : 'invalid_phone', name, phone: rec?.phone || '' });

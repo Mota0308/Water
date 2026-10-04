@@ -35,12 +35,14 @@ export interface PosProduct {
   priceNetNew?: number | null
   priceNetNormal?: number | null
   priceNetVip?: number | null
+  priceNetCoach?: number | null
   priceNetSenior?: number | null
   priceNetSeniorRed?: number | null
   priceNets?: {
     new: number
     normal: number
     vip: number
+    coach: number
     senior: number
     seniorRed: number
   }

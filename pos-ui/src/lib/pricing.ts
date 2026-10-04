@@ -19,13 +19,19 @@ function defaultNet(list: number, rate: number) {
 }
 
 export function transferPriceNets(product?: Partial<PosProduct> | null) {
-  if (product?.priceNets) return product.priceNets
+  if (product?.priceNets) {
+    return {
+      ...product.priceNets,
+      coach: product.priceNets.coach ?? product.priceNets.vip,
+    }
+  }
   const list = transferListPrice(product)
   const walkIn = firstMoney(product?.priceNetNew, product?.priceNet, list) ?? 0
   return {
     new: walkIn,
     normal: firstMoney(product?.priceNetNormal) ?? defaultNet(list || walkIn, 0.95),
     vip: firstMoney(product?.priceNetVip) ?? defaultNet(list || walkIn, 0.85),
+    coach: firstMoney(product?.priceNetCoach) ?? firstMoney(product?.priceNetVip) ?? defaultNet(list || walkIn, 0.85),
     senior: firstMoney(product?.priceNetSenior) ?? defaultNet(list || walkIn, 0.75),
     seniorRed: firstMoney(product?.priceNetSeniorRed) ?? defaultNet(list || walkIn, 0.85),
   }
@@ -40,7 +46,8 @@ export function resolveMemberUnitPrice(
   const lv = pricing?.level || ''
   let unit = nets.new
   if (lv === '普通會員') unit = nets.normal
-  else if (lv === '尊貴會員' || lv === '教練會員') unit = nets.vip
+  else if (lv === '尊貴會員') unit = nets.vip
+  else if (lv === '教練會員') unit = nets.coach ?? nets.vip
   else if (lv === '長者會員') unit = pricing?.isRedDay ? nets.seniorRed : nets.senior
   if (pricing?.isBirthday && list > 0) unit = Math.min(unit, defaultNet(list, 0.75))
   return Math.round((Number.isFinite(unit) ? unit : 0) * 100) / 100

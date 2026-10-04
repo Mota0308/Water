@@ -1102,7 +1102,7 @@ export function PosPage() {
               <input
                 value={createMemberForm.phone}
                 onChange={(e) => setCreateMemberForm((prev) => ({ ...prev, phone: e.target.value }))}
-                placeholder="8 位香港電話"
+                placeholder="電話號碼（8 位或以上）"
                 className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm"
               />
               <div className="grid grid-cols-2 gap-2">
@@ -1198,6 +1198,10 @@ export function PosPage() {
                             <p className="mt-1 text-xs text-slate-500">
                               {draft.createdByName || '未知建立者'} · {draft.store}店 · {(draft.itemCount || 0).toLocaleString()} 件
                               · {formatHKD(draft.subtotal || 0)}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-700">
+                              會員電話：{draft.memberPhone || '未登入會員'}
+                              {draft.memberName ? ` · ${draft.memberName}` : ''}
                             </p>
                             <p className="mt-1 text-xs text-slate-400">
                               更新時間：{draft.updatedAt || '未提供'}
