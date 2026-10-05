@@ -28,6 +28,16 @@ export function formatHKD(amount: number): string {
   }).format(amount)
 }
 
+/** 收銀折扣與最終收取：四捨五入至整數元，不顯示小數 */
+export function formatHKDWhole(amount: number): string {
+  return new Intl.NumberFormat('zh-HK', {
+    style: 'currency',
+    currency: 'HKD',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(Math.round(Number(amount) || 0))
+}
+
 function parseInputDate(value: string | number | Date | null | undefined): Date | null {
   if (value == null || value === '') return null
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value

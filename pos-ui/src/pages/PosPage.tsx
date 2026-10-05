@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Barcode,
@@ -16,12 +16,12 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiJson, fileUrl } from '@/lib/api'
-import { compareProductSizes, formatHKD } from '@/lib/format'
+import { compareProductSizes, formatHKD, formatHKDWhole } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { PosCartLine, PosMember, PosProduct, PointsSettings } from '@/lib/types'
 import { PAYMENT_METHODS } from '@/lib/types'
 import { resolveMemberUnitPrice } from '@/lib/pricing'
-import { MEMBER_LEVELS, memberLevelNote } from '@/lib/members'
+import { MEMBER_LEVELS, birthPayloadFromDate, memberLevelNote } from '@/lib/members'
 import { usePosStore } from '@/store/PosStoreContext'
 
 type PosDraft = {
@@ -116,8 +116,7 @@ function groupThumbSrc(group: { imageFileId?: string; imageUrl?: string }) {
 const emptyCreateMember = {
   name: '',
   phone: '',
-  birthDay: '',
-  birthMonth: '',
+  birthDate: '',
   level: '新會員',
 }
 
@@ -263,11 +262,13 @@ export function PosPage() {
       ) / 100,
     [cart, member, productById],
   )
-  const memberDiscount = member ? Math.round((subtotal - memberSubtotal) * 100) / 100 : 0
-  const afterMember = Math.round((member ? memberSubtotal : subtotal) * 100) / 100
+  const roundedSubtotal = Math.round(subtotal)
+  const memberDue = member ? Math.round(memberSubtotal) : roundedSubtotal
+  const memberDiscount = member ? Math.max(0, roundedSubtotal - memberDue) : 0
+  const afterMember = member ? memberDue : subtotal
   const n = Math.max(1, pointsSettings.pointsPerDollar || 1)
   const pointsDiscount = pointsSettings.redeemEnabled ? pointsToRedeem / n : 0
-  const grandTotal = Math.max(0, Math.round((afterMember - pointsDiscount) * 100) / 100)
+  const grandTotal = Math.max(0, Math.round(afterMember - pointsDiscount))
   const cashRecv = Number(cashReceived)
   const change =
     paymentMethod === 'cash' && isFinite(cashRecv) ? Math.round((cashRecv - grandTotal) * 100) / 100 : 0
@@ -408,8 +409,7 @@ export function PosPage() {
         body: JSON.stringify({
           name,
           phone,
-          birthDay: createMemberForm.birthDay,
-          birthMonth: createMemberForm.birthMonth,
+          ...birthPayloadFromDate(createMemberForm.birthDate),
           level: createMemberForm.level,
         }),
       })
@@ -912,7 +912,7 @@ export function PosPage() {
           {memberDiscount > 0 && (
             <div className="flex justify-between text-emerald-700">
               <span>會員折扣{member?.pricing?.fold ? `（${member.pricing.fold}）` : ''}</span>
-              <span className="tabular-nums">-{formatHKD(memberDiscount)}</span>
+              <span className="tabular-nums">-{formatHKDWhole(memberDiscount)}</span>
             </div>
           )}
           {pointsDiscount > 0 && (
@@ -923,12 +923,20 @@ export function PosPage() {
           )}
           <div className="flex justify-between border-t border-slate-100 pt-2 text-base font-semibold">
             <span>應收</span>
-            <span className="tabular-nums text-sky-700">{formatHKD(grandTotal)}</span>
+            <span className="tabular-nums text-sky-700">{formatHKDWhole(grandTotal)}</span>
           </div>
           {member && grandTotal > 0 && (
-            <div className="flex justify-between text-xs text-slate-500">
-              <span>預計獲得積分（實收 5%）</span>
-              <span className="tabular-nums">{Math.round(grandTotal * 0.05)}</span>
+            <div className="space-y-1 text-xs text-slate-500">
+              <div className="flex justify-between">
+                <span>本單獲得積分（實收 5%）</span>
+                <span className="tabular-nums">{Math.round(grandTotal * 0.05)}</span>
+              </div>
+              {member.referrerId ? (
+                <div className="flex justify-between text-emerald-700">
+                  <span>介紹人{member.referrerName ? ` ${member.referrerName}` : ''}同時獲得（實收 5%）</span>
+                  <span className="tabular-nums">{Math.round(grandTotal * 0.05)}</span>
+                </div>
+              ) : null}
             </div>
           )}
           <label className="mt-2 block text-xs text-slate-500">備註</label>
@@ -948,7 +956,7 @@ export function PosPage() {
             className="flex h-12 w-full items-center justify-center gap-2 rounded-md bg-sky-600 text-base font-semibold text-white hover:bg-sky-700 disabled:opacity-40"
           >
             <CreditCard className="size-5" />
-            結帳 {formatHKD(grandTotal)}
+            結帳 {formatHKDWhole(grandTotal)}
           </button>
           <button
             type="button"
@@ -1105,22 +1113,15 @@ export function PosPage() {
                 placeholder="電話號碼（8 位或以上）"
                 className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm"
               />
-              <div className="grid grid-cols-2 gap-2">
+              <label className="block text-xs text-slate-500">
+                生日
                 <input
-                  value={createMemberForm.birthMonth}
-                  onChange={(e) => setCreateMemberForm((prev) => ({ ...prev, birthMonth: e.target.value }))}
-                  placeholder="生日月份 1–12"
-                  inputMode="numeric"
-                  className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm"
+                  type="date"
+                  value={createMemberForm.birthDate}
+                  onChange={(e) => setCreateMemberForm((prev) => ({ ...prev, birthDate: e.target.value }))}
+                  className="mt-1 h-10 w-full rounded-md border border-slate-200 px-3 text-sm"
                 />
-                <input
-                  value={createMemberForm.birthDay}
-                  onChange={(e) => setCreateMemberForm((prev) => ({ ...prev, birthDay: e.target.value }))}
-                  placeholder="生日日期 1–31"
-                  inputMode="numeric"
-                  className="h-10 w-full rounded-md border border-slate-200 px-3 text-sm"
-                />
-              </div>
+              </label>
               <select
                 value={createMemberForm.level}
                 onChange={(e) => setCreateMemberForm((prev) => ({ ...prev, level: e.target.value }))}
@@ -1265,7 +1266,7 @@ export function PosPage() {
             </div>
             <div className="mb-3 flex justify-between text-sm">
               <span className="text-slate-500">應收金額</span>
-              <span className="text-lg font-bold tabular-nums">{formatHKD(grandTotal)}</span>
+              <span className="text-lg font-bold tabular-nums">{formatHKDWhole(grandTotal)}</span>
             </div>
             {paymentMethod === 'cash' && (
               <div className="mb-3 space-y-2">

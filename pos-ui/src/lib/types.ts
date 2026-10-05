@@ -31,6 +31,7 @@ export interface PosProduct {
   priceOriginal?: number | null
   priceRetail?: number | null
   priceSpecial?: number | null
+  priceSale?: number | null
   priceNet?: number | null
   priceNetNew?: number | null
   priceNetNormal?: number | null
@@ -73,6 +74,7 @@ export interface PosMember {
   active?: boolean
   remark?: string
   email?: string
+  birthDate?: string
   birthDay?: string
   birthMonth?: string
   pricing?: MemberPricing
@@ -141,6 +143,9 @@ export interface PosTransaction {
   pointsEarned?: number
   pointsRedeemed?: number
   pointsDiscount?: number
+  referralPoints?: number
+  referralMemberId?: string
+  referralMemberName?: string
   remark?: string
 }
 

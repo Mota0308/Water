@@ -2,7 +2,7 @@
 import { Link, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { apiJson } from '@/lib/api'
-import { formatHKD } from '@/lib/format'
+import { formatHKD, formatHKDWhole } from '@/lib/format'
 import type { PosTransaction } from '@/lib/types'
 
 export function ReceiptPage() {
@@ -112,7 +112,7 @@ export function ReceiptPage() {
           {(Number(tx.memberDiscount) || 0) > 0 && (
             <div className="flex justify-between text-emerald-700">
               <span>會員折扣{tx.memberDiscountFold ? `（${tx.memberDiscountFold}）` : ''}</span>
-              <span>-{formatHKD(Number(tx.memberDiscount))}</span>
+              <span>-{formatHKDWhole(Number(tx.memberDiscount))}</span>
             </div>
           )}
           {(Number(tx.pointsDiscount) || 0) > 0 && (
@@ -123,8 +123,20 @@ export function ReceiptPage() {
           )}
           <div className="flex justify-between text-base font-semibold">
             <span>合計</span>
-            <span className="tabular-nums">{formatHKD(Number(tx.orderTotal) || 0)}</span>
+            <span className="tabular-nums">{formatHKDWhole(Number(tx.orderTotal) || 0)}</span>
           </div>
+          {(Number(tx.pointsEarned) || 0) > 0 && (
+            <div className="flex justify-between text-slate-600">
+              <span>會員積分（實收 5%）</span>
+              <span className="tabular-nums">+{tx.pointsEarned}</span>
+            </div>
+          )}
+          {(Number(tx.referralPoints) || 0) > 0 && (
+            <div className="flex justify-between text-emerald-700">
+              <span>介紹人{tx.referralMemberName ? ` ${tx.referralMemberName}` : ''}積分（實收 5%）</span>
+              <span className="tabular-nums">+{tx.referralPoints}</span>
+            </div>
+          )}
           <p className="text-slate-500">狀態：{tx.orderStatus || tx.status || '完成'}</p>
           {tx.remark && <p className="text-slate-500">備註：{tx.remark}</p>}
         </div>

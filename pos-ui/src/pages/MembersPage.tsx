@@ -1,10 +1,10 @@
-﻿import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { apiJson } from '@/lib/api'
 import { formatDateTime, formatHKD } from '@/lib/format'
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, btnClass, fieldClass, textareaClass } from '@/components/ui'
-import { MEMBER_LEVELS, memberLevelNote, memberLevelTone, normalizeMemberLevel } from '@/lib/members'
+import { MEMBER_LEVELS, birthPayloadFromDate, memberBirthDateValue, memberLevelNote, memberLevelTone, normalizeMemberLevel } from '@/lib/members'
 import type { PosMember, PosPointLedger, PosReferredMember, PosTransaction } from '@/lib/types'
 
 function memberNoFor(member: PosMember) {
@@ -19,8 +19,8 @@ function memberStatusLabel(active?: boolean) {
   return active === false ? '已停用' : '啟用中'
 }
 
-const emptyAddForm = { name: '', phone: '', email: '', birthDay: '', birthMonth: '', level: '新會員', remark: '', referrerQuery: '' }
-const emptyEditForm = { name: '', phone: '', email: '', birthDay: '', birthMonth: '', level: '新會員', remark: '' }
+const emptyAddForm = { name: '', phone: '', email: '', birthDate: '', level: '新會員', remark: '', referrerQuery: '' }
+const emptyEditForm = { name: '', phone: '', email: '', birthDate: '', level: '新會員', remark: '' }
 
 function memberReferrerLabel(member?: Pick<PosMember, 'referrerName' | 'referrerPhone' | 'referrerId' | 'referrer'> | null) {
   if (!member) return ''
@@ -51,6 +51,8 @@ export function MembersPage() {
   const [addForm, setAddForm] = useState(emptyAddForm)
   const [editForm, setEditForm] = useState(emptyEditForm)
   const [savingProfile, setSavingProfile] = useState(false)
+  const [pointDelta, setPointDelta] = useState('')
+  const [pointReason, setPointReason] = useState('')
   const [referredMembers, setReferredMembers] = useState<PosReferredMember[]>([])
   const [referrerLookup, setReferrerLookup] = useState<{
     status: 'idle' | 'loading' | 'found' | 'miss'
@@ -115,8 +117,7 @@ export function MembersPage() {
       name: selectedMember.name || '',
       phone: selectedMember.phone || '',
       email: selectedMember.email || '',
-      birthDay: selectedMember.birthDay || '',
-      birthMonth: selectedMember.birthMonth || '',
+      birthDate: memberBirthDateValue(selectedMember),
       level: normalizeMemberLevel(selectedMember.level),
       remark: selectedMember.remark || '',
     })
@@ -238,8 +239,7 @@ export function MembersPage() {
         name: addForm.name,
         phone: addForm.phone,
         email: addForm.email,
-        birthDay: addForm.birthDay,
-        birthMonth: addForm.birthMonth,
+        ...birthPayloadFromDate(addForm.birthDate),
         level: addForm.level,
         remark: addForm.remark,
         referrerId: referrerLookup.member?.id || '',
@@ -306,10 +306,10 @@ export function MembersPage() {
     if (!selectedMember) return
     setSavingProfile(true)
     try {
-      const { name, phone, email, birthDay, birthMonth, level, remark } = editForm
+      const { name, phone, email, birthDate, level, remark } = editForm
       await apiJson<{ member: PosMember }>(`/api/pos/members/${encodeURIComponent(selectedMember.id)}`, {
         method: 'PUT',
-        body: JSON.stringify({ name, phone, email, birthDay, birthMonth, level, remark }),
+        body: JSON.stringify({ name, phone, email, ...birthPayloadFromDate(birthDate), level, remark }),
       })
       toast.success('已更新會員資料')
       await load()
@@ -318,6 +318,32 @@ export function MembersPage() {
       toast.error(e instanceof Error ? e.message : String(e))
     } finally {
       setSavingProfile(false)
+    }
+  }
+
+  const adjustPoints = async () => {
+    if (!selectedMember) return
+    const delta = Number(pointDelta)
+    if (!Number.isInteger(delta) || delta === 0) {
+      toast.error('請輸入非零整數積分（可正可負）')
+      return
+    }
+    if (!pointReason.trim()) {
+      toast.error('請填寫調分原因')
+      return
+    }
+    try {
+      await apiJson(`/api/pos/members/${encodeURIComponent(selectedMember.id)}/points`, {
+        method: 'POST',
+        body: JSON.stringify({ delta, reason: pointReason.trim() }),
+      })
+      toast.success('已手動調整積分')
+      setPointDelta('')
+      setPointReason('')
+      await loadLedger(selectedMember.id)
+      await load()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -536,24 +562,14 @@ export function MembersPage() {
                       <div className="mt-1 flex h-10 items-center rounded-xl bg-slate-50 px-3 font-semibold tabular-nums text-slate-900">
                         {Number(selectedMember.points || 0).toLocaleString()}
                       </div>
-                      <p className="mt-1 text-xs text-slate-500">積分只會隨交易自動增減，不能在此手動修改。</p>
                     </div>
-                    <label className="text-sm">
-                      <span className="text-xs text-slate-500">出生日期（日）</span>
+                    <label className="text-sm sm:col-span-2">
+                      <span className="text-xs text-slate-500">生日</span>
                       <input
-                        value={editForm.birthDay}
-                        onChange={(e) => setEditForm((prev) => ({ ...prev, birthDay: e.target.value }))}
+                        type="date"
+                        value={editForm.birthDate}
+                        onChange={(e) => setEditForm((prev) => ({ ...prev, birthDate: e.target.value }))}
                         className={fieldClass('mt-1')}
-                        placeholder="1–31"
-                      />
-                    </label>
-                    <label className="text-sm">
-                      <span className="text-xs text-slate-500">出生月份</span>
-                      <input
-                        value={editForm.birthMonth}
-                        onChange={(e) => setEditForm((prev) => ({ ...prev, birthMonth: e.target.value }))}
-                        className={fieldClass('mt-1')}
-                        placeholder="1–12"
                       />
                     </label>
                     <label className="text-sm sm:col-span-2">
@@ -571,6 +587,28 @@ export function MembersPage() {
                     </button>
                     <div className="text-xs text-slate-500">狀態：{memberStatusLabel(selectedMember.active)} · 積分 {Number(selectedMember.points || 0).toLocaleString()}</div>
                   </div>
+                  <div className="space-y-2 rounded-2xl border border-slate-200 p-4">
+                    <div className="text-sm font-medium text-slate-900">手動添加積分</div>
+                    <p className="text-xs text-slate-500">輸入正數加分、負數扣分，原因會寫入積分流水。</p>
+                    <div className="grid gap-3 sm:grid-cols-[140px_1fr]">
+                      <input
+                        type="number"
+                        value={pointDelta}
+                        onChange={(e) => setPointDelta(e.target.value)}
+                        placeholder="例如 +100 / -50"
+                        className={fieldClass()}
+                      />
+                      <input
+                        value={pointReason}
+                        onChange={(e) => setPointReason(e.target.value)}
+                        placeholder="調分原因"
+                        className={fieldClass()}
+                      />
+                    </div>
+                    <button type="button" onClick={() => void adjustPoints()} className={btnClass({ variant: 'secondary' })}>
+                      手動添加積分
+                    </button>
+                  </div>
                   {canEdit && (
                     <div className="flex flex-wrap gap-2">
                       <button type="button" onClick={() => void toggleActive()} className={btnClass({ variant: selectedMember.active === false ? 'success' : 'danger' })}>
@@ -584,7 +622,7 @@ export function MembersPage() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <div className="text-sm font-medium text-slate-900">介紹名單</div>
-                      <p className="mt-1 text-xs text-slate-500">此會員作為介紹人，其介紹的會員消費獲得積分時，這裡的介紹人也會獲得同等積分。</p>
+                      <p className="mt-1 text-xs text-slate-500">被介紹會員結帳後，消費會員與介紹人各獲得實收金額 5% 的積分（四捨五入為整數）。退貨時雙方一併扣回。</p>
                     </div>
                     <button
                       type="button"
@@ -634,9 +672,9 @@ export function MembersPage() {
                           <div className="flex items-start justify-between gap-3">
                             <div>
                               <div className="font-medium text-slate-900">
-                                {entry.type === 'referral_earn' ? '介紹獎勵' : entry.reason || entry.type}
+                                {entry.type === 'referral_earn' ? '介紹獎勵（實收 5%）' : entry.type === 'referral_return' ? '介紹獎勵扣回' : entry.reason || entry.type}
                               </div>
-                              {entry.type === 'referral_earn' && entry.reason ? (
+                              {(entry.type === 'referral_earn' || entry.type === 'referral_return') && entry.reason ? (
                                 <div className="mt-1 text-xs text-slate-500">{entry.reason}</div>
                               ) : null}
                               <div className="mt-1 text-xs text-slate-500">
@@ -740,6 +778,15 @@ export function MembersPage() {
                   </option>
                 ))}
               </select>
+              <label className="block text-xs text-slate-500">
+                生日
+                <input
+                  type="date"
+                  value={addForm.birthDate}
+                  onChange={(e) => setAddForm((prev) => ({ ...prev, birthDate: e.target.value }))}
+                  className={fieldClass('mt-1')}
+                />
+              </label>
               <p className="text-xs text-slate-500">{memberLevelNote(addForm.level)}</p>
               <textarea
                 value={addForm.remark}

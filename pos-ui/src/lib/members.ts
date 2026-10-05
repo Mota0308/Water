@@ -20,6 +20,22 @@ export function normalizeMemberLevel(raw?: string | null): MemberLevelId {
   return '新會員'
 }
 
+export function memberBirthDateValue(member?: { birthDate?: string; birthDay?: string; birthMonth?: string } | null) {
+  const iso = String(member?.birthDate || '').trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso
+  const month = Number(member?.birthMonth)
+  const day = Number(member?.birthDay)
+  if (!Number.isInteger(month) || !Number.isInteger(day) || month < 1 || month > 12 || day < 1 || day > 31) return ''
+  const year = 2000
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+export function birthPayloadFromDate(iso: string) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || '').trim())
+  if (!m) return { birthDate: '', birthDay: '', birthMonth: '' }
+  return { birthDate: `${m[1]}-${m[2]}-${m[3]}`, birthMonth: String(Number(m[2])), birthDay: String(Number(m[3])) }
+}
+
 export function memberLevelNote(level?: string | null) {
   const id = normalizeMemberLevel(level)
   return MEMBER_LEVELS.find((x) => x.id === id)?.note || ''

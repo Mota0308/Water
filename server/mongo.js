@@ -326,9 +326,35 @@ export async function removeTransferProductOption(type, value) {
 }
 
 
+/** 以香港時區拆年日時分秒（伺服器本機時區即使是 UTC 也不影響） */
+function hkDateParts(d = new Date()) {
+  const at = d instanceof Date && !Number.isNaN(d.getTime()) ? d : new Date();
+  const formatted = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Hong_Kong',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(at);
+  const pick = (type) => formatted.find((p) => p.type === type)?.value || '00';
+  let hour = pick('hour');
+  if (hour === '24') hour = '00';
+  return {
+    year: pick('year'),
+    month: pick('month'),
+    day: pick('day'),
+    hour,
+    minute: pick('minute'),
+    second: pick('second'),
+  };
+}
+
 function formatHkDateTime(d = new Date()) {
-  const now = d instanceof Date ? d : new Date(d);
-  return `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const p = hkDateParts(d);
+  return `${Number(p.year)}年${Number(p.month)}月${Number(p.day)}日 ${p.hour}:${p.minute}`;
 }
 
 async function nextTransferOrderId() {
@@ -511,12 +537,43 @@ export function publicUser(u) {
   const { pw, password, passwordHash, _id, ...rest } = u;
   const id = rest.id || (typeof _id === 'string' ? _id : String(_id || ''));
   const phone = normalizePhone(rest.phone) || normalizePhone(id) || normalizePhone(rest.login) || null;
+  const fields = staffFields({ ...rest, id, _id });
+  const admin = isAdminAccount({ ...rest, id, _id });
   return {
     ...rest,
     id,
     phone,
+    identity: fields.identity,
+    employment: fields.employment,
+    position: fields.employment,
+    role: admin ? 'system_admin' : fields.role,
     needsPhoneBind: userNeedsPhoneBind({ ...rest, id, _id, phone: rest.phone }),
   };
+}
+
+const STAFF_IDENTITIES = new Set(['經理', '主管', '員工', '系統管理員']);
+const STAFF_EMPLOYMENT = new Set(['兼職', '全職']);
+const STAFF_REGION_LIST = ['觀塘', '荔枝角', '灣仔', '屯門', '國內倉', '屯門中轉倉', '觀塘中轉倉', '國內倉(秋冬)', '國內倉(春夏)'];
+
+/** 身份＝經理／主管／員工；職位（employment）＝兼職／全職。舊資料的 position 仍是身份。 */
+export function staffFields(u) {
+  const isAdmin = !!(u && (String(u.login || '').toLowerCase() === 'admin' || u.id === 'adm' || u._id === 'adm'));
+  let identity = String(u?.identity || '').trim();
+  let employment = String(u?.employment || '').trim();
+  const position = String(u?.position || '').trim();
+  if (!identity && STAFF_IDENTITIES.has(position)) identity = position;
+  if (!employment && STAFF_EMPLOYMENT.has(position)) employment = position;
+  if (!identity) {
+    if (isAdmin) identity = '系統管理員';
+    else if (u?.role === 'manager') identity = '主管';
+    else if (u?.role === 'system_admin') identity = '經理';
+    else identity = '員工';
+  }
+  if (isAdmin) identity = '系統管理員';
+  if (!STAFF_IDENTITIES.has(identity)) identity = isAdmin ? '系統管理員' : '員工';
+  if (!STAFF_EMPLOYMENT.has(employment)) employment = '全職';
+  const role = identity === '員工' ? 'personal' : 'system_admin';
+  return { identity, employment, role };
 }
 
 function normalizeUserDoc(u) {
@@ -536,16 +593,10 @@ function normalizeUserDoc(u) {
   }
   let units = Array.isArray(u.units) ? u.units.filter(Boolean) : [];
   if (!units.length && u.unit) units = [u.unit];
-  let position = u.position;
-  let role = u.role;
-  if (!position) {
-    if (isAdmin || role === 'system_admin') position = isAdmin ? '系統管理員' : '經理';
-    else if (role === 'manager') position = '主管';
-    else position = '員工';
-  }
-  if (position === '經理' || position === '主管') role = 'system_admin';
-  else if (position === '員工') role = 'personal';
-  else if (isAdmin) role = 'system_admin';
+  const fields = staffFields({ ...u, login: isAdmin ? 'admin' : login, id });
+  const identity = fields.identity;
+  const position = fields.employment;
+  const role = isAdmin ? 'system_admin' : fields.role;
   const pw =
     u.pw != null && String(u.pw) !== ''
       ? String(u.pw)
@@ -559,8 +610,9 @@ function normalizeUserDoc(u) {
     phone: phone || undefined,
     pw,
     name: String(u.name || (isAdmin ? '系統管理員' : phone)),
-    dept: u.dept != null ? String(u.dept) : units.join('、') || (position === '員工' ? '—' : '管理層'),
+    dept: u.dept != null ? String(u.dept) : units.join('、') || (identity === '員工' ? '—' : '管理層'),
     role: role || 'personal',
+    identity,
     position,
     unit: units[0] || null,
     units,
@@ -660,9 +712,10 @@ function legacyUserDoc(u) {
   if (!id || !login) return null;
   let units = Array.isArray(u.units) ? u.units.filter(Boolean) : [];
   if (!units.length && u.unit) units = [u.unit];
-  let position = u.position || '員工';
-  let role = u.role || (position === '員工' ? 'personal' : 'system_admin');
-  if (position === '經理' || position === '主管') role = 'system_admin';
+  const fields = staffFields(u);
+  const identity = fields.identity;
+  const position = fields.employment;
+  const role = fields.role;
   return {
     _id: id,
     id,
@@ -671,6 +724,7 @@ function legacyUserDoc(u) {
     name: String(u.name || login),
     dept: u.dept != null ? String(u.dept) : units.join('、') || '—',
     role,
+    identity,
     position,
     unit: units[0] || null,
     units,
@@ -1322,6 +1376,53 @@ export async function changeUserPhone(oldPhoneRaw, newPhoneRaw) {
   return publicUser(newDoc);
 }
 
+/** 主管／經理／系統管理員修改員工姓名、電話與地區（地區可多選） */
+export async function updateUserProfile(actor, id, input = {}) {
+  await connectMongo();
+  if (!canCreateEmployee(actor) && !isAdminAccount(actor)) throw new Error('沒有權限修改員工資料');
+  const existing = await getUserById(id);
+  if (!existing) throw new Error('找不到用戶');
+  const name = input.name != null ? String(input.name).trim() : String(existing.name || '').trim();
+  if (!name) throw new Error('請填寫姓名');
+  let units = Array.isArray(existing.units) ? existing.units.filter(Boolean) : [];
+  if (!units.length && existing.unit) units = [existing.unit];
+  if (Array.isArray(input.units)) {
+    units = [];
+    for (const raw of input.units) {
+      const v = String(raw || '').trim();
+      if (STAFF_REGION_LIST.includes(v) && !units.includes(v)) units.push(v);
+    }
+  }
+  const fields = staffFields(existing);
+  if (fields.identity === '員工' && !units.length) throw new Error('員工必須至少選擇 1 個地區／單位');
+  const dept = units.join('、') || (fields.identity === '員工' ? '—' : '管理層');
+  await usersCol().updateOne(
+    { _id: existing._id },
+    {
+      $set: {
+        name,
+        units,
+        unit: units[0] || null,
+        dept,
+        identity: fields.identity,
+        position: fields.employment,
+        role: fields.identity === '員工' ? 'personal' : 'system_admin',
+      },
+    }
+  );
+  const nextPhone = input.phone != null ? String(input.phone).trim() : '';
+  const curPhone = normalizePhone(existing.phone) || normalizePhone(existing.id);
+  if (nextPhone) {
+    const normalized = normalizePhone(nextPhone);
+    if (!normalized) throw new Error('請輸入有效的香港 8 位電話');
+    if (!isAdminAccount(existing) && curPhone && normalized !== curPhone) {
+      return changeUserPhone(curPhone, normalized);
+    }
+  }
+  const updated = await getUserById(existing.id || existing._id);
+  return publicUser(updated);
+}
+
 export async function getProjectsState() {
   await connectMongo();
   const productionProjects = (await listDocsFromCol(projectsCol())).map((p) => ({ ...p, type: p.type || 'dev' }));
@@ -1419,17 +1520,19 @@ export const NOTICE_CATS = {
   price: { name: '價錢更新', key: 'price' },
   urgent: { name: '緊急資訊', key: 'urgent' },
   general: { name: '一般資訊', key: 'general' },
+  product: { name: '產品資訊', key: 'product' },
   transfer: { name: '貨品調動', key: 'transfer' },
 };
 
 function todayYmd() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const p = hkDateParts(new Date());
+  return `${p.year}-${p.month}-${p.day}`;
 }
 
 function mapCategoryToCat(category) {
   const s = String(category || '');
   if (s.includes('調動') || s === 'transfer') return 'transfer';
+  if (s.includes('產品') || s === 'product') return 'product';
   if (s.includes('補貨') || s === 'restock') return 'restock';
   if (s.includes('價錢') || s === 'price') return 'price';
   if (s.includes('緊急') || s.includes('突發') || s === 'urgent') return 'urgent';
@@ -2287,7 +2390,9 @@ export async function changeOwnPassword(userId, currentPw, newPw) {
 
 export function canCreateEmployee(user) {
   if (!user) return false;
-  return user.role === 'system_admin' || user.role === 'manager' || user.position === '經理' || user.position === '主管' || isAdminAccount(user);
+  if (isAdminAccount(user)) return true;
+  const { identity } = staffFields(user);
+  return identity === '系統管理員' || identity === '經理' || identity === '主管';
 }
 
 const TRANSFER_SEED_PRODUCTS = [
@@ -3863,7 +3968,8 @@ function posCanManageCatalog(user) {
   const me = publicUser(user);
   if (!me) return false;
   if (posIsSystemAdmin(me)) return true;
-  return me.role === 'manager' || me.position === '經理' || me.position === '主管';
+  const { identity } = staffFields(me);
+  return identity === '經理' || identity === '主管' || me.role === 'manager';
 }
 function posUserStores(user) {
   const me = publicUser(user);
@@ -4028,6 +4134,13 @@ export function transferPriceNets(product) {
   };
 }
 
+function memberRateBase(product, list) {
+  const shelf = firstMoney(product?.price);
+  const candidates = [list, shelf].filter((n) => n != null && n > 0);
+  if (!candidates.length) return 0;
+  return Math.min(...candidates);
+}
+
 export function resolveMemberUnitPrice(product, pricing) {
   const list = transferListPrice(product) || Number(product?.price) || 0;
   const nets = transferPriceNets(product);
@@ -4037,9 +4150,10 @@ export function resolveMemberUnitPrice(product, pricing) {
   else if (lv === '尊貴會員') unit = nets.vip;
   else if (lv === '教練會員') unit = nets.coach;
   else if (lv === '長者會員') unit = pricing?.isRedDay ? nets.seniorRed : nets.senior;
-  if (pricing?.isBirthday && list > 0) {
-    unit = Math.min(unit, defaultMemberNet(list, 0.75));
-  }
+  const base = memberRateBase(product, list);
+  const rate = Number(pricing?.rate);
+  if (base > 0 && rate > 0 && rate < 1) unit = Math.min(unit, defaultMemberNet(base, rate));
+  else if (pricing?.isBirthday && base > 0) unit = Math.min(unit, defaultMemberNet(base, 0.75));
   return Math.round((Number.isFinite(unit) ? unit : 0) * 100) / 100;
 }
 
@@ -4163,6 +4277,7 @@ export async function listPosProducts(user) {
       priceOriginal: tp.priceOriginal != null ? tp.priceOriginal : null,
       priceRetail: tp.priceRetail != null ? tp.priceRetail : null,
       priceSpecial: tp.priceSpecial != null ? tp.priceSpecial : null,
+      priceSale: tp.priceSale != null ? tp.priceSale : null,
       priceNet: tp.priceNet != null ? tp.priceNet : null,
       priceNetNew: tp.priceNetNew != null ? tp.priceNetNew : null,
       priceNetNormal: tp.priceNetNormal != null ? tp.priceNetNormal : null,
@@ -4445,8 +4560,10 @@ export async function checkoutPos(user, payload = {}) {
     };
   });
   const subtotal = Math.round(listSubtotal * 100) / 100;
-  const memberDiscount = memberDoc ? Math.round((subtotal - memberSubtotal) * 100) / 100 : 0;
-  const afterMember = Math.round((memberDoc ? memberSubtotal : subtotal) * 100) / 100;
+  const roundedSubtotal = Math.round(subtotal);
+  const memberDue = memberDoc ? Math.round(memberSubtotal) : roundedSubtotal;
+  const memberDiscount = memberDoc ? Math.max(0, roundedSubtotal - memberDue) : 0;
+  const afterMember = memberDoc ? memberDue : subtotal;
 
   let pointsRedeemed = 0;
   let pointsDiscount = 0;
@@ -4465,13 +4582,14 @@ export async function checkoutPos(user, payload = {}) {
     pointsRedeemed = wantRedeem;
   }
 
-  const orderTotal = Math.round((afterMember + accountBalance - pointsDiscount) * 100) / 100;
-  if (orderTotal < 0) {
+  const rawOrderTotal = afterMember + accountBalance - pointsDiscount;
+  if (rawOrderTotal < -0.005) {
     for (const d of deducted) {
       await adjustInventoryQty(d.sellable.transferProductId, d.sellable.size, store, d.qty);
     }
     throw new Error('訂單總計不可為負');
   }
+  const orderTotal = Math.max(0, Math.round(rawOrderTotal));
 
   const meta = await posMetaCol().findOneAndUpdate(
     { _id: 'main' },
@@ -4481,14 +4599,12 @@ export async function checkoutPos(user, payload = {}) {
   const seq = (meta?.value || meta)?.seq || Date.now() % 100000;
   const orderNo = String(3000000 + seq);
   const orderNoAlt = String(50000 + (seq % 10000));
-  const year = new Date().getFullYear();
+  const hkNow = hkDateParts(now);
+  const year = hkNow.year;
   const invoiceNo = `INV-${year}-${String(seq).padStart(8, '0')}`;
   const id = `tx_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
   const time = formatHkDateTime(now);
-  const stamp = (() => {
-    const p = (n) => String(n).padStart(2, '0');
-    return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
-  })();
+  const stamp = `${hkNow.year}-${hkNow.month}-${hkNow.day} ${hkNow.hour}:${hkNow.minute}:${hkNow.second}`;
   const tx = {
     _id: id,
     id,
@@ -4563,6 +4679,11 @@ export async function checkoutPos(user, payload = {}) {
         });
         tx.pointsEarned = pts.actualDelta;
         balanceAfter = pts.entry.balanceAfter;
+        if (pts.referral) {
+          tx.referralPoints = pts.referral.actualDelta;
+          tx.referralMemberId = pts.referral.member?.id || '';
+          tx.referralMemberName = pts.referral.member?.name || '';
+        }
       }
       tx.pointsBalanceAfter = balanceAfter;
       await posTransactionsCol().updateOne(
@@ -4573,6 +4694,9 @@ export async function checkoutPos(user, payload = {}) {
             pointsRedeemed: tx.pointsRedeemed,
             pointsDiscount: tx.pointsDiscount,
             pointsBalanceAfter: tx.pointsBalanceAfter,
+            referralPoints: tx.referralPoints || 0,
+            referralMemberId: tx.referralMemberId || '',
+            referralMemberName: tx.referralMemberName || '',
           },
         }
       );
@@ -6226,16 +6350,22 @@ async function applyMemberPoints({
     sourceMemberName: sourceMemberName ? String(sourceMemberName) : '',
   };
   await memberPointsCol().insertOne(entry);
-  if (!skipReferral && actual > 0 && type === 'earn') {
+  let referral = null;
+  // 被介紹人消費：本人與介紹人各得實收金額 5%（整數分）。退貨／換貨扣回時，介紹人同步扣回。
+  if (!skipReferral && (type === 'earn' || type === 'return')) {
     const referrerId = String(member.referrerId || '').trim();
     const selfId = String(member.id || member.memberNo || member._id || '').trim();
-    if (referrerId && referrerId !== selfId) {
+    const pairPoints = type === 'earn' ? actual : Math.abs(Number(want) || 0);
+    if (referrerId && referrerId !== selfId && pairPoints > 0) {
+      const amountLabel = amountBase != null && amountBase !== '' ? `$${amountBase}` : '';
       try {
-        await applyMemberPoints({
+        referral = await applyMemberPoints({
           memberId: referrerId,
-          delta: actual,
-          type: 'referral_earn',
-          reason: `介紹獎勵｜${member.name || selfId}｜${String(reason || '').trim()}`.replace(/｜+$/, ''),
+          delta: type === 'earn' ? pairPoints : -pairPoints,
+          type: type === 'earn' ? 'referral_earn' : 'referral_return',
+          reason: type === 'earn'
+            ? `介紹獎勵｜${member.name || selfId}｜實收${amountLabel}×5%`
+            : `介紹獎勵扣回｜${member.name || selfId}｜實收${amountLabel}×5%`,
           actor,
           posTransactionId,
           posOrderNo,
@@ -6250,7 +6380,13 @@ async function applyMemberPoints({
       }
     }
   }
-  return { member: stripMember({ ...member, points: after }), entry: stripPointLedger(entry), clamped, actualDelta: actual };
+  return {
+    member: stripMember({ ...member, points: after }),
+    entry: stripPointLedger(entry),
+    clamped,
+    actualDelta: actual,
+    referral,
+  };
 }
 
 export async function listMembers(user, { q, includeInactive } = {}) {
@@ -6288,9 +6424,11 @@ export async function listMemberPoints(user, id) {
   if (!me?.id) throw new Error('未登入');
   const member = await findMemberDoc(id);
   if (!member) throw new Error('找不到會員');
-  const memberId = String(member.id || member.phone);
+  const memberIds = [member.id, member.memberNo, member.phone, member._id]
+    .map((v) => String(v || '').trim())
+    .filter(Boolean);
   const docs = await memberPointsCol()
-    .find({ memberId })
+    .find({ memberId: { $in: [...new Set(memberIds)] } })
     .sort({ createdAtMs: -1 })
     .limit(200)
     .toArray();
@@ -6384,12 +6522,46 @@ export async function getMember(user, id) {
   };
 }
 
-export async function adjustMemberPoints(user, _id, _input = {}) {
+export async function adjustMemberPoints(user, id, input = {}) {
   await connectMongo();
   await ensureMembersReady();
   const me = publicUser(user);
   if (!me?.id) throw new Error('未登入');
-  throw new Error('會員積分不可手動修改，只會隨交易自動增減');
+  const delta = Number(input.delta);
+  if (!Number.isInteger(delta) || delta === 0) throw new Error('請輸入非零整數積分（可正可負）');
+  const reason = String(input.reason || '').trim();
+  if (!reason) throw new Error('請填寫調分原因');
+  const result = await applyMemberPoints({
+    memberId: id,
+    delta,
+    type: 'adjust',
+    reason,
+    actor: me,
+  });
+  await appendModuleLog({
+    module: 'pos',
+    time: result.entry.createdAt,
+    action: '手動調分',
+    detail: `${result.member.name}｜${result.member.phone}｜${delta > 0 ? '+' : ''}${delta}｜${reason}`,
+    userId: me.id,
+    userName: me.name || me.login,
+    user: me.name || me.login,
+  });
+  return result;
+}
+
+function birthFieldsFromInput(input = {}, existing = {}) {
+  let birthDate = input.birthDate != null ? String(input.birthDate).trim() : String(existing.birthDate || '');
+  let birthDay = input.birthDay != null ? String(input.birthDay).trim() : String(existing.birthDay || '');
+  let birthMonth = input.birthMonth != null ? String(input.birthMonth).trim() : String(existing.birthMonth || '');
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(birthDate);
+  if (iso) {
+    birthMonth = String(Number(iso[2]));
+    birthDay = String(Number(iso[3]));
+  } else {
+    birthDate = '';
+  }
+  return { birthDate, birthDay, birthMonth };
 }
 
 export async function createMember(user, input = {}) {
@@ -6407,8 +6579,7 @@ export async function createMember(user, input = {}) {
   const now = new Date();
   const time = formatHkDateTime(now);
   const email = String(input.email || '').trim();
-  const birthDay = String(input.birthDay || '').trim();
-  const birthMonth = String(input.birthMonth || '').trim();
+  const birth = birthFieldsFromInput(input);
   const referrerRaw = String(input.referrerId || input.referrer || input.referrerQuery || '').trim();
   const referrerDoc = await resolveReferrerDoc(referrerRaw);
   const referral = referrerFieldsFromDoc(referrerDoc);
@@ -6421,8 +6592,9 @@ export async function createMember(user, input = {}) {
     level: normalizeMemberLevel(input.level || '新會員'),
     remark: String(input.remark || '').trim(),
     email,
-    birthDay,
-    birthMonth,
+    birthDate: birth.birthDate,
+    birthDay: birth.birthDay,
+    birthMonth: birth.birthMonth,
     ...referral,
     points: 0,
     active: true,
@@ -6467,8 +6639,12 @@ export async function updateMember(user, id, input = {}) {
   if (input.level != null) $set.level = normalizeMemberLevel(input.level);
   if (input.remark != null) $set.remark = String(input.remark).trim();
   if (input.email != null) $set.email = String(input.email).trim();
-  if (input.birthDay != null) $set.birthDay = String(input.birthDay).trim();
-  if (input.birthMonth != null) $set.birthMonth = String(input.birthMonth).trim();
+  if (input.birthDate != null || input.birthDay != null || input.birthMonth != null) {
+    const birth = birthFieldsFromInput(input, existing);
+    $set.birthDate = birth.birthDate;
+    $set.birthDay = birth.birthDay;
+    $set.birthMonth = birth.birthMonth;
+  }
   if (input.phone != null && input.phone !== '') {
     const newPhone = normalizeMemberPhone(input.phone);
     if (!newPhone) throw new Error('新電話無效（至少 8 位數字）');

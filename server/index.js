@@ -31,6 +31,7 @@ import {
   destroySession,
   listUsersPublic,
   createUser,
+  updateUserProfile,
   canCreateEmployee,
   publicUser,
   assignPhoneToUser,
@@ -138,6 +139,20 @@ const upload = multer({
   storage: multer.memoryStorage(),
   ...(uploadLimits ? { limits: uploadLimits } : {}),
 });
+
+/** Busboy 預設把檔名當 latin1，中文會變成亂碼；已是中文則原樣保留。 */
+function decodeUploadFilename(name) {
+  const raw = String(name || '').replace(/\0/g, '').trim();
+  if (!raw) return 'upload.bin';
+  if (/[\u3400-\u9fff]/.test(raw)) return raw;
+  try {
+    const decoded = Buffer.from(raw, 'latin1').toString('utf8');
+    if (decoded && !decoded.includes('\uFFFD') && /[\u3400-\u9fff]/.test(decoded)) return decoded;
+  } catch {
+    /* keep raw */
+  }
+  return raw;
+}
 
 function driveFolderConfigured() {
   return !!(
@@ -518,6 +533,20 @@ app.post('/api/users', requireAuth, async (req, res) => {
     }
     const created = await createUser(req.body);
     res.json({ user: created });
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+/** 主管／經理／系統管理員修改員工姓名、電話、地區 */
+app.put('/api/users/:id', requireAuth, async (req, res) => {
+  try {
+    if (!canCreateEmployee(req.user) && !isAdminAccount(req.user)) {
+      return res.status(403).json({ error: '沒有權限修改員工資料。' });
+    }
+    const user = await updateUserProfile(req.user, req.params.id, req.body || {});
+    res.json({ user });
   } catch (e) {
     console.error(e);
     res.status(400).json({ error: String(e.message || e) });
@@ -1307,7 +1336,7 @@ app.post('/api/files', requireAuth, upload.single('file'), async (req, res) => {
     }
     const saved = await uploadAppFile({
       buffer: req.file.buffer,
-      filename: req.file.originalname,
+      filename: decodeUploadFilename(req.file.originalname),
       mimeType: req.file.mimetype,
     });
     res.json(saved);
@@ -1319,9 +1348,14 @@ app.post('/api/files', requireAuth, upload.single('file'), async (req, res) => {
 
 app.get('/api/files/:id', requireAuth, async (req, res) => {
   try {
-    const { stream, name, mimeType } = await downloadAppFile(req.params.id);
+    const file = await downloadAppFile(req.params.id);
+    const name = decodeUploadFilename(file.name);
+    let mimeType = file.mimeType || 'application/octet-stream';
+    if (/^text\//i.test(mimeType) && !/charset=/i.test(mimeType)) mimeType += '; charset=utf-8';
+    const asciiName = name.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, '');
     res.setHeader('Content-Type', mimeType);
-    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`);
+    res.setHeader('Content-Disposition', `inline; filename="${asciiName || 'file'}"; filename*=UTF-8''${encodeURIComponent(name)}`);
+    const stream = file.stream;
     stream.on('error', (err) => {
       console.error(err);
       if (!res.headersSent) res.status(404).json({ error: 'File not found' });

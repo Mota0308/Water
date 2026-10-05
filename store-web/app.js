@@ -6,20 +6,36 @@ const CATEGORIES = ['成人保暖衣','兒童保暖衣','成人抓毛','兒童�
 const USERS_KEY = 'store-web-users-v1';
 const AUTH_TOKEN_KEY = 'store-web-auth-token-v1';
 const STAFF_REGIONS = ['觀塘','荔枝角','灣仔','屯門','國內倉','屯門中轉倉','觀塘中轉倉','國內倉(秋冬)','國內倉(春夏)'];
-const SEED_ADMIN = {id:'adm', login:'admin', pw:'admin', name:'系統管理員', dept:'管理層', role:'system_admin', position:'系統管理員', unit:null, units:[], active:true};
+const SEED_ADMIN = {id:'adm', login:'admin', pw:'admin', name:'系統管理員', dept:'管理層', role:'system_admin', identity:'系統管理員', position:'全職', employment:'全職', unit:null, units:[], active:true};
+const STAFF_IDENTITIES = ['經理','主管','員工','系統管理員'];
+const STAFF_EMPLOYMENT = ['兼職','全職'];
 let users = [Object.assign({}, SEED_ADMIN)];
 let userSeq = 1;
 function isAdmin(){ return currentUser && currentUser.role==='system_admin'; }
 function isManager(){ return currentUser && currentUser.role==='manager'; }
-function isPersonal(){ return currentUser && (currentUser.role==='personal' || currentUser.position==='員工'); }
+function isPersonal(){ return currentUser && (currentUser.identity==='員工' || currentUser.role==='personal'); }
 function canWriteProduction(){ return isAdmin(); }
-function canCreateEmployee(){ return !!(currentUser && (currentUser.role==='system_admin' || currentUser.role==='manager')); }
+function canCreateEmployee(){
+  if(!currentUser) return false;
+  if(currentUser.login==='admin' || currentUser.id==='adm') return true;
+  const idn = currentUser.identity;
+  return idn==='經理' || idn==='主管' || idn==='系統管理員';
+}
+/** 職位為兼職的賬號（系統帳除外） */
+function isPartTimeAccount(user){
+  user = user || currentUser;
+  if(!user) return false;
+  if(user.login==='admin' || user.id==='adm') return false;
+  return String(user.position||user.employment||'')==='兼職';
+}
+const PART_TIME_VIEWS = { dailyToday:1, pushAll:1, pushUnread:1, pushRead:1, pushEnded:1, pushDetail:1 };
+function partTimeAllowsView(v){ return !!PART_TIME_VIEWS[v]; }
 /** 可被指派為項目經手人／負責人：僅經理、主管（不含系統帳 admin、不含員工） */
 function listAssignableStaff(){
   return users.filter(function(u){
     if(!u || u.active===false || u.login==='admin' || u.id==='adm') return false;
     if(userNeedsPhoneBind(u)) return false;
-    return u.position==='經理' || u.position==='主管';
+    return u.identity==='經理' || u.identity==='主管';
   });
 }
 /** 階段經手人（相容舊單值 handler） */
@@ -88,15 +104,27 @@ function normalizeUser(u){
   out.unit = units[0] || null;
   const phone = normalizePhone(out.phone) || normalizePhone(out.id) || normalizePhone(out.login);
   if(phone){ out.phone = phone; out.id = out.id || phone; }
-  if(!out.position){
-    if(out.login==='admin' || out.role==='system_admin') out.position = out.login==='admin' ? '系統管理員' : '經理';
-    else if(out.role==='manager') out.position = '主管';
-    else out.position = '員工';
+  let identity = String(out.identity||'').trim();
+  let employment = String(out.employment||'').trim();
+  const rawPos = String(out.position||'').trim();
+  if(!identity && STAFF_IDENTITIES.indexOf(rawPos)>=0) identity = rawPos;
+  if(!employment && STAFF_EMPLOYMENT.indexOf(rawPos)>=0) employment = rawPos;
+  if(!identity){
+    if(out.login==='admin' || out.id==='adm') identity = '系統管理員';
+    else if(out.role==='manager') identity = '主管';
+    else if(out.role==='system_admin') identity = '經理';
+    else identity = '員工';
   }
-  if(out.position==='經理' || out.position==='主管') out.role = 'system_admin';
-  else if(out.position==='員工') out.role = 'personal';
+  if(out.login==='admin' || out.id==='adm') identity = '系統管理員';
+  if(STAFF_IDENTITIES.indexOf(identity)<0) identity = (out.login==='admin' || out.id==='adm') ? '系統管理員' : '員工';
+  if(STAFF_EMPLOYMENT.indexOf(employment)<0) employment = '全職';
+  out.identity = identity;
+  out.employment = employment;
+  out.position = employment;
+  if(identity==='經理' || identity==='主管' || identity==='系統管理員') out.role = 'system_admin';
+  else out.role = 'personal';
   if(typeof out.active==='undefined') out.active = true;
-  if(!out.dept) out.dept = units.join('、') || (out.position==='員工'?'—':'管理層');
+  if(!out.dept) out.dept = units.join('、') || (identity==='員工'?'—':'管理層');
   out.needsPhoneBind = userNeedsPhoneBind(out);
   return out;
 }
@@ -143,10 +171,10 @@ function saveUsersLocal(){
 }
 function roleLabel(u){
   if(!u) return '—';
-  const pos = u.position || (u.role==='system_admin'?'系統管理員':(u.role==='manager'?'主管':'員工'));
+  const idn = u.identity || (u.role==='system_admin'?'經理':(u.role==='manager'?'主管':'員工'));
+  const emp = (u.login==='admin' || u.id==='adm') ? '' : (u.position || u.employment || '');
   const units = userUnits(u);
-  if(units.length) return pos+'｜'+units.join('、');
-  return pos;
+  return [idn, emp, units.length?units.join('、'):''].filter(Boolean).join('｜');
 }
 const userName = id => { const u = users.find(u=>u.id===id); return (u && u.name) || '—'; };
 const userDept = id => { const u=users.find(x=>x.id===id); return u?(u.dept||userUnits(u).join('、')||''):''; };
@@ -527,7 +555,7 @@ async function rescueOrphanUsers(orphans){
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
           id: u.id, login: u.login, pw: u.pw, name: u.name,
-          position: u.position, role: u.role, units: u.units||[], unit: u.unit||null,
+          position: u.position, identity: u.identity, employment: u.employment, role: u.role, units: u.units||[], unit: u.unit||null,
           dept: u.dept, active: u.active!==false
         })
       });
@@ -799,7 +827,7 @@ async function cloudUploadFile(file, opts){
       }
     });
     var result = {
-      name: j.name || file.name,
+      name: (file && file.name) || j.name,
       driveFileId: j.id,
       mimeType: j.mimeType,
       dataUrl: withFileToken(apiUrl('/api/files/'+j.id))
@@ -1514,7 +1542,15 @@ function notifAttachHtml(files){
     const href = (typeof fileHref==='function') ? fileHref(f) : (f.dataUrl||'#');
     const name = escHtml(f.name||('附件'+(i+1)));
     const mime = String(f.mimeType||'').toLowerCase();
-    const isImg = mime.indexOf('image/')===0 || /\.(jpe?g|png|gif|webp|bmp)$/i.test(String(f.name||''));
+    const rawName = String(f.name||'');
+    const isVid = mime.indexOf('video/')===0 || /\.(mp4|webm|ogg|mov|m4v|mkv)$/i.test(rawName);
+    if(isVid && href && href!=='#'){
+      return `<div style="margin:6px 0 10px">
+        <video src="${href}" controls playsinline preload="metadata" style="width:100%;max-width:480px;max-height:320px;border-radius:8px;background:#000;display:block"></video>
+        <span style="display:inline-block;margin-top:4px;font-size:12px">▶ ${name}</span>
+      </div>`;
+    }
+    const isImg = mime.indexOf('image/')===0 || /\.(jpe?g|png|gif|webp|bmp)$/i.test(rawName);
     if(isImg && href && href!=='#'){
       return `<div style="margin:6px 0 10px"><a class="file-link" href="${href}" target="_blank" rel="noopener" style="display:block">
         <img src="${href}" alt="${name}" style="max-width:100%;max-height:220px;border-radius:8px;border:1px solid #e0e0e0;display:block;object-fit:contain;background:#fafafa">
@@ -1718,6 +1754,7 @@ const NOTICE_CAT_META = {
   price: { name: '價錢更新', icon: '💰' },
   urgent: { name: '緊急資訊', icon: '🚨' },
   general: { name: '一般資訊', icon: '📄' },
+  product: { name: '產品資訊', icon: '🏷️' },
   transfer: { name: '貨品調動', icon: '🔄' },
   adhoc: { name: '突發任務', icon: '⚡' }
 };
@@ -1901,6 +1938,7 @@ function noticeCatKey(n){
   if(c.indexOf('突發')>=0) return 'adhoc';
   if(c.indexOf('恆常')>=0) return 'general';
   if(c.indexOf('開發')>=0) return 'general';
+  if(c.indexOf('產品')>=0) return 'product';
   if(c.indexOf('補貨')>=0) return 'restock';
   if(c.indexOf('價錢')>=0) return 'price';
   if(c.indexOf('緊急')>=0) return 'urgent';
@@ -2805,10 +2843,8 @@ async function sendPushNotification(){
   }catch(e){ alert2('發布失敗：'+(e.message||e)); }
 }
 function vPushCreate(){
-  const today = new Date();
-  const ymd = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0')+'-'+String(today.getDate()).padStart(2,'0');
-  const end = new Date(today.getTime()+14*86400000);
-  const endYmd = end.getFullYear()+'-'+String(end.getMonth()+1).padStart(2,'0')+'-'+String(end.getDate()).padStart(2,'0');
+  const ymd = hkYmd(0);
+  const endYmd = hkYmd(14);
   const catOpts = Object.keys(NOTICE_CAT_META).map(function(k){
     const m = NOTICE_CAT_META[k];
     return '<option value="'+k+'">'+m.icon+' '+m.name+'</option>';
@@ -5358,14 +5394,15 @@ function vPersonalSettings(){
   const account = u.phone || u.login || u.id || '—';
   const units = (typeof userUnits==='function' ? userUnits(u) : (u.units||[])).join('、') || '—';
   // 與後端 canCreateEmployee 對齊：系統管理員／經理／主管
-  const showDriveExport = !!(isAdmin() || isManager() || u.role==='system_admin' || u.role==='manager' || u.position==='經理' || u.position==='主管');
+  const showDriveExport = !!(canCreateEmployee());
   return `<div class="card">
     <h2>⚙️ 個人設置</h2>
     <div class="table-wrap" style="margin-bottom:16px">
       <table>
         <tr><th style="width:120px">登入帳號</th><td>${escHtml(account)}</td></tr>
         <tr><th>姓名</th><td>${escHtml(u.name||'—')}</td></tr>
-        <tr><th>職位</th><td>${escHtml(u.position||roleLabel(u))}</td></tr>
+        <tr><th>身份</th><td>${escHtml(u.identity||'—')}</td></tr>
+        <tr><th>職位</th><td>${escHtml((u.login==='admin'||u.id==='adm')?'—':(u.position||'—'))}</td></tr>
         <tr><th>地區／單位</th><td>${escHtml(units)}</td></tr>
       </table>
     </div>
@@ -5565,7 +5602,8 @@ function staffListRowsHtml(){
     return '<tr>'+
       '<td>'+escHtml(account)+sys+(need?' <span class="tag s-fix">待補電話</span>':'')+'</td>'+
       '<td>'+escHtml(u.name||'')+'</td>'+
-      '<td>'+escHtml(u.position||roleLabel(u))+'</td>'+
+      '<td>'+escHtml(u.identity||'')+'</td>'+
+      '<td>'+escHtml((u.login==='admin'||u.id==='adm')?'—':(u.position||''))+'</td>'+
       '<td>'+escHtml(units.length?units.join('、'):'—')+'</td>'+
       '<td>'+(u.active===false?'停用':'啟用')+'</td>'+
       '<td>'+actions+'</td>'+
@@ -5605,11 +5643,16 @@ function vCreateStaff(){
     <p id="staff-pw-hint" style="font-size:12px;color:#888;margin:4px 0 0">輸入 8 位電話後顯示密碼。</p>
     <label>職位</label>
     <select id="staff-position">
+      <option value="全職" selected>全職</option>
+      <option value="兼職">兼職</option>
+    </select>
+    <label>身份</label>
+    <select id="staff-identity">
       <option value="經理">經理（等同管理員權限，可創建員工）</option>
       <option value="主管">主管（第一版權限與經理相同）</option>
       <option value="員工" selected>員工</option>
     </select>
-    <label>隸屬地區（可多選；員工至少選 1 個，經理／主管可不選）</label>
+    <label>隸屬地區（可多選；身份為員工時至少選 1 個，經理／主管可不選）</label>
     <div class="recipient-box" style="max-height:180px">${regionChecks}</div>
     <button type="button" class="btn green" onclick="submitCreateStaff()">建立員工</button>
   </div>
@@ -5617,7 +5660,7 @@ function vCreateStaff(){
     <h3>員工列表</h3>
     <p style="font-size:12px;color:#888;margin-bottom:8px">電話即為 ID。可補登／更換電話（管理員）。</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>電話／賬號</th><th>顯示名稱</th><th>職位</th><th>地區</th><th>狀態</th><th>操作</th></tr></thead>
+      <thead><tr><th>電話／賬號</th><th>顯示名稱</th><th>身份</th><th>職位</th><th>地區</th><th>狀態</th><th>操作</th></tr></thead>
       <tbody id="staff-list-body">${staffListRowsHtml()}</tbody>
     </table></div>
   </div>`;
@@ -5725,11 +5768,13 @@ async function submitCreateStaff(){
   const phoneRaw = ((document.getElementById('staff-phone')||{}).value||'').trim();
   const phone = normalizePhone(phoneRaw);
   let name = ((document.getElementById('staff-name')||{}).value||'').trim();
-  const position = ((document.getElementById('staff-position')||{}).value||'員工').trim();
+  const employment = ((document.getElementById('staff-position')||{}).value||'全職').trim();
+  const identity = ((document.getElementById('staff-identity')||{}).value||'員工').trim();
   const regions = selectedStaffRegions();
   if(!phone){ alert2('請輸入有效的香港 8 位電話號碼。'); return; }
-  if(['經理','主管','員工'].indexOf(position)<0){ alert2('請選擇有效職位。'); return; }
-  if(position==='員工' && !regions.length){ alert2('員工必須至少選擇 1 個隸屬地區。'); return; }
+  if(STAFF_EMPLOYMENT.indexOf(employment)<0){ alert2('請選擇職位：全職或兼職。'); return; }
+  if(['經理','主管','員工'].indexOf(identity)<0){ alert2('請選擇有效身份。'); return; }
+  if(identity==='員工' && !regions.length){ alert2('身份為員工時必須至少選擇 1 個隸屬地區。'); return; }
   ensureAdminUser();
   if(users.some(function(u){
     const up = normalizePhone(u.phone) || normalizePhone(u.id) || normalizePhone(u.login);
@@ -5740,18 +5785,20 @@ async function submitCreateStaff(){
   }
   if(!name) name = phone;
   const pw = passwordFromPhone(phone);
-  const role = position==='員工' ? 'personal' : 'system_admin';
+  const role = identity==='員工' ? 'personal' : 'system_admin';
   const payload = {
     id: phone,
     login: phone,
     phone: phone,
     pw: pw,
     name: name,
-    position: position,
+    identity: identity,
+    position: employment,
+    employment: employment,
     role: role,
     units: regions,
     unit: regions[0]||null,
-    dept: regions.join('、') || (position==='員工'?'—':'管理層'),
+    dept: regions.join('、') || (identity==='員工'?'—':'管理層'),
     active: true
   };
   let syncNote = '';
@@ -5771,14 +5818,15 @@ async function submitCreateStaff(){
     alert2('創建失敗：'+(e.message||e));
     return;
   }
-  addModuleLog('push','創建員工', position+'｜'+phone+'｜'+(regions.length?regions.join('、'):'無地區'));
+  addModuleLog('push','創建員工', identity+'｜'+employment+'｜'+phone+'｜'+(regions.length?regions.join('、'):'無地區'));
   try{ await persistProjectsNow(); }catch(e){ noteCloudError(e); }
-  const copyText = '電話：'+phone+'\n密碼：'+pw+'\n職位：'+position+'\n地區：'+(regions.length?regions.join('、'):'—');
+  const copyText = '電話：'+phone+'\n密碼：'+pw+'\n職位：'+employment+'\n身份：'+identity+'\n地區：'+(regions.length?regions.join('、'):'—');
   showModal(`<h3>✅ 已建立員工</h3>
     <p style="font-size:14px;line-height:1.7">
       電話／登入：<b>${escHtml(phone)}</b><br>
       初始密碼：<b>${escHtml(pw)}</b><br>
-      職位：<b>${escHtml(position)}</b><br>
+      職位：<b>${escHtml(employment)}</b><br>
+      身份：<b>${escHtml(identity)}</b><br>
       地區：<b>${escHtml(regions.length?regions.join('、'):'—')}</b>
       ${syncNote}
     </p>
@@ -5814,9 +5862,116 @@ async function copyStaffCreds(text){
   }
 }
 
+/* ═══════════ 員工資料（主管／經理／系統管理員） ═══════════ */
+function vStaffDirectory(){
+  if(!canCreateEmployee()){
+    return '<div class="card"><h2>員工資料</h2><p>只有經理／主管／系統管理員可以查看。</p></div>';
+  }
+  ensureAdminUser();
+  const rows = users.map(function(u){
+    const phone = normalizePhone(u.phone) || normalizePhone(u.id) || '';
+    const account = phone || u.login || u.id || '—';
+    const units = userUnits(u);
+    const id = escHtml(String(u.id||''));
+    return '<tr>'+
+      '<td>'+escHtml(u.name||'')+'</td>'+
+      '<td>'+escHtml(account)+'</td>'+
+      '<td>'+escHtml(units.length?units.join('、'):'—')+'</td>'+
+      '<td><button type="button" class="btn sm" data-call="promptEditStaffProfile" data-arg0="'+id+'">修改</button></td>'+
+      '</tr>';
+  }).join('');
+  return '<div class="card"><h2>員工資料</h2>'+
+    '<p style="font-size:13px;color:#666;margin-bottom:8px">顯示全部賬號的姓名、電話與地區／單位。修改時地區／單位可點選，並可多選。</p>'+
+    '<div class="table-wrap"><table><thead><tr><th>姓名</th><th>電話</th><th>地區／單位</th><th>操作</th></tr></thead>'+
+    '<tbody>'+(rows||'<tr><td colspan="4">尚無賬號</td></tr>')+'</tbody></table></div></div>';
+}
+function promptEditStaffProfile(userId){
+  if(!canCreateEmployee()){ alert2('沒有權限修改員工資料。'); return; }
+  const u = users.find(function(x){ return String(x.id)===String(userId); });
+  if(!u){ alert2('找不到此賬號。'); return; }
+  const phone = normalizePhone(u.phone) || normalizePhone(u.id) || '';
+  const selected = {};
+  userUnits(u).forEach(function(r){ selected[r] = true; });
+  const checks = STAFF_REGIONS.map(function(r){
+    return '<label class="rc-item"><input type="checkbox" class="staff-edit-region" value="'+r+'"'+(selected[r]?' checked':'')+'> '+r+'</label>';
+  }).join('');
+  const admin = u.login==='admin' || u.id==='adm';
+  showModal('<h3>修改員工資料</h3>'+
+    '<p style="font-size:13px;color:#666">身份：<b>'+escHtml(u.identity||'—')+'</b>　職位：<b>'+escHtml(admin?'—':(u.position||'—'))+'</b></p>'+
+    '<label>姓名</label><input type="text" id="staff-edit-name" value="'+escHtml(u.name||'')+'">'+
+    (admin
+      ? '<label>電話</label><input type="text" value="admin" readonly style="background:#f5f5f5">'
+      : '<label>電話（8 位；更改後密碼改為新電話末四位）</label><input type="tel" id="staff-edit-phone" value="'+escHtml(phone)+'">')+
+    '<label>地區／單位（點選，可多選）</label><div class="recipient-box" style="max-height:180px">'+checks+'</div>'+
+    '<div class="actions">'+
+      '<button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'+
+      '<button type="button" class="btn sm" data-call="submitEditStaffProfile" data-arg0="'+escHtml(String(u.id))+'">儲存</button>'+
+    '</div>');
+}
+async function submitEditStaffProfile(userId){
+  if(!canCreateEmployee()){ alert2('沒有權限修改員工資料。'); return; }
+  const u = users.find(function(x){ return String(x.id)===String(userId); });
+  if(!u){ alert2('找不到此賬號。'); return; }
+  const name = ((document.getElementById('staff-edit-name')||{}).value||'').trim();
+  const phoneEl = document.getElementById('staff-edit-phone');
+  const phone = phoneEl ? String(phoneEl.value||'').trim() : '';
+  const regions = Array.from(document.querySelectorAll('.staff-edit-region:checked')).map(function(cb){ return cb.value; })
+    .filter(function(x,i,a){ return STAFF_REGIONS.indexOf(x)>=0 && a.indexOf(x)===i; });
+  if(!name){ alert2('請填寫姓名。'); return; }
+  if((u.identity==='員工') && !regions.length){ alert2('員工必須至少選擇 1 個地區／單位。'); return; }
+  const body = { name: name, units: regions };
+  if(phoneEl) body.phone = phone;
+  try{
+    const res = await apiFetch('/api/users/'+encodeURIComponent(userId), {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    if(res && res.user){
+      const nu = normalizeUser(res.user);
+      const idx = users.findIndex(function(x){ return String(x.id)===String(userId) || String(x.id)===String(nu.id); });
+      if(idx>=0) users[idx] = nu;
+      else users.push(nu);
+      if(currentUser && (String(currentUser.id)===String(userId) || String(currentUser.id)===String(nu.id))){
+        currentUser = nu;
+      }
+      saveUsersLocal();
+    } else {
+      await loadCloudAppData();
+    }
+    closeModal();
+    alert2('已更新員工資料。');
+    render();
+  }catch(e){ alert2('修改失敗：'+(e.message||e)); }
+}
+
 /* ═══════════ 工具 ═══════════ */
-function nowStr(){ const d=new Date(); return d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日 '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
-function todayStr(){ const d=new Date(); return d.getFullYear()+'年'+(d.getMonth()+1)+'月'+d.getDate()+'日'; }
+function hkNowParts(){
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone:'Asia/Hong_Kong',
+    year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', hourCycle:'h23'
+  }).formatToParts(new Date());
+  const g = function(t){
+    const v = ((parts.find(function(p){ return p.type===t; })||{}).value) || '00';
+    return v==='24' ? '00' : v;
+  };
+  return { y:Number(g('year')), m:Number(g('month')), d:Number(g('day')), hh:g('hour'), mm:g('minute') };
+}
+function hkYmd(offsetDays){
+  const p = hkNowParts();
+  const utc = new Date(Date.UTC(p.y, p.m-1, p.d+(offsetDays||0)));
+  const y = utc.getUTCFullYear();
+  const m = utc.getUTCMonth()+1;
+  const d = utc.getUTCDate();
+  return y+'-'+String(m).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+}
+function nowStr(){
+  const p = hkNowParts();
+  return p.y+'年'+p.m+'月'+p.d+'日 '+p.hh+':'+p.mm;
+}
+function todayStr(){
+  const p = hkNowParts();
+  return p.y+'年'+p.m+'月'+p.d+'日';
+}
 /** 解析「2026年8月6日」或帶時間的字串 → ms；失敗回 0 */
 function parseZhDateMs(s){
   const m = String(s||'').match(/(\d{4})年(\d{1,2})月(\d{1,2})日(?:\s+(\d{1,2}):(\d{2}))?/);
@@ -5911,7 +6066,7 @@ function projectAssigneeOpts(selectedId){
   const selected = selectedId ? String(selectedId) : '';
   const opts = pool.map(function(u){
     const phone = normalizePhone(u.phone)||normalizePhone(u.id)||'';
-    const label = escHtml(u.name)+(phone?('｜'+phone):'')+'（'+escHtml(u.position||roleLabel(u))+'）';
+    const label = escHtml(u.name)+(phone?('｜'+phone):'')+'（'+escHtml((u.identity||'')+(u.position?'｜'+u.position:''))+'）';
     return `<option value="${u.id}"${u.id===selected?' selected':''}>${label}</option>`;
   }).join('');
   if(!opts) return `<option value="">（尚無經理／主管賬號，請先「創建員工」）</option>`;
@@ -5926,12 +6081,12 @@ function projectAssigneeChecksHtml(selectedIds, inputClass){
   });
   const cls = inputClass || 'stage-handler-cb';
   if(!pool.length){
-    return '<p style="font-size:12px;color:#c62828;margin:0">尚無經理／主管可選。請先創建職位為「經理」或「主管」的賬號。</p>';
+    return '<p style="font-size:12px;color:#c62828;margin:0">尚無經理／主管可選。請先創建身份為「經理」或「主管」的賬號。</p>';
   }
   return '<div class="recipient-box" style="max-height:160px;min-width:220px">'+
     pool.map(function(u){
       const phone = normalizePhone(u.phone)||normalizePhone(u.id)||'';
-      const label = escHtml(u.name)+'（'+escHtml(u.position||'')+(phone?'｜'+phone:'')+'）';
+      const label = escHtml(u.name)+'（'+escHtml(u.identity||'')+(u.position?'｜'+escHtml(u.position):'')+(phone?'｜'+phone:'')+'）';
       const checked = selected[String(u.id)] ? ' checked' : '';
       return '<label class="rc-item"><input type="checkbox" class="'+cls+'" value="'+escHtml(u.id)+'"'+checked+'> '+label+'</label>';
     }).join('')+
@@ -5963,9 +6118,30 @@ function canOperateStage(p, s){
 function fmtMention(text){
   return String(text||'').replace(/@([^\s@，,。]+)/g,'<span class="mention">@$1</span>');
 }
+function repairUtf8Filename(name){
+  const raw = String(name||'');
+  if(!raw || /[\u3400-\u9fff]/.test(raw)) return raw;
+  const bytes = [];
+  for(let i=0;i<raw.length;i++){
+    const c = raw.charCodeAt(i);
+    if(c>255) return raw;
+    bytes.push(c);
+  }
+  try{
+    const decoded = new TextDecoder('utf-8', { fatal:true }).decode(new Uint8Array(bytes));
+    if(decoded && /[\u3400-\u9fff]/.test(decoded)) return decoded;
+  }catch(e){}
+  return raw;
+}
+function isVideoFile(f){
+  const mime = String((f&&f.mimeType)||'').toLowerCase();
+  if(mime.indexOf('video/')===0) return true;
+  return /\.(mp4|webm|ogg|mov|m4v|mkv)$/i.test(String((f&&f.name)||''));
+}
 function ensureFilePayload(f){
   if(!f) return f;
-  if(typeof f==='string') return {name:f};
+  if(typeof f==='string') return {name:repairUtf8Filename(f)};
+  if(f.name) f.name = repairUtf8Filename(f.name);
   var driveFileId = fileStorageId(f);
   if(driveFileId){
     f.driveFileId = driveFileId;
@@ -5979,6 +6155,12 @@ function fileLinkHtml(fileOrName, label){
   const f = ensureFilePayload(typeof fileOrName==='string'?{name:fileOrName}:fileOrName);
   const name = f.name||'附件';
   const href = fileHref(f);
+  if(isVideoFile(f) && href && href!=='#'){
+    if(!window._dailyPreviewFiles) window._dailyPreviewFiles = {};
+    const key = 'vid_'+String(f.driveFileId||f.id||name).replace(/[^a-zA-Z0-9_-]/g,'_');
+    window._dailyPreviewFiles[key] = f;
+    return `<a class="file-link" href="#" data-call="dailyPreviewAttachCached" data-arg0="${escHtml(key)}">▶ ${label||name}</a>`;
+  }
   return `<a class="file-link" href="${href}" download="${name.replace(/"/g,'')}" target="_blank" rel="noopener">${label||('📎 '+name)}</a>`;
 }
 function mentionCandidates(q){
@@ -6089,7 +6271,7 @@ function accountStoreOptions(user){
     : (typeof STORE_UNITS!=='undefined' ? STORE_UNITS.slice() : STAFF_REGIONS.slice());
   const units = userUnits(user);
   const list = units.filter(function(u){ return all.indexOf(u)>=0 && !isWarehouseStoreName(u); });
-  if(!list.length && (user.role==='system_admin' || user.role==='manager' || user.position==='經理' || user.position==='主管')){
+  if(!list.length && (user.identity==='系統管理員' || user.identity==='經理' || user.identity==='主管' || user.role==='system_admin' || user.role==='manager')){
     return retailStoreList(all);
   }
   return list.length ? list : retailStoreList(all);
@@ -6173,14 +6355,16 @@ function enterAppAs(user, opts){
   }
   document.getElementById('page-login').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
-  const pos = currentUser.position || '';
+  const idn = currentUser.identity || '';
+  const emp = (currentUser.login==='admin' || currentUser.id==='adm') ? '' : (currentUser.position || '');
+  const tag = [idn, emp].filter(Boolean).join('｜');
   const phone = normalizePhone(currentUser.phone) || normalizePhone(currentUser.id);
-  if(currentUser.role==='system_admin'){
-    document.getElementById('top-user').textContent = '👑 '+currentUser.name+'（'+(pos||'系統管理員')+'）';
-  } else if(currentUser.role==='manager'){
-    document.getElementById('top-user').textContent = '🧭 '+currentUser.name+'（'+(pos||'主管')+'）';
+  if(currentUser.login==='admin' || currentUser.id==='adm'){
+    document.getElementById('top-user').textContent = '👑 '+currentUser.name+'（'+(idn||'系統管理員')+'）';
+  } else if(idn==='經理' || idn==='主管'){
+    document.getElementById('top-user').textContent = '🧭 '+currentUser.name+'（'+(tag||idn)+'）';
   } else {
-    document.getElementById('top-user').textContent = '👤 '+currentUser.name+(phone?'｜'+phone:'｜'+roleLabel(currentUser));
+    document.getElementById('top-user').textContent = '👤 '+currentUser.name+(phone?'｜'+phone:'')+(tag?'（'+tag+'）':'');
   }
   refreshCloudSyncStatus();
   applyWorkingStoreToFeatures(getWorkingStore());
@@ -6280,6 +6464,10 @@ async function logout(){
 
 /* ═══════════ 導航及渲染 ═══════════ */
 function setModule(m){
+  if(isPartTimeAccount() && m!=='daily' && m!=='push'){
+    alert2('兼職賬號只能使用今日工作與通知。');
+    m='daily';
+  }
   // 員工職位不可進入開發及生產
   if(m==='production' && isPersonal()){
     alert2('員工賬戶無法使用「開發及生產」。');
@@ -6297,6 +6485,7 @@ function setModule(m){
   }
   else if(m==='push'){ currentView='pushAll'; pushFilterCat='全部'; pushFilterRead='全部'; pushFilterKw=''; }
   else if(m==='createStaff'){ currentView='createStaff'; }
+  else if(m==='staffDirectory'){ currentView='staffDirectory'; }
   else if(m==='settings'){ currentView='settings'; }
   else if(m==='systemSettings'){ currentView='systemSettings'; }
   else if(m==='transfer'){ currentView='transferProducts'; }
@@ -6311,10 +6500,17 @@ function setModule(m){
 }
 /** 側欄第一層 → 第二層模組 */
 function getSidebarTree(){
+  if(isPartTimeAccount()){
+    return [{ id:'features', label:'功能', children: [
+      { mod:'daily', label:'今日工作' },
+      { mod:'push', label:'推送通知' }
+    ] }];
+  }
   const features = [
     { mod:'daily', label:'今日工作' },
     { mod:'push', label:'推送通知' }
   ];
+  if(canCreateEmployee()) features.push({ mod:'staffDirectory', label:'員工資料' });
   if(canCreateEmployee()) features.push({ mod:'createStaff', label:'創建員工' });
   features.push({ mod:'settings', label:'個人設置' });
   features.push({ mod:'systemSettings', label:'設置' });
@@ -6379,6 +6575,7 @@ function toggleSidebarL2(mod){
 /** 某模組下的第三層子頁 */
 function getSidebarItemsForModule(mod){
   if(mod==='daily'){
+    if(isPartTimeAccount()) return [['dailyToday','今日工作']];
     const items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyHistory','歷史記錄'],['dailyRecords','我的記錄']];
     if(dailyCanCreateAdhoc(currentUser)) items.push(['dailyNew','新增突發']);
     if(isAdmin()||isManager()) items.push(['dailyRecurring','恆常任務'],['dailyOpLogs','操作記錄']);
@@ -6404,6 +6601,17 @@ function getSidebarItemsForModule(mod){
   }
   if(mod==='push'){
     const unreadN = myUnreadAnnouncements().length;
+    if(isPartTimeAccount()){
+      const readN0 = myActiveAnnouncements().filter(function(n){ const s=myNoticeReader(n); return s&&s.status==='read'; }).length;
+      const endedN0 = announcementList().filter(function(n){ return n.status!=='進行中' && (isNoticeRecipient(n)||String(n.fromUserId)===String(currentUser.id)); }).length;
+      const allN0 = pushAllSourceList().length;
+      return [
+        ['pushAll','所有通知（'+allN0+'）'],
+        ['pushUnread','未回覆／未閱讀'+(unreadN?'（'+unreadN+'）':'')],
+        ['pushRead','已讀取（'+readN0+'）'],
+        ['pushEnded','已完結（'+endedN0+'）']
+      ];
+    }
     const readN = myActiveAnnouncements().filter(function(n){ const s=myNoticeReader(n); return s&&s.status==='read'; }).length;
     const endedN = announcementList().filter(function(n){ return n.status!=='進行中' && (isNoticeRecipient(n)||String(n.fromUserId)===String(currentUser.id)||isAdmin()||isManager()); }).length;
     const mineN = pushAllSourceList().filter(function(n){ return String(n.fromUserId)===String(currentUser.id)||isAdmin()||isManager(); }).length;
@@ -6420,6 +6628,7 @@ function getSidebarItemsForModule(mod){
     return items;
   }
   if(mod==='createStaff') return [['createStaff','創建員工']];
+  if(mod==='staffDirectory') return [['staffDirectory','員工資料']];
   if(mod==='settings') return [['settings','更改密碼']];
   if(mod==='systemSettings') return [['systemSettings','紅日假期']];
   if(mod==='transfer'){
@@ -6532,6 +6741,10 @@ function bindAppSidebarChrome(){
 function render(){
   bindAppSidebarChrome();
   // 若目前停在不該看的模組，導回每日
+  if(isPartTimeAccount() && !partTimeAllowsView(currentView)){
+    currentModule='daily';
+    currentView='dailyToday';
+  }
   if(isPersonal() && currentModule==='production'){
     currentModule='daily';
     currentView='dailyToday';
@@ -6587,6 +6800,7 @@ function render(){
     pushStats: vPushStats,
     pushLogs: vPushLogs,
     createStaff: vCreateStaff,
+    staffDirectory: vStaffDirectory,
     settings: vPersonalSettings,
     systemSettings: vSystemSettings,
     transferInventory: vTransferInventory,
@@ -6626,6 +6840,10 @@ function goInModule(mod, v){
   go(v);
 }
 function go(v){
+  if(isPartTimeAccount() && !partTimeAllowsView(v)){
+    alert2('兼職賬號只能使用今日工作與通知。');
+    v='dailyToday';
+  }
   if(v==='transferInventory') v='transferProducts';
   if(v==='posProducts') v='posCashier';
   currentView=v; currentProject=null;
@@ -6637,6 +6855,7 @@ function go(v){
   if(v==='repList'){ listType='rep'; currentModule='replenishment'; }
   if(v==='pushNotify' || v==='pushAll' || v==='pushUnread' || v==='pushRead' || v==='pushEnded' || v==='pushMine' || v==='pushCreate' || v==='pushDetail' || v==='pushStats' || v==='pushLogs'){ currentModule='push'; }
   if(v==='createStaff'){ currentModule='createStaff'; }
+  if(v==='staffDirectory'){ currentModule='staffDirectory'; }
   if(v==='settings'){ currentModule='settings'; }
   if(v==='systemSettings'){ currentModule='systemSettings'; }
   if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProductLog' || v==='transferProducts'){ currentModule='transfer'; }
@@ -6720,7 +6939,7 @@ function getProjectTodosForUser(user){
   user=user||currentUser;
   if(!user) return [];
   // 員工（personal）看自己的經手階段；管理員也可在「我的工作」看到自己被指派的
-  if(!(user.role==='personal' || user.position==='員工' || user.role==='system_admin')) return [];
+  if(!(user.role==='personal' || user.identity==='員工' || user.role==='system_admin')) return [];
   const out=[];
   projects.forEach(p=>{
     if(isProjectLocked(p)) return;
@@ -8301,8 +8520,10 @@ function mergeDailyStates(cloudRaw, localRaw){
 }
 
 function dailyTodayStr(){
-  var d=new Date();
-  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  return typeof hkYmd==='function' ? hkYmd(0) : (function(){
+    var d=new Date();
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  })();
 }
 function dailyNowStr(){ return typeof nowStr==='function'?nowStr():new Date().toLocaleString('zh-HK'); }
 function dailyUserId(user){ user=user||currentUser; return user?String(user.id):'system'; }
@@ -8431,8 +8652,8 @@ function listDailyStaffForUnits(units){
     if(!us.length) return true; // 未綁地區的管理層仍可出現在名單
     return us.some(function(unit){ return units.indexOf(unit)>=0; });
   }).sort(function(a,b){
-    var pa=String(a.position||a.role||'');
-    var pb=String(b.position||b.role||'');
+    var pa=String(a.identity||a.position||a.role||'');
+    var pb=String(b.identity||b.position||b.role||'');
     if(pa!==pb) return pa.localeCompare(pb,'zh-Hant');
     return String(a.name||'').localeCompare(String(b.name||''),'zh-Hant');
   });
@@ -8727,6 +8948,7 @@ function completeDailyWork(id,user,checked,opts){
   return true;
 }
 function dailyTomorrowStr(){
+  if(typeof hkYmd==='function') return hkYmd(1);
   var d=new Date();
   d.setDate(d.getDate()+1);
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
@@ -9365,7 +9587,7 @@ function staffChecksHtml(units, selected){
   }
   return list.map(function(u){
     var labs=dailyUserUnits(u).join('、');
-    var pos=u.position||roleLabel(u)||'';
+    var pos=(u.identity||'')+(u.position?('｜'+u.position):'')||roleLabel(u)||'';
     return '<label style="display:flex;align-items:center;gap:6px;margin:6px 0">'+
       '<input type="checkbox" class="d-staff" value="'+dailyEsc(String(u.id))+'" '+(selected.indexOf(String(u.id))>=0?'checked':'')+'> '+
       '<span>'+dailyEsc(u.name)
@@ -9678,6 +9900,10 @@ function dailyIsPdfFile(f,name){
   if(mime==='application/pdf') return true;
   return /\.pdf$/i.test(String(name||''));
 }
+function dailyIsVideoFile(f,name){
+  if(typeof isVideoFile==='function' && isVideoFile(f)) return true;
+  return /\.(mp4|webm|ogg|mov|m4v|mkv)$/i.test(String(name||(f&&f.name)||''));
+}
 function dailyShowAttachPreview(f, opts){
   opts=opts||{};
   f=ensureFilePayload(f);
@@ -9692,6 +9918,8 @@ function dailyShowAttachPreview(f, opts){
       '</div>';
   }else if(dailyIsPdfFile(f,name)){
     body='<iframe src="'+safeHref+'" title="'+dailyEsc(name)+'" style="width:100%;height:70vh;border:1px solid #e0e5ec;border-radius:8px;background:#fafafa"></iframe>';
+  }else if(dailyIsVideoFile(f,name)){
+    body='<video src="'+safeHref+'" controls playsinline autoplay preload="metadata" style="width:100%;max-height:70vh;background:#000;border-radius:8px"></video>';
   }else{
     body='<p style="font-size:14px;color:#555;line-height:1.6">此檔案類型無法在彈窗內直接預覽，請用下方按鈕開啟。</p>'+
       '<p style="margin-top:8px"><a class="file-link" href="'+safeHref+'" target="_blank" rel="noopener">在新分頁開啟／下載</a></p>';

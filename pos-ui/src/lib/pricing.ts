@@ -10,8 +10,22 @@ function firstMoney(...vals: Array<number | null | undefined>): number | null {
 
 export function transferListPrice(product?: Partial<PosProduct> | null): number {
   return (
-    firstMoney(product?.priceSpecial, product?.priceRetail, product?.priceOriginal, product?.price) || 0
+    firstMoney(
+      product?.priceSpecial,
+      product?.priceRetail,
+      product?.priceSale,
+      product?.priceOriginal,
+      product?.price,
+    ) || 0
   )
+}
+
+/** 折扣率要乘在收銀顯示的售價上。原價較高時，不可拿原價的 75 折蓋過較低的優惠價。 */
+function memberRateBase(product: Partial<PosProduct> | null | undefined, list: number) {
+  const shelf = firstMoney(product?.price)
+  const candidates = [list, shelf].filter((n): n is number => n != null && n > 0)
+  if (!candidates.length) return 0
+  return Math.min(...candidates)
 }
 
 function defaultNet(list: number, rate: number) {
@@ -49,6 +63,9 @@ export function resolveMemberUnitPrice(
   else if (lv === '尊貴會員') unit = nets.vip
   else if (lv === '教練會員') unit = nets.coach ?? nets.vip
   else if (lv === '長者會員') unit = pricing?.isRedDay ? nets.seniorRed : nets.senior
-  if (pricing?.isBirthday && list > 0) unit = Math.min(unit, defaultNet(list, 0.75))
+  const base = memberRateBase(product, list)
+  const rate = Number(pricing?.rate)
+  if (base > 0 && rate > 0 && rate < 1) unit = Math.min(unit, defaultNet(base, rate))
+  else if (pricing?.isBirthday && base > 0) unit = Math.min(unit, defaultNet(base, 0.75))
   return Math.round((Number.isFinite(unit) ? unit : 0) * 100) / 100
 }
