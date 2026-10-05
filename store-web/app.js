@@ -1,6 +1,8 @@
 /* ═══════════ 基礎資料 ═══════════ */
 const DEV_STAGES = ['企劃選材','技術規格單','打版','樣本修改與確認','量產準備','倉存與物流','陳列銷售'];
 const REP_STAGES = ['銷售分析','打版','樣本修改與確認','量產準備','倉存與物流','陳列銷售'];
+const SEC_STAGES = ['上傳貨物圖片','檢查','是否已處理'];
+const REV_STAGES = ['上傳評價內容'];
 const CATEGORIES = ['成人保暖衣','兒童保暖衣','成人抓毛','兒童抓毛','成人膠衣','兒童膠衣','成人泳裝','兒童泳裝','防曬用品','游水用品','防水袋','其他'];
 
 const USERS_KEY = 'store-web-users-v1';
@@ -213,7 +215,9 @@ let projects = [];
 let projectsHydrated = false;
 let projSeq = 1;
 let repProjSeq = 1;
-let moduleLogs = { daily: [], production: [], replenishment: [], push: [] };
+let secProjSeq = 1;
+let revProjSeq = 1;
+let moduleLogs = { daily: [], production: [], replenishment: [], seconds: [], reviews: [], push: [] };
 const SAMPLE_PROJECT_IDS = ['P001','P002','P003'];
 const SAMPLE_PROJECT_CODES = ['WS-999','WS-888','WS-777'];
 const SAMPLE_PROJECT_NAMES = ['成人日本光皮長短','1mm兒童抓毛上衣','兒童防曬套裝'];
@@ -240,15 +244,21 @@ function purgeSampleProjects(){
     if(SAMPLE_PROJECT_NAMES.indexOf(p.name)>=0) return false;
     return true;
   });
-  let maxP = 0, maxR = 0;
+  let maxP = 0, maxR = 0, maxC = 0, maxV = 0;
   projects.forEach(function(p){
     const mp = String(p.id||'').match(/^P(\d+)$/i);
     const mr = String(p.id||'').match(/^R(\d+)$/i);
+    const mc = String(p.id||'').match(/^C(\d+)$/i);
+    const mv = String(p.id||'').match(/^V(\d+)$/i);
     if(mp) maxP = Math.max(maxP, parseInt(mp[1],10));
     if(mr) maxR = Math.max(maxR, parseInt(mr[1],10));
+    if(mc) maxC = Math.max(maxC, parseInt(mc[1],10));
+    if(mv) maxV = Math.max(maxV, parseInt(mv[1],10));
   });
   if(maxP >= projSeq) projSeq = maxP + 1;
   if(maxR >= repProjSeq) repProjSeq = maxR + 1;
+  if(maxC >= secProjSeq) secProjSeq = maxC + 1;
+  if(maxV >= revProjSeq) revProjSeq = maxV + 1;
   if(!projects.length && projSeq < 1) projSeq = 1;
   return projects.length !== before;
 }
@@ -380,15 +390,21 @@ function slimFileRef(f){
   return f;
 }
 function slimProjectsPayload(){
-  // 開發 → projects collection；補貨 → replenishment_projects；moduleLogs → module_logs
-  const productionProjects = projects.filter(function(p){ return p && p.type!=='rep'; });
+  // 開發 → projects；補貨 → replenishment_projects；次貨 → seconds_projects
+  const productionProjects = projects.filter(function(p){ return p && p.type!=='rep' && p.type!=='sec' && p.type!=='rev'; });
   const replenishmentProjects = projects.filter(function(p){ return p && p.type==='rep'; });
+  const secondsProjects = projects.filter(function(p){ return p && p.type==='sec'; });
+  const reviewProjects = projects.filter(function(p){ return p && p.type==='rev'; });
   const cloned = JSON.parse(JSON.stringify({
     productionProjects,
     replenishmentProjects,
-    projects: productionProjects.concat(replenishmentProjects),
+    secondsProjects,
+    reviewProjects,
+    projects: productionProjects.concat(replenishmentProjects, secondsProjects, reviewProjects),
     projSeq,
     repProjSeq,
+    secProjSeq,
+    revProjSeq,
     moduleLogs
   }));
   function slimList(list){
@@ -405,6 +421,8 @@ function slimProjectsPayload(){
   }
   slimList(cloned.productionProjects);
   slimList(cloned.replenishmentProjects);
+  slimList(cloned.secondsProjects);
+  slimList(cloned.reviewProjects);
   slimList(cloned.projects);
   return cloned;
 }
@@ -611,8 +629,8 @@ async function loadCloudAppData(){
 
   const ps = await apiFetch('/api/projects');
   let incoming = [];
-  if(Array.isArray(ps.productionProjects) || Array.isArray(ps.replenishmentProjects)){
-    incoming = [].concat(ps.productionProjects||[], ps.replenishmentProjects||[]);
+  if(Array.isArray(ps.productionProjects) || Array.isArray(ps.replenishmentProjects) || Array.isArray(ps.secondsProjects) || Array.isArray(ps.reviewProjects)){
+    incoming = [].concat(ps.productionProjects||[], ps.replenishmentProjects||[], ps.secondsProjects||[], ps.reviewProjects||[]);
   }
   // 拆欄位若為空陣列，仍要讀舊版混陣列，避免把真實項目當成「沒有資料」
   if(!incoming.length && Array.isArray(ps.projects) && ps.projects.length){
@@ -626,8 +644,7 @@ async function loadCloudAppData(){
   // 正規化階段經手人：舊 handler 單值 → handlers[]
   projects.forEach(function(p){
     if(!p) return;
-    // 列表以 type==='dev' 篩選；非補貨一律視為開發及生產
-    if(p.type !== 'rep') p.type = 'dev';
+    if(p.type !== 'rep' && p.type !== 'sec' && p.type !== 'rev') p.type = 'dev';
     if(!Array.isArray(p.stages)) p.stages = [];
     if(!Array.isArray(p.comments)) p.comments = [];
     if(!Array.isArray(p.files)) p.files = [];
@@ -649,8 +666,12 @@ async function loadCloudAppData(){
   else if(!projects.filter(function(p){ return p.type!=='rep'; }).length) projSeq = 1;
   if(typeof ps.repProjSeq === 'number') repProjSeq = ps.repProjSeq;
   else if(!projects.filter(function(p){ return p.type==='rep'; }).length) repProjSeq = 1;
+  if(typeof ps.secProjSeq === 'number') secProjSeq = ps.secProjSeq;
+  else if(!projects.filter(function(p){ return p.type==='sec'; }).length) secProjSeq = 1;
+  if(typeof ps.revProjSeq === 'number') revProjSeq = ps.revProjSeq;
+  else if(!projects.filter(function(p){ return p.type==='rev'; }).length) revProjSeq = 1;
   if(ps.moduleLogs && typeof ps.moduleLogs === 'object'){
-    moduleLogs = Object.assign({ daily:[], production:[], replenishment:[], push:[] }, ps.moduleLogs);
+    moduleLogs = Object.assign({ daily:[], production:[], replenishment:[], seconds:[], reviews:[], push:[] }, ps.moduleLogs);
   }
   const orphans = applyUsersFromCloud(ps.users);
   let projectsDirty = false;
@@ -1797,6 +1818,12 @@ function inferSystemNoticeCta(n){
     if(cat==='補貨' || title.indexOf('補貨')===0){
       return { mod:'replenishment', view:'repList', projectId: n.cta && n.cta.projectId, label:'前往項目' };
     }
+    if(cat==='次貨處理' || title.indexOf('次貨處理')===0){
+      return { mod:'seconds', view:'secList', projectId: n.cta && n.cta.projectId, label:'前往項目' };
+    }
+    if(cat==='客戶評價' || title.indexOf('客戶評價')===0){
+      return { mod:'reviews', view:'revList', projectId: n.cta && n.cta.projectId, label:'前往評價' };
+    }
     if(cat==='恆常任務' || cat==='突發任務' || title.indexOf('恆常任務')===0 || title.indexOf('突發任務')===0){
       return { mod:'daily', view:'dailyToday', label:'前往今日工作' };
     }
@@ -1812,6 +1839,12 @@ function inferSystemNoticeCta(n){
   }
   if(cat==='補貨' || title.indexOf('補貨：')===0){
     return { mod:'replenishment', view:'repList', label:'前往項目列表' };
+  }
+  if(cat==='次貨處理' || title.indexOf('次貨處理：')===0){
+    return { mod:'seconds', view:'secList', label:'前往項目列表' };
+  }
+  if(cat==='客戶評價' || title.indexOf('客戶評價：')===0){
+    return { mod:'reviews', view:'revList', label:'前往評價列表' };
   }
   return null;
 }
@@ -6007,7 +6040,54 @@ function compareProjectsNewestFirst(a, b){
 function sortProjectsNewestFirst(list){
   return (Array.isArray(list) ? list.slice() : []).sort(compareProjectsNewestFirst);
 }
-function moduleForProject(p){ return p && p.type==='rep' ? 'replenishment' : 'production'; }
+function projectTypeLabel(type){
+  if(type==='rep') return '補貨';
+  if(type==='sec') return '次貨處理';
+  if(type==='rev') return '客戶評價';
+  return '開發及生產';
+}
+function stagesForType(type){
+  if(type==='rep') return REP_STAGES;
+  if(type==='sec') return SEC_STAGES;
+  if(type==='rev') return REV_STAGES;
+  return DEV_STAGES;
+}
+function listViewForType(type){
+  if(type==='rep') return 'repList';
+  if(type==='sec') return 'secList';
+  if(type==='rev') return 'revList';
+  return 'devList';
+}
+function moduleForType(type){
+  if(type==='rep') return 'replenishment';
+  if(type==='sec') return 'seconds';
+  if(type==='rev') return 'reviews';
+  return 'production';
+}
+function canEditReview(p){
+  if(!p || p.type!=='rev' || !currentUser || isProjectLocked(p)) return false;
+  if(isAdmin()) return true;
+  if(String(p.owner||'')===String(currentUser.id)) return true;
+  return (p.stages||[]).some(function(s){ return isStageHandler(s, currentUser.id); });
+}
+function listReviewOwners(){
+  return users.filter(function(u){
+    if(!u || u.active===false || userNeedsPhoneBind(u)) return false;
+    if(isPartTimeAccount(u)) return false;
+    return u.identity==='經理' || u.identity==='主管' || u.identity==='員工' || u.identity==='系統管理員' || u.login==='admin' || u.id==='adm';
+  });
+}
+function reviewOwnerOpts(selectedId){
+  const selected = selectedId ? String(selectedId) : (currentUser ? String(currentUser.id) : '');
+  const pool = listReviewOwners();
+  if(!pool.length) return '<option value="">（沒有可選的負責人）</option>';
+  return pool.map(function(u){
+    const phone = normalizePhone(u.phone)||normalizePhone(u.id)||'';
+    const label = escHtml(u.name)+(phone?('｜'+phone):'')+'（'+escHtml((u.identity||'')+(u.position?'｜'+u.position:''))+'）';
+    return '<option value="'+escHtml(u.id)+'"'+(String(u.id)===selected?' selected':'')+'>'+label+'</option>';
+  }).join('');
+}
+function moduleForProject(p){ return moduleForType(p && p.type); }
 function addModuleLog(mod, action, detail){
   if(!moduleLogs[mod]) moduleLogs[mod] = [];
   const snap = actorSnapshot(currentUser);
@@ -6060,7 +6140,12 @@ function projStatus(p){
   if(p.stages.some(s=>s.status==='需要修改')) return '需要修改';
   return '進行中';
 }
-function typeTag(t){ return t==='dev'?'<span class="tag t-dev">開發及生產</span>':'<span class="tag t-rep">補貨</span>'; }
+function typeTag(t){
+  if(t==='sec') return '<span class="tag t-sec">次貨處理</span>';
+  if(t==='rev') return '<span class="tag t-rev">客戶評價</span>';
+  if(t==='rep') return '<span class="tag t-rep">補貨</span>';
+  return '<span class="tag t-dev">開發及生產</span>';
+}
 function projectAssigneeOpts(selectedId){
   const pool = listAssignableStaff();
   const selected = selectedId ? String(selectedId) : '';
@@ -6483,6 +6568,14 @@ function setModule(m){
     currentView = isPersonal() ? 'myTasks' : 'home';
     listType='dev';
   }
+  else if(m==='seconds'){
+    currentView = isPersonal() ? 'myTasks' : 'home';
+    listType='sec';
+  }
+  else if(m==='reviews'){
+    currentView = 'home';
+    listType='rev';
+  }
   else if(m==='push'){ currentView='pushAll'; pushFilterCat='全部'; pushFilterRead='全部'; pushFilterKw=''; }
   else if(m==='createStaff'){ currentView='createStaff'; }
   else if(m==='staffDirectory'){ currentView='staffDirectory'; }
@@ -6517,6 +6610,8 @@ function getSidebarTree(){
   const products = [];
   if(!isPersonal()) products.push({ mod:'production', label:'開發及生產' });
   products.push({ mod:'replenishment', label:'補貨' });
+  products.push({ mod:'seconds', label:'次貨處理' });
+  products.push({ mod:'reviews', label:'客戶評價' });
   return [
     { id:'features', label:'功能', children: features },
     { id:'pos', label:'POS', children: [
@@ -6596,6 +6691,19 @@ function getSidebarItemsForModule(mod){
       ? [['myTasks','我的工作'],['devList','項目列表'],['home','首頁']]
       : [['home','首頁'],['devList','項目列表'],['myTasks','我的工作']];
     if(isAdmin()) items.push(['addProject','建立項目']);
+    if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
+    return items;
+  }
+  if(mod==='seconds'){
+    const items = isPersonal()
+      ? [['myTasks','我的工作'],['secList','項目列表'],['home','首頁']]
+      : [['home','首頁'],['secList','項目列表'],['myTasks','我的工作']];
+    if(isAdmin()) items.push(['addProject','建立項目']);
+    if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
+    return items;
+  }
+  if(mod==='reviews'){
+    const items = [['home','首頁'],['revList','評價列表'],['myTasks','我的評價'],['addProject','建立評價']];
     if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
     return items;
   }
@@ -6782,8 +6890,8 @@ function render(){
     }).join('');
   }
   const views = {
-    home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : vHomeFiltered('dev'),
-    devList:()=>vList('dev'), repList:()=>vList('rep'), myTasks:vMyTasks, addProject:vAddProject, sysLogs:vSysLogs, project:vProject,
+    home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : currentModule==='seconds' ? vHomeFiltered('sec') : currentModule==='reviews' ? vHomeFiltered('rev') : vHomeFiltered('dev'),
+    devList:()=>vList('dev'), repList:()=>vList('rep'), secList:()=>vList('sec'), revList:()=>vList('rev'), myTasks:vMyTasks, addProject:vAddProject, sysLogs:vSysLogs, project:vProject,
     dailyToday:()=>vDailyToday(currentUser), dailyProgress:()=>vDailyProgress(currentUser),
     dailyUnit:()=>vDailyUnit(currentUser), dailyHistory:()=>vDailyHistory(currentUser),
     dailyRecords:()=>vDailyRecords(currentUser),
@@ -6837,6 +6945,8 @@ function goInModule(mod, v){
   currentModule = mod;
   if(mod==='production') listType='dev';
   if(mod==='replenishment') listType='rep';
+  if(mod==='seconds') listType='sec';
+  if(mod==='reviews') listType='rev';
   go(v);
 }
 function go(v){
@@ -6853,6 +6963,8 @@ function go(v){
     else { listType='dev'; currentModule='production'; }
   }
   if(v==='repList'){ listType='rep'; currentModule='replenishment'; }
+  if(v==='secList'){ listType='sec'; currentModule='seconds'; }
+  if(v==='revList'){ listType='rev'; currentModule='reviews'; }
   if(v==='pushNotify' || v==='pushAll' || v==='pushUnread' || v==='pushRead' || v==='pushEnded' || v==='pushMine' || v==='pushCreate' || v==='pushDetail' || v==='pushStats' || v==='pushLogs'){ currentModule='push'; }
   if(v==='createStaff'){ currentModule='createStaff'; }
   if(v==='staffDirectory'){ currentModule='staffDirectory'; }
@@ -6871,14 +6983,23 @@ function vHomeFiltered(type){
   const needFix = scoped.filter(p=>Array.isArray(p.stages)&&p.stages.some(s=>s.status==='需要修改')).length;
   const myTasks = getMyTasks().filter(t=>{ const p=projects.find(x=>x.id===t.pid); return p && p.type===type; });
   const allComments = scoped.flatMap(p=>(Array.isArray(p.comments)?p.comments:[]).filter(c=>!c.removed).map(c=>({...c, pname:p.name, pid:p.id}))).slice(0,3);
-  const title = type==='dev' ? '開發及生產首頁' : '補貨首頁';
+  const title = projectTypeLabel(type)+'首頁';
+  const recorded = type==='rev' ? scoped.filter(function(p){
+    return (p.stages||[]).some(function(s){ return String(s.content||'').trim() || (s.files||[]).length; });
+  }).length : 0;
+  const stats = type==='rev'
+    ? `<div class="stat"><div class="num blue">${scoped.length}</div><div class="lbl">評價總數</div></div>
+      <div class="stat"><div class="num green">${recorded}</div><div class="lbl">已有內容</div></div>
+      <div class="stat"><div class="num orange">${scoped.length-recorded}</div><div class="lbl">尚未上傳</div></div>
+      <div class="stat"><div class="num purple">${myTasks.length}</div><div class="lbl">我負責的</div></div>`
+    : `<div class="stat"><div class="num blue">${scoped.length}</div><div class="lbl">項目總數</div></div>
+      <div class="stat"><div class="num orange">${waitConfirm}</div><div class="lbl">待確認</div></div>
+      <div class="stat"><div class="num red">${needFix}</div><div class="lbl">需要修改</div></div>
+      <div class="stat"><div class="num green">${myTasks.length}</div><div class="lbl">我的待辦</div></div>`;
   return `<div class="card">
     <h2>🏭 ${title}｜${todayStr()}</h2>
     <div class="stats">
-      <div class="stat"><div class="num blue">${scoped.length}</div><div class="lbl">項目總數</div></div>
-      <div class="stat"><div class="num orange">${waitConfirm}</div><div class="lbl">待確認</div></div>
-      <div class="stat"><div class="num red">${needFix}</div><div class="lbl">需要修改</div></div>
-      <div class="stat"><div class="num green">${myTasks.length}</div><div class="lbl">我的待辦</div></div>
+      ${stats}
     </div>
   </div>
   ${!isAdmin() ? `<div class="card"><h2>📌 我的待辦工作（${myTasks.length}）</h2>
@@ -6897,11 +7018,11 @@ function vHomeFiltered(type){
 function openProject(pid, tab){
   const p=projects.find(x=>x.id===pid);
   if(!p) return;
-  if(p.type!=='rep' && isPersonal()){
+  if(p.type!=='rep' && p.type!=='sec' && p.type!=='rev' && isPersonal()){
     alert2('員工賬戶無法使用「開發及生產」。');
     return;
   }
-  currentModule = p.type==='rep'?'replenishment':'production';
+  currentModule = moduleForProject(p);
   currentProject=pid; currentView='project'; currentTab=tab||'overview'; commentFilter='全部'; render();
 }
 function setTab(t){ currentTab=t; render(); }
@@ -6964,7 +7085,7 @@ function getMyTasks(){
     // 員工職位不可見開發及生產項目
     if(!isPersonal()) return true;
     var p=projects.find(function(x){ return x.id===t.pid; });
-    return p && p.type==='rep';
+    return p && (p.type==='rep' || p.type==='sec' || p.type==='rev');
   });
 }
 
@@ -6973,13 +7094,31 @@ function projTable(list){
   const rows = sortProjectsNewestFirst(list);
   if(!rows.length) return '<p style="color:#888">沒有符合條件的項目。</p>';
   return `<div class="table-wrap"><table>
-    <tr><th>建立日期</th><th>圖片</th><th>產品編號</th><th>項目簡介</th><th>類別</th><th>類型</th><th>目前階段</th><th>狀態</th><th>完成進度</th></tr>
+    <tr><th>建立日期</th><th>圖片</th><th>${listType==='rev'?'評價標題':'產品編號'}</th><th>${listType==='rev'?'評價摘要':'項目簡介'}</th><th>類別</th><th>類型</th><th>目前階段</th><th>狀態</th><th>完成進度</th></tr>
     ${rows.map(p=>{const pct=projProgress(p);return `<tr class="clickable" data-call="openProject" data-arg0="${escHtml(String(p.id))}">
       <td style="font-size:12px">${p.created}</td><td>${projThumbHtml(p,44)}</td>
       <td><b>${p.code}</b></td><td>${p.name}</td><td>${p.cat}</td><td>${typeTag(p.type)}</td>
       <td>${currentStage(p)}</td><td>${stTag(projStatus(p))}</td>
       <td style="min-width:100px"><div class="pbar"><div style="width:${pct}%"></div></div><div style="font-size:11px;text-align:right;color:#2e7d32">${pct}%</div></td>
     </tr>`;}).join('')}</table></div>`;
+}
+function vMyReviewTasks(){
+  const mine = projects.filter(function(p){
+    if(!p || p.type!=='rev') return false;
+    if(String(p.owner||'')===String(currentUser && currentUser.id)) return true;
+    if(String(p.createdBy||'')===String(currentUser && currentUser.id)) return true;
+    return (p.stages||[]).some(function(s){ return isStageHandler(s, currentUser && currentUser.id); });
+  });
+  return `<div class="card"><h2>📌 我的評價（${mine.length}）</h2>
+    <p style="font-size:13px;color:#666;margin-bottom:10px">你建立或負責的客戶評價。其他同事的評價可在「評價列表」查看及留言。</p>
+    ${mine.length?`<div class="table-wrap"><table><tr><th>評價標題</th><th>評價摘要</th><th>內容</th><th>操作</th></tr>
+    ${mine.map(function(p){
+      const s = (p.stages||[])[0] || {};
+      const has = String(s.content||'').trim() || (s.files||[]).length;
+      return '<tr><td><b>'+escHtml(p.code||'')+'</b></td><td>'+escHtml(p.name||'')+'</td><td>'+(has?'已有內容':'尚未上傳')+'</td>'
+        +'<td><button class="btn sm" data-call="openProject" data-arg0="'+escHtml(String(p.id))+'" data-arg1="flow">查看／補內容</button></td></tr>';
+    }).join('')}</table></div>`:'<p style="color:#888">你還沒有負責的客戶評價。</p>'}
+  </div>`;
 }
 function vList(type){
   listType = type;
@@ -6988,12 +7127,12 @@ function vList(type){
   if(fStatus!=='全部') list = list.filter(p=>projStatus(p)===fStatus);
   if(fKw) list = list.filter(p=>(p.code+p.name+p.desc+p.cat).toLowerCase().includes(fKw.toLowerCase()));
   return `<div class="card">
-    <h2>${type==='dev'?'📐 開發及生產項目':'🔄 補貨項目'}（${list.length}）</h2>
+    <h2>${type==='rev'?'💬 客戶評價':type==='sec'?'🏷️ 次貨處理項目':type==='dev'?'📐 開發及生產項目':'🔄 補貨項目'}（${list.length}）</h2>
     <div class="filters">
       <select onchange="fCat=this.value;render()"><option ${fCat==='全部'?'selected':''}>全部</option>${CATEGORIES.map(c=>`<option ${fCat===c?'selected':''}>${c}</option>`).join('')}</select>
       <select onchange="fStatus=this.value;render()">${['全部','草稿','進行中','待確認','需要修改','已完成','暫停','已取消','已封存'].map(s=>`<option ${fStatus===s?'selected':''}>${s}</option>`).join('')}</select>
       <input type="text" placeholder="搜尋編號／名稱／內容" value="${fKw}" onchange="fKw=this.value;render()">
-      ${isAdmin()?`<button class="btn sm" onclick="go('addProject')">＋ 建立新項目</button><button class="btn gray sm" data-call="exportProjectsCsv" data-arg0="${escHtml(String(type))}">匯出資料</button>`:''}
+      ${(isAdmin()||type==='rev')?`<button class="btn sm" onclick="go('addProject')">${type==='rev'?'＋ 建立評價':'＋ 建立新項目'}</button>`:''}${isAdmin()?`<button class="btn gray sm" data-call="exportProjectsCsv" data-arg0="${escHtml(String(type))}">匯出資料</button>`:''}
     </div>
     ${projTable(list)}
   </div>`;
@@ -7001,6 +7140,7 @@ function vList(type){
 
 /* ═══════════ 我的工作 ═══════════ */
 function vMyTasks(){
+  if(currentModule==='reviews') return vMyReviewTasks();
   if(isAdmin() && !isPersonal()){
     // 純管理層：顯示待確認及各經手人概況
     const waits = [];
@@ -7022,12 +7162,12 @@ function vMyTasks(){
   const tasks = getMyTasks();
   const doneList = [];
   projects.forEach(p=>{
-    if(isPersonal() && p.type!=='rep') return;
+    if(isPersonal() && p.type!=='rep' && p.type!=='sec' && p.type!=='rev') return;
     p.stages.forEach(s=>{ if(isStageHandler(s,currentUser.id)&&s.status==='已完成') doneList.push({p,s}); });
   });
   const emptyHint = '<p style="color:#888">暫時沒有待辦。請在項目工作流程把階段經手人指派後，即可在此處理。</p>';
   return `<div class="card"><h2>📌 我的待辦工作（${tasks.length}）</h2>
-    <p style="font-size:13px;color:#666;margin-bottom:10px">${isPersonal()?'補貨中指派給你的階段會顯示於此，可點擊進入處理。':'開發及生產／補貨中指派給你的階段會顯示於此，可點擊進入處理。'}</p>
+    <p style="font-size:13px;color:#666;margin-bottom:10px">${isPersonal()?'補貨及次貨處理中指派給你的階段會顯示於此，可點擊進入處理。':'開發及生產／補貨／次貨處理中指派給你的階段會顯示於此，可點擊進入處理。'}</p>
     ${tasks.length?`<div class="table-wrap"><table><tr><th>項目</th><th>產品編號</th><th>工作階段</th><th>完成期限</th><th>狀態</th><th>操作</th></tr>
     ${tasks.map(t=>`<tr><td>${t.pname}</td><td>${t.code}</td><td>${t.stage}</td><td>${t.deadline||'—'}</td><td>${stTag(t.status)}</td>
       <td><button class="btn sm" data-call="openProject" data-arg0="${escHtml(String(t.pid))}" data-arg1="flow">查看／處理</button></td></tr>`).join('')}</table></div>`:emptyHint}
@@ -7045,7 +7185,7 @@ function vProject(){
   const pct = projProgress(p);
   const tabs = [['overview','項目概覽'],['flow','工作流程'],['files','文件及圖片'],['chat','項目對話'],['logs','操作記錄']];
   return `<div class="card">
-    <button class="btn gray sm" data-call="go" data-arg0="${escHtml(String(p.type==='dev'?'devList':'repList'))}">← 返回列表</button>
+    <button class="btn gray sm" data-call="go" data-arg0="${escHtml(listViewForType(p.type))}">← 返回列表</button>
     <div style="display:flex;gap:14px;align-items:center;margin-top:12px;flex-wrap:wrap">
       ${projThumbHtml(p,64)}
       <div style="flex:1;min-width:200px">
@@ -7371,7 +7511,7 @@ function exportProjectsCsv(type){
   const header = ['建立日期','產品編號','項目簡介','類別','類型','目前階段','狀態','完成進度%','負責人','預計完成','項目詳細'];
   const rows = list.map(p=>[
     p.created||'', p.code||'', p.name||'', p.cat||'',
-    p.type==='dev'?'開發及生產':'補貨',
+    projectTypeLabel(p.type),
     currentStage(p), projStatus(p), String(projProgress(p)),
     userName(p.owner), p.due||'', (p.desc||'').replace(/\r?\n/g,' ')
   ]);
@@ -7385,15 +7525,17 @@ function exportProjectsCsv(type){
   const a = document.createElement('a');
   const stamp = dailyTodayStr ? dailyTodayStr() : new Date().toISOString().slice(0,10);
   a.href = URL.createObjectURL(blob);
-  a.download = (type==='dev'?'開發及生產':'補貨')+'_項目_'+stamp+'.csv';
+  a.download = projectTypeLabel(type)+'_項目_'+stamp+'.csv';
   document.body.appendChild(a);
   a.click();
   setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 500);
-  addModuleLog(type==='rep'?'replenishment':'production','匯出資料','CSV｜'+list.length+' 筆');
+  addModuleLog(moduleForType(type),'匯出資料','CSV｜'+list.length+' 筆');
 }
 
 /* ── 工作流程分頁 ── */
 function tabFlow(p){
+  if(p && p.type==='rev') return tabReviewFlow(p);
+  if(p && p.type==='sec') return tabSecondsFlow(p);
   const curName = currentStage(p);
   const lockedBanner = isProjectLocked(p)
     ? `<div class="info-banner" style="margin-bottom:12px">🔒 項目「${escHtml(p.status)}」中，無法推進階段。${p.status==='暫停'&&isAdmin()?' 可於概覽按「恢復進行」。':''}</div>`
@@ -7447,6 +7589,225 @@ function tabFlow(p){
   }).join('');
 }
 
+function tabReviewFlow(p){
+  const s0 = (p.stages||[])[0];
+  const locked = isProjectLocked(p);
+  const editable = canEditReview(p);
+  const banner = locked
+    ? '<div class="info-banner" style="margin-bottom:12px">🔒 項目「'+escHtml(p.status)+'」中，無法再上傳評價。</div>'
+    : '<div class="info-banner" style="margin-bottom:12px">上傳客戶評價：文字或圖片至少一項。之後仍可再補內容和留言。</div>';
+  return banner + (p.stages||[]).map(function(s, i){
+    const hasText = String(s.content||'').trim().length>0;
+    const hasImg = (s.files||[]).length>0;
+    const recorded = hasText || hasImg;
+    let actions = '';
+    if(!locked && editable){
+      actions += '<button class="btn purple sm" data-call="askReviewContent" data-arg0="'+escHtml(String(p.id))+'" data-arg1="'+i+'">'+(recorded?'再補評價內容':'上傳評價內容')+'</button>';
+    } else if(!locked && !editable){
+      actions += '<span style="font-size:12px;color:#8d6e00;margin-right:8px">只可查看及留言</span>';
+    }
+    actions += stageCommentBtnHtml(p, i);
+    const images = hasImg ? '<div class="row">評價圖片：<div style="margin-top:6px">'+secondsImageTiles(s.files)+'</div></div>' : '';
+    return '<div class="stage">'
+      +'<div class="stage-head">'
+      +'<div class="stage-num '+(recorded?'done':'current')+'">'+(recorded?'✓':'1')+'</div>'
+      +'<div class="stage-name">'+escHtml(s.name)+'</div>'
+      +'<span class="tag dept">👤 '+escHtml(stageHandlersLabel(s))+'</span>'
+      +stTag(recorded?'進行中':s.status)
+      +'</div>'
+      +'<div class="stage-body">'
+      +(hasText?'<div class="row" style="white-space:pre-wrap">💬 '+escHtml(s.content)+'</div>':'<div class="row" style="color:#888">尚未填寫評價文字。</div>')
+      +images
+      +'<div class="actions-row">'+actions+'</div>'
+      +'</div></div>';
+  }).join('') + (s0 ? '' : '<p style="color:#888">這筆評價沒有上傳步驟。</p>');
+}
+function askReviewContent(pid, idx){
+  const p = projects.find(function(x){ return x.id===pid; });
+  const s = p && p.stages && p.stages[idx];
+  if(!p || !s){ alert2('找不到此評價。'); return; }
+  if(!canEditReview(p)){ alert2('只有負責人、建立者或管理層可以上傳評價內容。'); return; }
+  showModal('<h3>上傳評價內容</h3><p style="font-size:13px">'+escHtml(p.code||'')+'｜'+escHtml(p.name||'')+'。文字或圖片至少保留一項。</p>'
+    +'<label>評價文字</label><textarea id="rv-text" placeholder="貼上或輸入客戶評價">'+escHtml(s.content||'')+'</textarea>'
+    +'<label>評價圖片（可多張，JPG、PNG、WEBP）</label><input type="file" id="rv-images" accept="image/*" multiple>'
+    +'<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'
+    +'<button class="btn purple sm" data-call="saveReviewContent" data-arg0="'+escHtml(String(pid))+'" data-arg1="'+idx+'">儲存</button></div>');
+}
+async function saveReviewContent(pid, idx){
+  const p = projects.find(function(x){ return x.id===pid; });
+  const s = p && p.stages && p.stages[idx];
+  if(!p || !s){ alert2('找不到此評價。'); return; }
+  if(!canEditReview(p)){ alert2('只有負責人、建立者或管理層可以上傳評價內容。'); return; }
+  const text = String(((document.getElementById('rv-text')||{}).value)||'').trim();
+  const fi = document.getElementById('rv-images');
+  const picked = fi && fi.files ? Array.from(fi.files) : [];
+  if(picked.some(function(f){ return !String(f.type||'').startsWith('image/'); })){ alert2('請只上傳圖片檔。'); return; }
+  if(!text && !picked.length && !(s.files||[]).length){ alert2('請輸入評價文字，或上傳至少一張圖片。'); return; }
+  const names = [];
+  try{
+    for(let i=0;i<picked.length;i++){
+      const uploaded = await cloudUploadFile(picked[i]);
+      s.files.forEach(function(f){ f.latest=false; });
+      s.files.push({
+        name: uploaded.name||picked[i].name,
+        by: currentUser.id,
+        time: nowStr(),
+        ver: 'V'+(s.files.length+1),
+        latest: true,
+        dataUrl: uploaded.dataUrl,
+        driveFileId: uploaded.driveFileId,
+        mimeType: uploaded.mimeType || picked[i].type
+      });
+      names.push(uploaded.name||picked[i].name);
+    }
+  }catch(_e){ return; }
+  s.content = text;
+  if(['未開始','待處理'].includes(s.status)) s.status = '進行中';
+  addProjLog(p, '上傳評價內容', (text?text.slice(0,40):'圖片')+(names.length?'｜'+names.join('、'):''));
+  closeModal();
+  render();
+}
+function secondsImageTiles(files){
+  return (files||[]).map(function(f){
+    const id = fileStorageId(f);
+    const src = id ? withFileToken(apiUrl('/api/files/'+id)) : (f.dataUrl||'');
+    const label = escHtml(f.name||'圖片');
+    if(src && isProjectImageFile(f)){
+      return '<a class="file-link" href="'+src+'" target="_blank" rel="noopener" style="display:inline-block;margin:0 8px 8px 0">'
+        +'<img src="'+src+'" alt="'+label+'" style="width:88px;height:88px;object-fit:cover;border-radius:8px;border:1px solid #e0e0e0;display:block">'
+        +'<span style="display:block;font-size:11px;max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+label+'</span></a>';
+    }
+    return '<span style="margin-right:8px">'+fileLinkHtml(f, f.name||'檔案')+'</span>';
+  }).join('');
+}
+function tabSecondsFlow(p){
+  const lockedBanner = isProjectLocked(p)
+    ? '<div class="info-banner" style="margin-bottom:12px">🔒 項目「'+escHtml(p.status)+'」中，無法更新處理狀態。</div>'
+    : '<div class="info-banner" style="margin-bottom:12px">次貨處理流程：上傳貨物圖片、檢查，再勾選是否已處理。每個步驟都可以留言。</div>';
+  return lockedBanner + (p.stages||[]).map(function(s, i){
+    const done = stageDone(s);
+    const mine = canOperateStage(p, s);
+    let actions = '';
+    if(!isProjectLocked(p) && (mine || isAdmin())){
+      if(s.name==='上傳貨物圖片'){
+        actions += '<button class="btn purple sm" data-call="askSecondsImages" data-arg0="'+escHtml(String(p.id))+'" data-arg1="'+i+'">上傳貨物圖片</button>';
+        if(!done && (s.files||[]).length){
+          actions += '<button class="btn green sm" data-call="completeSecondsStage" data-arg0="'+escHtml(String(p.id))+'" data-arg1="'+i+'">完成上傳</button>';
+        }
+      } else if(s.name==='檢查'){
+        actions += done
+          ? '<button class="btn warn sm" data-call="reopenSecondsStage" data-arg0="'+escHtml(String(p.id))+'" data-arg1="'+i+'">取消檢查</button>'
+          : '<button class="btn green sm" data-call="completeSecondsStage" data-arg0="'+escHtml(String(p.id))+'" data-arg1="'+i+'">完成檢查</button>';
+      } else if(s.name==='是否已處理'){
+        actions += '<label class="rc-item" style="margin-right:8px"><input type="checkbox" data-call="toggleSecondsDone" data-arg0="'+escHtml(String(p.id))+'" data-arg1="'+i+'"'+(done?' checked':'')+'> 已處理</label>';
+      }
+      if(isAdmin()){
+        actions += '<button class="btn gray sm" data-call="askReassign" data-arg0="'+escHtml(String(p.id))+'" data-arg1="'+i+'">重新分配經手人</button>';
+      }
+    }
+    actions += stageCommentBtnHtml(p, i);
+    const images = s.name==='上傳貨物圖片' && (s.files||[]).length
+      ? '<div class="row">貨物圖片：<div style="margin-top:6px">'+secondsImageTiles(s.files)+'</div></div>'
+      : ((s.files||[]).length ? '<div class="row">📎 文件：'+(s.files||[]).map(function(f){ return fileLinkHtml(f, f.name); }).join('、 ')+'</div>' : '');
+    return '<div class="stage '+(done?'':'current-stage')+'">'
+      +'<div class="stage-head" onclick="this.nextElementSibling.classList.toggle(\'hidden\')">'
+      +'<div class="stage-num '+(done?'done':'current')+'">'+(done?'✓':i+1)+'</div>'
+      +'<div class="stage-name">'+escHtml(s.name)+'</div>'
+      +'<span class="tag dept">👤 '+escHtml(stageHandlersLabel(s))+'</span>'
+      +stTag(s.status)
+      +'</div>'
+      +'<div class="stage-body">'
+      +(s.content?'<div class="row">📋 '+escHtml(s.content)+'</div>':'')
+      +(s.completedAt?'<div class="row">✅ '+(s.name==='是否已處理'?'處理日期：':'完成日期：')+escHtml(s.completedAt)+'</div>':'')
+      +images
+      +(!mine && !isAdmin()?'<div class="row" style="color:#8d6e00">🔒 此步驟由 '+escHtml(stageHandlersLabel(s))+' 負責，你只可查看及留言。</div>':'')
+      +'<div class="actions-row">'+actions+'</div>'
+      +'</div></div>';
+  }).join('');
+}
+function askSecondsImages(pid, idx){
+  const p = projects.find(function(x){ return x.id===pid; });
+  const s = p && p.stages && p.stages[idx];
+  if(!p || !s){ alert2('找不到此步驟。'); return; }
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法上傳圖片。'); return; }
+  showModal('<h3>上傳貨物圖片</h3><p style="font-size:13px">步驟：<b>'+escHtml(s.name)+'</b>｜可一次選多張 JPG、PNG、WEBP</p>'
+    +'<label>選擇圖片</label><input type="file" id="m-sec-images" accept="image/*" multiple>'
+    +'<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'
+    +'<button class="btn purple sm" data-call="doSecondsImages" data-arg0="'+escHtml(String(pid))+'" data-arg1="'+idx+'">上傳</button></div>');
+}
+async function doSecondsImages(pid, idx){
+  const p = projects.find(function(x){ return x.id===pid; });
+  const s = p && p.stages && p.stages[idx];
+  if(!p || !s){ alert2('找不到此步驟。'); return; }
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法上傳圖片。'); return; }
+  const fi = document.getElementById('m-sec-images');
+  const picked = fi && fi.files ? Array.from(fi.files) : [];
+  if(!picked.length){ alert2('請選擇貨物圖片。'); return; }
+  const bad = picked.filter(function(f){ return !String(f.type||'').startsWith('image/'); });
+  if(bad.length){ alert2('請只上傳圖片檔。'); return; }
+  const names = [];
+  try{
+    for(let i=0;i<picked.length;i++){
+      const uploaded = await cloudUploadFile(picked[i]);
+      s.files.forEach(function(f){ f.latest=false; });
+      const ver = 'V'+(s.files.length+1);
+      s.files.push({
+        name: uploaded.name||picked[i].name,
+        by: currentUser.id,
+        time: nowStr(),
+        ver: ver,
+        latest: true,
+        dataUrl: uploaded.dataUrl,
+        driveFileId: uploaded.driveFileId,
+        mimeType: uploaded.mimeType || picked[i].type
+      });
+      names.push(uploaded.name||picked[i].name);
+    }
+  }catch(_e){ return; }
+  if(['未開始','待處理'].includes(s.status)) s.status = '進行中';
+  addProjLog(p, '上傳貨物圖片', s.name+'｜'+names.join('、'));
+  closeModal();
+  render();
+}
+function completeSecondsStage(pid, idx){
+  const p = projects.find(function(x){ return x.id===pid; });
+  const s = p && p.stages && p.stages[idx];
+  if(!p || !s){ alert2('找不到此步驟。'); return; }
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法更新。'); return; }
+  if(!canOperateStage(p, s) && !isAdmin()){ alert2('此步驟由經手人負責。'); return; }
+  if(s.name==='上傳貨物圖片' && !(s.files||[]).length){ alert2('請先上傳貨物圖片。'); return; }
+  s.status = '已完成';
+  s.completedAt = todayStr();
+  addProjLog(p, s.name==='檢查'?'完成檢查':'完成上傳', s.name);
+  const next = (p.stages||[]).find(function(x){ return !stageDone(x); });
+  if(next){
+    notifyProjectStageTurn(p, next.name, '上一步「'+s.name+'」已完成。').catch(function(e){ console.warn(e); });
+  }
+  render();
+}
+function reopenSecondsStage(pid, idx){
+  const p = projects.find(function(x){ return x.id===pid; });
+  const s = p && p.stages && p.stages[idx];
+  if(!p || !s){ alert2('找不到此步驟。'); return; }
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法更新。'); return; }
+  if(!canOperateStage(p, s) && !isAdmin()){ alert2('此步驟由經手人負責。'); return; }
+  s.status = '進行中';
+  s.completedAt = null;
+  addProjLog(p, '取消檢查', s.name);
+  render();
+}
+function toggleSecondsDone(pid, idx){
+  const p = projects.find(function(x){ return x.id===pid; });
+  const s = p && p.stages && p.stages[idx];
+  if(!p || !s){ alert2('找不到此步驟。'); return; }
+  if(isProjectLocked(p)){ alert2('項目已「'+p.status+'」，無法更新。'); return; }
+  if(!canOperateStage(p, s) && !isAdmin()){ alert2('此步驟由經手人負責。'); return; }
+  const next = !stageDone(s);
+  s.status = next ? '已完成' : '待處理';
+  s.completedAt = next ? todayStr() : null;
+  addProjLog(p, next?'標記已處理':'取消已處理', s.name);
+  render();
+}
 function stageCommentsOf(p, stageName){
   return (p && Array.isArray(p.comments) ? p.comments : []).filter(function(c){
     return c && !c.removed && String(c.stage||'')===String(stageName||'');
@@ -7525,7 +7886,7 @@ async function notifyProjectStageTurn(p, stageName, reason){
   if(!apiEnabled || !authToken || !currentUser || !p) return;
   const recipientIds = projectAllHandlerIds(p);
   if(!recipientIds.length) return;
-  const typeLabel = p.type==='rep' ? '補貨' : '開發及生產';
+  const typeLabel = projectTypeLabel(p.type);
   const title = typeLabel+'：'+(p.code||'')+'｜目前階段 '+(stageName||'');
   const body = (reason||'項目階段已更新')+'\n\n'
     +'類型：'+typeLabel+'\n'
@@ -7553,8 +7914,8 @@ async function notifyProjectStageTurn(p, stageName, reason){
         pinned: false,
         systemSource: true,
         cta: {
-          mod: p.type==='rep' ? 'replenishment' : 'production',
-          view: p.type==='rep' ? 'repList' : 'devList',
+          mod: moduleForProject(p),
+          view: listViewForType(p.type),
           projectId: p.id,
           label: '前往項目'
         }
@@ -7971,32 +8332,40 @@ async function npOnFilesPick(input){
   npRenderFileList();
 }
 function vAddProject(){
-  if(!isAdmin()) return `<div class="card"><h2>➕ 建立新項目</h2><p>只有系統管理員可以建立項目。</p></div>`;
+  const reviewCreate = currentModule==='reviews';
+  if(!isAdmin() && !reviewCreate) return `<div class="card"><h2>➕ 建立新項目</h2><p>只有系統管理員可以建立項目。</p></div>`;
+  if(reviewCreate && isPartTimeAccount()) return `<div class="card"><h2>建立評價</h2><p>兼職賬號不能建立客戶評價。</p></div>`;
   const draft = npEditDraftId ? projects.find(function(x){ return x.id===npEditDraftId; }) : null;
-  const defaultType = (draft && draft.type) || (currentModule==='replenishment' ? 'rep' : 'dev');
-  const staffOpts = projectAssigneeOpts(draft && draft.owner ? draft.owner : '');
-  const staffHint = listAssignableStaff().length
+  const defaultType = reviewCreate ? 'rev' : ((draft && draft.type) || (currentModule==='replenishment' ? 'rep' : currentModule==='seconds' ? 'sec' : 'dev'));
+  const staffOpts = defaultType==='rev'
+    ? reviewOwnerOpts(draft && draft.owner ? draft.owner : (currentUser && currentUser.id))
+    : projectAssigneeOpts(draft && draft.owner ? draft.owner : '');
+  const staffHint = defaultType==='rev'
+    ? ''
+    : (listAssignableStaff().length
     ? '<p style="font-size:12px;color:#888;margin:4px 0 0">各階段經手人僅可選<strong>經理／主管</strong>，可多選；對方可在「我的工作」看到待辦。</p>'
-    : '<p style="font-size:12px;color:#c62828;margin:4px 0 0">尚未有經理／主管賬號。請先到「創建員工」新增職位為「經理」或「主管」的賬號。</p>';
-  const heading = draft && draft.status==='草稿' ? '✏️ 繼續編輯補貨草稿' : '➕ 建立新項目';
+    : '<p style="font-size:12px;color:#c62828;margin:4px 0 0">尚未有經理／主管賬號。請先到「創建員工」新增職位為「經理」或「主管」的賬號。</p>');
+  const heading = draft && draft.status==='草稿' ? '✏️ 繼續編輯補貨草稿' : (defaultType==='rev' ? '💬 建立客戶評價' : '➕ 建立新項目');
   setTimeout(function(){ renderNpStages(); npRenderCoverPreview(); npRenderFileList(); npRenderRepItems(); },0);
   return `<div class="card"><h2>${heading}</h2>
-    <label>項目封面圖片（選填）</label>
+    ${reviewCreate ? '' : `<label>項目封面圖片（選填）</label>
     <input type="file" id="np-cover" accept="image/*" onchange="npOnCoverPick(this)">
-    <div id="np-cover-preview">${npCoverPreviewHtml()}</div>
+    <div id="np-cover-preview">${npCoverPreviewHtml()}</div>`}
     <label>項目類型</label>
-    <select id="np-type" onchange="renderNpStages()"${draft && draft.status==='草稿'?' disabled':''}>
+    <select id="np-type" onchange="renderNpStages()"${draft && draft.status==='草稿' || reviewCreate?' disabled':''}>
+      ${reviewCreate ? '<option value="rev" selected>客戶評價</option>' : `
       <option value="dev"${defaultType==='dev'?' selected':''}>開發及生產（7個階段）</option>
       <option value="rep"${defaultType==='rep'?' selected':''}>補貨（6個階段）</option>
+      <option value="sec"${defaultType==='sec'?' selected':''}>次貨處理（上傳圖片、檢查、是否已處理）</option>`}
     </select>
-    <label>產品編號</label><input type="text" id="np-code" placeholder="例如：WS-666" value="${escHtml(draft&&draft.code?draft.code:'')}">
-    <label>項目簡介</label><input type="text" id="np-name" placeholder="例如：成人抓毛套裝" value="${escHtml(draft&&draft.name?draft.name:'')}">
+    <label id="np-code-label">${defaultType==='rev'?'評價標題':'產品編號'}</label><input type="text" id="np-code" placeholder="${defaultType==='rev'?'例如：陳小姐｜抓毛套裝':'例如：WS-666'}" value="${escHtml(draft&&draft.code?draft.code:'')}">
+    <label id="np-name-label">${defaultType==='rev'?'評價摘要':'項目簡介'}</label><input type="text" id="np-name" placeholder="${defaultType==='rev'?'一句話寫出客戶怎麼說':'例如：成人抓毛套裝'}" value="${escHtml(draft&&draft.name?draft.name:'')}">
     <label>產品類別</label><select id="np-cat">${CATEGORIES.map(function(c){ return '<option'+(draft&&draft.cat===c?' selected':'')+'>'+c+'</option>'; }).join('')}</select>
-    <label>項目詳細內容（支援分行）</label><textarea id="np-desc" placeholder="• 要求一&#10;• 要求二">${escHtml(draft&&draft.desc?draft.desc:'')}</textarea>
-    <label>項目負責人（經理／主管）</label><select id="np-owner">${staffOpts}</select>
-    <label>預計完成日期</label><input type="date" id="np-due" value="${(draft&&draft.due&&draft.due!=='—')?escHtml(draft.due):''}">
-    <div id="np-rep-wrap" style="${defaultType==='rep'?'':'display:none'}">
-      <h3 style="margin-top:16px">添加產品（可多件）</h3>
+    ${reviewCreate ? '' : `<label>項目詳細內容（支援分行）</label><textarea id="np-desc" placeholder="• 要求一&#10;• 要求二">${escHtml(draft&&draft.desc?draft.desc:'')}</textarea>`}
+    <label id="np-owner-label">${defaultType==='rev'?'負責人（預設為建立者，可選員工）':'項目負責人（經理／主管）'}</label><select id="np-owner">${staffOpts}</select>
+    ${reviewCreate ? '' : `<label>預計完成日期</label><input type="date" id="np-due" value="${(draft&&draft.due&&draft.due!=='—')?escHtml(draft.due):''}">`}
+    <div id="np-rep-wrap" style="${defaultType==='rep'||defaultType==='sec'||defaultType==='rev'?'':'display:none'}">
+      <h3 style="margin-top:16px">${defaultType==='rev'?'相關貨品（選填）':'添加產品（可多件）'}</h3>
       <p style="font-size:12px;color:#888;margin:0 0 8px">可加入多個貨品；相同類型會自動歸類顯示。草稿／補貨單亦按類型分組。</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0 0 8px">
         <input type="text" id="np-rep-kw" placeholder="搜尋型號／名稱／顏色" oninput="npRenderRepPicker()" style="flex:1;min-width:180px">
@@ -8007,13 +8376,13 @@ function vAddProject(){
     </div>
     <label>項目附件（可多次添加、可多選）</label>
     <input type="file" id="np-files" multiple onchange="npOnFilesPick(this)">
-    <p style="font-size:12px;color:#888;margin:4px 0 0">附件會顯示在項目「文件及圖片」，標籤為「建立項目」。封面只用於列表／標題縮圖，不進文件列表。</p>
+    <p style="font-size:12px;color:#888;margin:4px 0 0">${defaultType==='rev'?'附件會顯示在評價的「文件及圖片」。評價圖片請在建立後於「上傳評價內容」加入。':'附件會顯示在項目「文件及圖片」，標籤為「建立項目」。封面只用於列表／標題縮圖，不進文件列表。'}</p>
     <div id="np-file-list">${npFileListHtml()}</div>
-    <h3 style="margin-top:16px">各階段經手人分配（經理／主管，可多選）</h3>
+    <h3 id="np-stage-title" style="margin-top:16px">${defaultType==='rev'?'評價流程':'各階段經手人分配（經理／主管，可多選）'}</h3>
     ${staffHint}
     <div id="np-stages"></div>
     <div class="actions-row" style="margin-top:12px">
-      <button class="btn" onclick="askCreateProject()">建立項目</button>
+      <button class="btn" onclick="askCreateProject()">${defaultType==='rev'?'建立評價':'建立項目'}</button>
       <button type="button" class="btn gray" id="np-draft-btn" style="${defaultType==='rep'?'':'display:none'}" data-call="saveReplenishmentDraft">保存草稿</button>
     </div>
   </div>`;
@@ -8104,9 +8473,9 @@ function npToggleRepSection(){
   const type = (document.getElementById('np-type')||{}).value;
   const wrap = document.getElementById('np-rep-wrap');
   const draftBtn = document.getElementById('np-draft-btn');
-  if(wrap) wrap.style.display = type==='rep' ? '' : 'none';
+  if(wrap) wrap.style.display = (type==='rep' || type==='sec' || type==='rev') ? '' : 'none';
   if(draftBtn) draftBtn.style.display = type==='rep' ? '' : 'none';
-  if(type==='rep'){
+  if(type==='rep' || type==='sec' || type==='rev'){
     loadTransferProducts().then(function(){ npRenderRepItems(); }).catch(function(){ npRenderRepItems(); });
   }
 }
@@ -8127,8 +8496,8 @@ function readNpFormFields(){
     desc: ((document.getElementById('np-desc')||{}).value||'').trim(),
     owner: ((document.getElementById('np-owner')||{}).value)||'',
     due: ((document.getElementById('np-due')||{}).value)||'—',
-    stages: type==='dev'?DEV_STAGES:REP_STAGES,
-    linkedProducts: type==='rep' ? npRepItems.slice() : []
+    stages: stagesForType(type),
+    linkedProducts: (type==='rep' || type==='sec' || type==='rev') ? npRepItems.slice() : []
   };
 }
 async function npUploadNewAssets(existing){
@@ -8168,9 +8537,14 @@ function renderNpStages(){
   const typeEl=document.getElementById('np-type');
   if(!typeEl) return;
   const type = typeEl.value;
-  const stages = type==='dev'?DEV_STAGES:REP_STAGES;
+  const stages = stagesForType(type);
   const host = document.getElementById('np-stages');
   if(!host) return;
+  if(type==='rev'){
+    host.innerHTML = '<p style="font-size:13px;color:#666;margin:0">建立後只有一步「上傳評價內容」。建立者會成為這一步的經手人，負責人與管理層之後也可以再補內容。</p>';
+    npToggleRepSection();
+    return;
+  }
   host.innerHTML = stages.map(function(s,i){
     return '<div class="np-stage-row" style="display:flex;gap:12px;align-items:flex-start;margin-bottom:10px;flex-wrap:wrap">'
       +'<span style="min-width:140px;font-size:13px;padding-top:6px"><b>'+(i+1)+'. '+s+'</b></span>'
@@ -8179,12 +8553,17 @@ function renderNpStages(){
   }).join('');
   npToggleRepSection();
 }
+function canCreateProjectType(type){
+  if(type==='rev') return !!(currentUser && !isPartTimeAccount());
+  return isAdmin();
+}
 function askCreateProject(){
-  if(!isAdmin()){ alert2('只有系統管理員可以建立項目。'); return; }
+  const formPeek = readNpFormFields();
+  if(!canCreateProjectType(formPeek.type)){ alert2(formPeek.type==='rev'?'無法建立客戶評價。':'只有系統管理員可以建立項目。'); return; }
   if(!requireCloud('建立項目')) return;
-  const form = readNpFormFields();
-  if(!form.code||!form.name){ alert2('請輸入產品編號及項目簡介。'); return; }
-  const typeLabel = form.type==='dev'?'開發及生產':'補貨';
+  const form = formPeek;
+  if(!form.code||!form.name){ alert2(form.type==='rev'?'請輸入評價標題及評價摘要。':'請輸入產品編號及項目簡介。'); return; }
+  const typeLabel = projectTypeLabel(form.type);
   const coverNote = npCoverDraft ? '已選封面' : '無封面';
   const fileNote = npDraftFiles.length ? ('附件 '+npDraftFiles.length+' 個') : '無附件';
   const prodNote = form.type==='rep' ? ('<li>產品 '+form.linkedProducts.length+' 件（按類型自動歸類）</li>') : '';
@@ -8197,17 +8576,19 @@ function askCreateProject(){
       prodNote+
       '<li>'+coverNote+'｜'+fileNote+'</li>'+
     '</ul>'+
-    (form.type==='rep' && form.linkedProducts.length ? groupedLinkedProductsHtml(form.linkedProducts) : '')+
+    ((form.type==='rep' || form.type==='sec' || form.type==='rev') && form.linkedProducts.length ? groupedLinkedProductsHtml(form.linkedProducts) : '')+
     '<div class="actions"><button class="btn gray sm" onclick="closeModal()">返回修改</button>'+
     '<button class="btn sm" onclick="createProject()">確認建立</button></div>'
   );
 }
 async function createProject(){
-  if(!isAdmin()){ alert2('只有系統管理員可以建立項目。'); return; }
+  const formPeek = readNpFormFields();
+  if(!canCreateProjectType(formPeek.type)){ alert2(formPeek.type==='rev'?'無法建立客戶評價。':'只有系統管理員可以建立項目。'); return; }
   if(!requireCloud('建立項目')) return;
-  const form = readNpFormFields();
-  if(!form.code||!form.name){ alert2('請輸入產品編號及項目簡介。'); return; }
-  const handlers = readNpHandlers(form.stages);
+  const form = formPeek;
+  if(!form.code||!form.name){ alert2(form.type==='rev'?'請輸入評價標題及評價摘要。':'請輸入產品編號及項目簡介。'); return; }
+  let handlers = readNpHandlers(form.stages);
+  if(form.type==='rev' && currentUser) handlers = [[currentUser.id]];
   const assignedN = handlers.filter(function(hs){ return hs && hs.length; }).length;
   const existing = npEditDraftId ? projects.find(function(x){ return x.id===npEditDraftId; }) : null;
   let assets;
@@ -8228,7 +8609,7 @@ async function createProject(){
     p.files = assets.files;
     p.linkedProducts = form.linkedProducts;
     p.status = '進行中';
-    p.icon = form.type==='dev'?'🆕':'🔄';
+    p.icon = form.type==='rev'?'💬':form.type==='sec'?'🏷️':form.type==='dev'?'🆕':'🔄';
     p.stages = form.stages.map(function(s,i){
       return mkStage(s, handlers[i]||[], i===0?'待處理':'未開始');
     });
@@ -8237,21 +8618,27 @@ async function createProject(){
     p = {
       id: form.type==='rep'
         ? ('R'+String(repProjSeq++).padStart(3,'0'))
-        : ('P'+String(projSeq++).padStart(3,'0')),
-      type: form.type, code: form.code, name: form.name, cat: form.cat, icon:form.type==='dev'?'🆕':'🔄',
+        : form.type==='sec'
+          ? ('C'+String(secProjSeq++).padStart(3,'0'))
+          : form.type==='rev'
+            ? ('V'+String(revProjSeq++).padStart(3,'0'))
+            : ('P'+String(projSeq++).padStart(3,'0')),
+      type: form.type, code: form.code, name: form.name, cat: form.cat, icon:form.type==='rev'?'💬':form.type==='sec'?'🏷️':form.type==='dev'?'🆕':'🔄',
       coverUrl: assets.coverUrl, coverFileId: assets.coverFileId,
-      owner: form.owner||null, createdBy:currentUser.id, created:todayStr(), createdAtMs: Date.now(), due: form.due, desc: form.desc, status:'進行中',
+      owner: form.owner|| (form.type==='rev' && currentUser ? currentUser.id : null), createdBy:currentUser.id, created:todayStr(), createdAtMs: Date.now(), due: form.due, desc: form.desc, status:'進行中',
       files: assets.files,
       linkedProducts: form.linkedProducts,
       stages: form.stages.map(function(s,i){ return mkStage(s, handlers[i]||[], i===0?'待處理':'未開始'); }),
       comments:[], logs:[]
     };
     projects.unshift(p);
-    addProjLog(p,'建立項目',(form.type==='dev'?'開發及生產':'補貨')+'｜'+form.code+'｜'+form.name+(p.coverUrl?'｜已設封面':'')+(assets.files.length?'｜附件 '+assets.files.length+' 個':'')+(form.linkedProducts.length?'｜產品 '+form.linkedProducts.length+' 件':''));
+    addProjLog(p,'建立項目',projectTypeLabel(form.type)+'｜'+form.code+'｜'+form.name+(p.coverUrl?'｜已設封面':'')+(assets.files.length?'｜附件 '+assets.files.length+' 個':'')+(form.linkedProducts.length?'｜產品 '+form.linkedProducts.length+' 件':''));
   }
-  addProjLog(p,'分配經手人', assignedN
+  addProjLog(p,'分配經手人', form.type==='rev'
+    ? '建立者為「上傳評價內容」經手人'
+    : (assignedN
     ? ('已指派 '+assignedN+'／'+form.stages.length+' 個階段（經理／主管可於「我的工作」處理）')
-    : '尚未指派經手人（請稍後在工作流程中更改經手人）');
+    : '尚未指派經手人（請稍後在工作流程中更改經手人）'));
   if(npDraftFiles.length) addProjLog(p,'上載文件','建立項目｜'+npDraftFiles.map(function(f){ return f.name; }).join('、'));
   npClearAfterSave();
   try{
@@ -8330,9 +8717,9 @@ async function saveReplenishmentDraft(){
 
 /* ═══════════ 模組操作記錄（僅顯示當前模組） ═══════════ */
 function vSysLogs(){
-  const mod = currentModule === 'replenishment' ? 'replenishment' : 'production';
-  const type = mod === 'replenishment' ? 'rep' : 'dev';
-  const title = mod === 'replenishment' ? '補貨' : '開發及生產';
+  const mod = currentModule === 'replenishment' ? 'replenishment' : currentModule === 'seconds' ? 'seconds' : currentModule === 'reviews' ? 'reviews' : 'production';
+  const type = mod === 'replenishment' ? 'rep' : mod === 'seconds' ? 'sec' : mod === 'reviews' ? 'rev' : 'dev';
+  const title = projectTypeLabel(type);
   const fromModule = (moduleLogs[mod] || []).slice();
   // 種子項目既有 logs：只併入本模組類型，避免跨模組混雜
   const fromProjects = projects

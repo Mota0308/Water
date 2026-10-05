@@ -91,6 +91,12 @@ function projectsCol() {
 function replenishmentProjectsCol() {
   return db.collection('replenishment_projects'); // 僅補貨
 }
+function secondsProjectsCol() {
+  return db.collection('seconds_projects'); // 僅次貨處理
+}
+function reviewProjectsCol() {
+  return db.collection('review_projects'); // 僅客戶評價
+}
 function moduleLogsCol() {
   return db.collection('module_logs'); // 全站操作流水（一則一筆）
 }
@@ -670,6 +676,8 @@ export async function rewriteUserRefs(oldId, newId) {
   await connectMongo();
   const projects = await rewriteInCollection(projectsCol(), oldId, newId);
   const replenishment = await rewriteInCollection(replenishmentProjectsCol(), oldId, newId);
+  await rewriteInCollection(secondsProjectsCol(), oldId, newId);
+  await rewriteInCollection(reviewProjectsCol(), oldId, newId);
   await moduleLogsCol().updateMany({ userId: String(oldId) }, { $set: { userId: String(newId) } });
   const dailyDoc = await dailyCol().findOne({ _id: 'main' });
   let daily = false;
@@ -1170,13 +1178,21 @@ async function getProjectsMeta() {
     meta.repProjSeq = 1;
     await metaCol().updateOne({ _id: 'projects' }, { $set: { repProjSeq: 1 } });
   }
+  if (typeof meta.secProjSeq !== 'number') {
+    meta.secProjSeq = 1;
+    await metaCol().updateOne({ _id: 'projects' }, { $set: { secProjSeq: 1 } });
+  }
+  if (typeof meta.revProjSeq !== 'number') {
+    meta.revProjSeq = 1;
+    await metaCol().updateOne({ _id: 'projects' }, { $set: { revProjSeq: 1 } });
+  }
   return meta;
 }
 
-const MODULE_LOG_KEYS = ['daily', 'production', 'replenishment', 'push'];
+const MODULE_LOG_KEYS = ['daily', 'production', 'replenishment', 'seconds', 'reviews', 'push'];
 
 async function getModuleLogsGrouped(limitPerModule = 400) {
-  const out = { daily: [], production: [], replenishment: [], push: [] };
+  const out = { daily: [], production: [], replenishment: [], seconds: [], reviews: [], push: [] };
   for (const mod of MODULE_LOG_KEYS) {
     const rows = await moduleLogsCol()
       .find({ module: mod })
@@ -1430,16 +1446,28 @@ export async function getProjectsState() {
     ...p,
     type: 'rep',
   }));
+  const secondsProjects = (await listDocsFromCol(secondsProjectsCol())).map((p) => ({
+    ...p,
+    type: 'sec',
+  }));
+  const reviewProjects = (await listDocsFromCol(reviewProjectsCol())).map((p) => ({
+    ...p,
+    type: 'rev',
+  }));
   const meta = await getProjectsMeta();
   const users = await listUsersPublic();
   const moduleLogs = await getModuleLogsGrouped();
   return {
     productionProjects,
     replenishmentProjects,
+    secondsProjects,
+    reviewProjects,
     // 過渡相容：舊前端仍讀 projects 混陣列
-    projects: [...productionProjects, ...replenishmentProjects],
+    projects: [...productionProjects, ...replenishmentProjects, ...secondsProjects, ...reviewProjects],
     projSeq: typeof meta.projSeq === 'number' ? meta.projSeq : 1,
     repProjSeq: typeof meta.repProjSeq === 'number' ? meta.repProjSeq : 1,
+    secProjSeq: typeof meta.secProjSeq === 'number' ? meta.secProjSeq : 1,
+    revProjSeq: typeof meta.revProjSeq === 'number' ? meta.revProjSeq : 1,
     moduleLogs,
     users,
   };
@@ -1448,29 +1476,60 @@ export async function getProjectsState() {
 export async function saveProjectsState(data) {
   await connectMongo();
   // users 唯一真相在 users collection — 忽略 body.users
+  const isDevProject = (p) => p && p.type !== 'rep' && p.type !== 'sec' && p.type !== 'rev';
   let productionProjects = Array.isArray(data?.productionProjects) ? data.productionProjects : null;
   let replenishmentProjects = Array.isArray(data?.replenishmentProjects) ? data.replenishmentProjects : null;
-  if (!productionProjects && !replenishmentProjects && Array.isArray(data?.projects)) {
-    productionProjects = data.projects.filter((p) => p && p.type !== 'rep');
+  let secondsProjects = Array.isArray(data?.secondsProjects) ? data.secondsProjects : null;
+  let reviewProjects = Array.isArray(data?.reviewProjects) ? data.reviewProjects : null;
+  if (!productionProjects && !replenishmentProjects && !secondsProjects && !reviewProjects && Array.isArray(data?.projects)) {
+    productionProjects = data.projects.filter(isDevProject);
     replenishmentProjects = data.projects.filter((p) => p && p.type === 'rep');
+    secondsProjects = data.projects.filter((p) => p && p.type === 'sec');
+    reviewProjects = data.projects.filter((p) => p && p.type === 'rev');
   }
+  if (productionProjects) productionProjects = productionProjects.filter(isDevProject);
+  if (replenishmentProjects) replenishmentProjects = replenishmentProjects.filter((p) => p && p.type === 'rep');
+  if (secondsProjects) secondsProjects = secondsProjects.filter((p) => p && p.type === 'sec');
+  if (reviewProjects) reviewProjects = reviewProjects.filter((p) => p && p.type === 'rev');
   if (!productionProjects) productionProjects = [];
   if (!replenishmentProjects) replenishmentProjects = [];
+  if (!secondsProjects) secondsProjects = [];
+  if (!reviewProjects) reviewProjects = [];
 
   // 若拆欄位為空、但舊版混陣列仍有開發項目，以混陣列為準（避免誤寫空庫）
   if (
     productionProjects.length === 0 &&
     Array.isArray(data?.projects) &&
-    data.projects.some((p) => p && p.type !== 'rep')
+    data.projects.some(isDevProject)
   ) {
-    productionProjects = data.projects.filter((p) => p && p.type !== 'rep');
+    productionProjects = data.projects.filter(isDevProject);
+  }
+  if (
+    secondsProjects.length === 0 &&
+    !Array.isArray(data?.secondsProjects) &&
+    Array.isArray(data?.projects) &&
+    data.projects.some((p) => p && p.type === 'sec')
+  ) {
+    secondsProjects = data.projects.filter((p) => p && p.type === 'sec');
+  }
+  if (
+    reviewProjects.length === 0 &&
+    !Array.isArray(data?.reviewProjects) &&
+    Array.isArray(data?.projects) &&
+    data.projects.some((p) => p && p.type === 'rev')
+  ) {
+    reviewProjects = data.projects.filter((p) => p && p.type === 'rev');
   }
 
   // 拒絕用空陣列覆蓋現有項目（登入／登出 flush 若載入失敗會把整庫清掉）
   const existingProdCount = await projectsCol().countDocuments({ _id: { $ne: 'main' } });
   const existingRepCount = await replenishmentProjectsCol().countDocuments({ _id: { $ne: 'main' } });
+  const existingSecCount = await secondsProjectsCol().countDocuments({ _id: { $ne: 'main' } });
+  const existingRevCount = await reviewProjectsCol().countDocuments({ _id: { $ne: 'main' } });
   const skipEmptyProd = productionProjects.length === 0 && existingProdCount > 0;
   const skipEmptyRep = replenishmentProjects.length === 0 && existingRepCount > 0;
+  const skipEmptySec = secondsProjects.length === 0 && existingSecCount > 0;
+  const skipEmptyRev = reviewProjects.length === 0 && existingRevCount > 0;
   if (skipEmptyProd) {
     console.warn('[projects] refused empty production overwrite; keeping', existingProdCount, 'docs');
   } else {
@@ -1481,15 +1540,27 @@ export async function saveProjectsState(data) {
   } else {
     await replaceProjectCollection(replenishmentProjectsCol(), replenishmentProjects, 'rep');
   }
+  if (skipEmptySec) {
+    console.warn('[projects] refused empty seconds overwrite; keeping', existingSecCount, 'docs');
+  } else {
+    await replaceProjectCollection(secondsProjectsCol(), secondsProjects, 'sec');
+  }
+  if (skipEmptyRev) {
+    console.warn('[projects] refused empty review overwrite; keeping', existingRevCount, 'docs');
+  } else {
+    await replaceProjectCollection(reviewProjectsCol(), reviewProjects, 'rev');
+  }
 
   // 任一邊因空列表被拒時，不要把流水號重設成 1
-  if (!(skipEmptyProd || skipEmptyRep)) {
+  if (!(skipEmptyProd || skipEmptyRep || skipEmptySec || skipEmptyRev)) {
     const projSeq = typeof data?.projSeq === 'number' ? data.projSeq : 1;
     const repProjSeq = typeof data?.repProjSeq === 'number' ? data.repProjSeq : 1;
+    const secProjSeq = typeof data?.secProjSeq === 'number' ? data.secProjSeq : 1;
+    const revProjSeq = typeof data?.revProjSeq === 'number' ? data.revProjSeq : 1;
     await metaCol().updateOne(
       { _id: 'projects' },
       {
-        $set: { projSeq, repProjSeq, updatedAt: new Date() },
+        $set: { projSeq, repProjSeq, secProjSeq, revProjSeq, updatedAt: new Date() },
         $unset: { moduleLogs: '' },
       },
       { upsert: true }
