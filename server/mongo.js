@@ -1263,6 +1263,95 @@ export async function listUsersPublic() {
   return docs.map(publicUser);
 }
 
+const ROSTER_VALUES = new Set(['觀塘', '荔枝角', '灣仔', '屯門', '休息']);
+
+function rosterCol() {
+  return db.collection('roster_cells');
+}
+
+function isPartTimeStaff(u) {
+  if (!u || isAdminAccount(u)) return false;
+  const fields = staffFields(u);
+  return fields.employment === '兼職' || String(u.position || '') === '兼職';
+}
+
+export function canEditRoster(user) {
+  if (!user || isPartTimeStaff(user)) return false;
+  if (isAdminAccount(user)) return true;
+  const identity = staffFields(user).identity;
+  return identity === '經理' || identity === '主管' || identity === '系統管理員';
+}
+
+function hkMonthKey(date = new Date()) {
+  const formatted = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Hong_Kong',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+  return formatted.slice(0, 7);
+}
+
+function parseRosterDate(value) {
+  const m = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  return `${m[1]}-${m[2]}-${m[3]}`;
+}
+
+export async function getRosterMonth(month) {
+  await connectMongo();
+  const key = String(month || '');
+  if (!/^\d{4}-\d{2}$/.test(key)) throw new Error('請選擇月份');
+  const docs = await rosterCol().find({ date: { $regex: `^${key}-` } }).toArray();
+  return {
+    month: key,
+    cells: docs.map((doc) => ({
+      userId: String(doc.userId || ''),
+      date: String(doc.date || ''),
+      value: String(doc.value || ''),
+    })).filter((cell) => cell.userId && cell.date && ROSTER_VALUES.has(cell.value)),
+  };
+}
+
+export async function setRosterCell(actor, body) {
+  await connectMongo();
+  if (!canEditRoster(actor)) throw new Error('沒有權限修改更表');
+  const userId = String(body?.userId || '').trim();
+  const date = parseRosterDate(body?.date);
+  const raw = body?.value == null ? '' : String(body.value).trim();
+  if (!userId || !date) throw new Error('請選擇員工和日期');
+  if (raw && !ROSTER_VALUES.has(raw)) throw new Error('請選擇門市或休息');
+  const target = await usersCol().findOne({ $or: [{ _id: userId }, { id: userId }, { phone: userId }] });
+  if (!target || isAdminAccount(target)) throw new Error('找不到這位員工');
+  const month = date.slice(0, 7);
+  if (target.active === false && month >= hkMonthKey()) {
+    throw new Error('已停用的員工只可以改過去月份的更表');
+  }
+  const _id = `${String(target.id || target._id)}|${date}`;
+  if (!raw) {
+    await rosterCol().deleteOne({ _id });
+    return { ok: true, userId: String(target.id || target._id), date, value: null };
+  }
+  await rosterCol().replaceOne(
+    { _id },
+    {
+      _id,
+      userId: String(target.id || target._id),
+      date,
+      value: raw,
+      updatedBy: String(actor.id || actor._id || ''),
+      updatedAt: new Date(),
+    },
+    { upsert: true }
+  );
+  return { ok: true, userId: String(target.id || target._id), date, value: raw };
+}
+
 export async function getUserByLogin(login) {
   await connectMongo();
   const raw = String(login || '').trim();

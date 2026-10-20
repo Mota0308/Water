@@ -30,7 +30,7 @@ function isPartTimeAccount(user){
   if(user.login==='admin' || user.id==='adm') return false;
   return String(user.position||user.employment||'')==='兼職';
 }
-const PART_TIME_VIEWS = { dailyToday:1, pushAll:1, pushUnread:1, pushRead:1, pushEnded:1, pushDetail:1 };
+const PART_TIME_VIEWS = { dailyToday:1, pushAll:1, pushUnread:1, pushRead:1, pushEnded:1, pushDetail:1, roster:1 };
 function partTimeAllowsView(v){ return !!PART_TIME_VIEWS[v]; }
 /** 可被指派為項目經手人／負責人：僅經理、主管（不含系統帳 admin、不含員工） */
 function listAssignableStaff(){
@@ -6549,7 +6549,7 @@ async function logout(){
 
 /* ═══════════ 導航及渲染 ═══════════ */
 function setModule(m){
-  if(isPartTimeAccount() && m!=='daily' && m!=='push'){
+  if(isPartTimeAccount() && m!=='daily' && m!=='push' && m!=='roster'){
     alert2('兼職賬號只能使用今日工作與通知。');
     m='daily';
   }
@@ -6577,6 +6577,7 @@ function setModule(m){
     listType='rev';
   }
   else if(m==='push'){ currentView='pushAll'; pushFilterCat='全部'; pushFilterRead='全部'; pushFilterKw=''; }
+  else if(m==='roster'){ currentView='roster'; }
   else if(m==='createStaff'){ currentView='createStaff'; }
   else if(m==='staffDirectory'){ currentView='staffDirectory'; }
   else if(m==='settings'){ currentView='settings'; }
@@ -6596,11 +6597,13 @@ function getSidebarTree(){
   if(isPartTimeAccount()){
     return [{ id:'features', label:'功能', children: [
       { mod:'daily', label:'今日工作' },
+      { mod:'roster', label:'更表' },
       { mod:'push', label:'推送通知' }
     ] }];
   }
   const features = [
     { mod:'daily', label:'今日工作' },
+    { mod:'roster', label:'更表' },
     { mod:'push', label:'推送通知' }
   ];
   if(canCreateEmployee()) features.push({ mod:'staffDirectory', label:'員工資料' });
@@ -6669,6 +6672,7 @@ function toggleSidebarL2(mod){
 }
 /** 某模組下的第三層子頁 */
 function getSidebarItemsForModule(mod){
+  if(mod==='roster') return [['roster','更表']];
   if(mod==='daily'){
     if(isPartTimeAccount()) return [['dailyToday','今日工作']];
     const items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyHistory','歷史記錄'],['dailyRecords','我的記錄']];
@@ -6892,7 +6896,7 @@ function render(){
   const views = {
     home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : currentModule==='seconds' ? vHomeFiltered('sec') : currentModule==='reviews' ? vHomeFiltered('rev') : vHomeFiltered('dev'),
     devList:()=>vList('dev'), repList:()=>vList('rep'), secList:()=>vList('sec'), revList:()=>vList('rev'), myTasks:vMyTasks, addProject:vAddProject, sysLogs:vSysLogs, project:vProject,
-    dailyToday:()=>vDailyToday(currentUser), dailyProgress:()=>vDailyProgress(currentUser),
+    dailyToday:()=>vDailyToday(currentUser), roster:vRoster, dailyProgress:()=>vDailyProgress(currentUser),
     dailyUnit:()=>vDailyUnit(currentUser), dailyHistory:()=>vDailyHistory(currentUser),
     dailyRecords:()=>vDailyRecords(currentUser),
     dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser),
@@ -6972,6 +6976,7 @@ function go(v){
   if(v==='systemSettings'){ currentModule='systemSettings'; }
   if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProductLog' || v==='transferProducts'){ currentModule='transfer'; }
   if(v==='dailyToday' || v==='dailyProgress' || v==='dailyUnit' || v==='dailyHistory' || v==='dailyRecords' || v==='dailyNew' || v==='dailyRecurring' || v==='dailyOpLogs'){ currentModule='daily'; }
+  if(v==='roster'){ currentModule='roster'; }
   if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posSettlement' || v==='posReport' || v==='posReset'){ currentModule='pos'; }
   fCat='全部'; fStatus='全部'; fKw='';
   closeAppSidebar();
@@ -8330,6 +8335,188 @@ async function npOnFilesPick(input){
   }catch(e){ alert2('讀取附件失敗，請重試。'); }
   input.value='';
   npRenderFileList();
+}
+const ROSTER_STORES = ['觀塘','荔枝角','灣仔','屯門'];
+const ROSTER_CHOICES = ROSTER_STORES.concat(['休息']);
+const ROSTER_WEEKDAYS = ['日','一','二','三','四','五','六'];
+let rosterMonth = '';
+let rosterFilter = '全部';
+let rosterCells = [];
+let rosterLoadedKey = '';
+let rosterLoading = false;
+function canEditRoster(){
+  if(!currentUser || isPartTimeAccount()) return false;
+  if(currentUser.login==='admin' || currentUser.id==='adm') return true;
+  const idn = currentUser.identity;
+  return idn==='經理' || idn==='主管' || idn==='系統管理員';
+}
+function isRosterPerson(u){
+  if(!u) return false;
+  if(u.login==='admin' || u.id==='adm' || u.identity==='系統管理員') return false;
+  return true;
+}
+function rosterCellValue(userId, date){
+  const hit = rosterCells.find(function(c){ return c && String(c.userId)===String(userId) && c.date===date; });
+  return hit ? hit.value : '';
+}
+function rosterPeople(){
+  const current = hkYmd().slice(0, 7);
+  const past = rosterMonth < current;
+  const scheduled = {};
+  if(past){
+    rosterCells.forEach(function(c){
+      if(c && String(c.date||'').indexOf(rosterMonth+'-')===0) scheduled[String(c.userId)] = true;
+    });
+  }
+  return users.filter(function(u){
+    if(!isRosterPerson(u)) return false;
+    if(u.active!==false) return true;
+    return !!(past && scheduled[String(u.id)]);
+  }).sort(function(a, b){
+    return String(a.name||'').localeCompare(String(b.name||''), 'zh-HK');
+  });
+}
+function rosterVisiblePeople(){
+  const people = rosterPeople();
+  if(rosterFilter==='全部') return people;
+  return people.filter(function(u){
+    return rosterCells.some(function(c){
+      return String(c.userId)===String(u.id) && String(c.date||'').indexOf(rosterMonth+'-')===0 && c.value===rosterFilter;
+    });
+  });
+}
+function rosterDays(month){
+  const parts = String(month||'').split('-');
+  const y = Number(parts[0]);
+  const m = Number(parts[1]);
+  if(!y || !m) return [];
+  const n = new Date(y, m, 0).getDate();
+  const days = [];
+  for(let d=1; d<=n; d++){
+    const date = month+'-'+String(d).padStart(2,'0');
+    days.push({ date: date, d: d, wd: new Date(y, m-1, d).getDay() });
+  }
+  return days;
+}
+function rosterShiftMonth(delta){
+  const parts = String(rosterMonth||hkYmd().slice(0,7)).split('-');
+  const y = Number(parts[0]);
+  const m = Number(parts[1]);
+  const next = new Date(y, m-1+Number(delta||0), 1);
+  rosterSetMonth(next.getFullYear()+'-'+String(next.getMonth()+1).padStart(2,'0'));
+}
+function rosterSetMonth(value){
+  value = String(value||'');
+  if(!/^\d{4}-\d{2}$/.test(value) || value===rosterMonth) return;
+  rosterMonth = value;
+  rosterLoadedKey = '';
+  rosterCells = [];
+  render();
+}
+function rosterSetFilter(value){
+  rosterFilter = ROSTER_CHOICES.indexOf(value)>=0 ? value : '全部';
+  render();
+}
+async function loadRosterMonth(month){
+  rosterLoading = true;
+  try{
+    const data = await apiFetch('/api/roster?month='+encodeURIComponent(month));
+    if(rosterMonth!==month) return;
+    rosterCells = Array.isArray(data.cells) ? data.cells : [];
+    rosterLoadedKey = month;
+  }catch(e){
+    if(rosterMonth===month){
+      rosterLoadedKey = month;
+      alert2(e.message||'更表載入失敗');
+    }
+  }finally{
+    rosterLoading = false;
+    if(currentView==='roster' && rosterMonth===month) render();
+  }
+}
+function askRosterCell(userId, date){
+  if(!canEditRoster()) return;
+  userId = String(userId||'');
+  date = String(date||'');
+  const person = users.find(function(u){ return String(u.id)===userId; });
+  const current = rosterCellValue(userId, date);
+  const buttons = ROSTER_CHOICES.map(function(choice){
+    const on = current===choice ? ' green' : '';
+    return '<button type="button" class="btn sm'+on+'" data-call="saveRosterCell" data-arg0="'+escHtml(userId)+'" data-arg1="'+escHtml(date)+'" data-arg2="'+escHtml(choice)+'">'+escHtml(choice)+'</button>';
+  }).join('');
+  showModal('<h3>編排更表</h3><p style="font-size:13px">'+escHtml(person?person.name:userId)+'｜'+escHtml(date)+(current?'｜目前 '+escHtml(current):'｜尚未編更')+'</p>'
+    +'<div class="actions" style="flex-wrap:wrap">'+buttons
+    +'<button type="button" class="btn gray sm" data-call="saveRosterCell" data-arg0="'+escHtml(userId)+'" data-arg1="'+escHtml(date)+'" data-arg2="">清除</button>'
+    +'<button type="button" class="btn gray sm" onclick="closeModal()">取消</button></div>');
+}
+async function saveRosterCell(userId, date, value){
+  if(!canEditRoster()){ alert2('只有經理、主管或系統管理員可以改更表。'); return; }
+  userId = String(userId||'');
+  date = String(date||'');
+  value = value==null ? '' : String(value);
+  try{
+    await apiFetch('/api/roster', {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ userId: userId, date: date, value: value || null })
+    });
+  }catch(e){
+    alert2(e.message||'儲存失敗');
+    return;
+  }
+  rosterCells = rosterCells.filter(function(c){ return !(String(c.userId)===userId && c.date===date); });
+  if(value) rosterCells.push({ userId: userId, date: date, value: value });
+  closeModal();
+  render();
+}
+function vRoster(){
+  if(!rosterMonth) rosterMonth = hkYmd().slice(0, 7);
+  if(rosterLoadedKey!==rosterMonth && !rosterLoading){
+    rosterLoading = true;
+    const month = rosterMonth;
+    setTimeout(function(){ loadRosterMonth(month); }, 0);
+  }
+  const days = rosterDays(rosterMonth);
+  const people = rosterVisiblePeople();
+  const today = hkYmd();
+  const editable = canEditRoster();
+  const parts = rosterMonth.split('-');
+  const title = parts[0]+'年'+Number(parts[1])+'月';
+  const head = days.map(function(day){
+    const weekend = day.wd===0 || day.wd===6 ? ' roster-weekend' : '';
+    const isToday = day.date===today ? ' roster-today' : '';
+    return '<th class="'+weekend+isToday+'">'+day.d+'<div style="font-weight:normal;color:#888">'+ROSTER_WEEKDAYS[day.wd]+'</div></th>';
+  }).join('');
+  const rows = people.map(function(u){
+    const mine = currentUser && String(u.id)===String(currentUser.id) ? ' roster-mine' : '';
+    const cells = days.map(function(day){
+      const value = rosterCellValue(u.id, day.date);
+      const weekend = day.wd===0 || day.wd===6 ? ' roster-weekend' : '';
+      const isToday = day.date===today ? ' roster-today' : '';
+      const tone = value ? ' roster-v-'+value : '';
+      const cls = 'roster-cell'+weekend+isToday+tone+(editable?' editable':'');
+      const label = value ? escHtml(value) : '';
+      if(!editable) return '<td class="'+cls+'">'+label+'</td>';
+      return '<td class="'+cls+'" data-call="askRosterCell" data-arg0="'+escHtml(String(u.id))+'" data-arg1="'+escHtml(day.date)+'">'+label+'</td>';
+    }).join('');
+    const tag = u.active===false ? ' <span class="tag s-cancel">已停用</span>' : (isPartTimeAccount(u) ? ' <span class="tag dept">兼職</span>' : '');
+    return '<tr class="'+mine+'"><th class="roster-name">'+escHtml(u.name||'')+tag+'</th>'+cells+'</tr>';
+  }).join('');
+  const filterOpts = ['全部'].concat(ROSTER_CHOICES).map(function(name){
+    return '<option'+(rosterFilter===name?' selected':'')+'>'+name+'</option>';
+  }).join('');
+  return '<div class="card"><h2>🗓️ 更表｜'+title+'</h2>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px">'+(editable?'點一格即可改門市或休息，儲存後立即生效。':'你可以查看所有同事的更表。')+'</p>'
+    +'<div class="roster-bar">'
+    +'<button type="button" class="btn gray sm" data-call="rosterShiftMonth" data-arg0="-1">上一月</button>'
+    +'<input type="month" value="'+escHtml(rosterMonth)+'" onchange="rosterSetMonth(this.value)">'
+    +'<button type="button" class="btn gray sm" data-call="rosterShiftMonth" data-arg0="1">下一月</button>'
+    +'<select onchange="rosterSetFilter(this.value)">'+filterOpts+'</select>'
+    +'</div>'
+    +(rosterLoading && rosterLoadedKey!==rosterMonth ? '<p style="color:#888">更表載入中…</p>' : '')
+    +'<div class="roster-wrap"><table class="roster-table"><thead><tr><th class="roster-name">員工</th>'+head+'</tr></thead><tbody>'
+    +(rows || '<tr><td class="roster-name" colspan="'+(days.length+1)+'">'+(rosterFilter==='全部'?'沒有可顯示的員工。':'這個月沒有符合篩選的員工。')+'</td></tr>')
+    +'</tbody></table></div></div>';
 }
 function vAddProject(){
   const reviewCreate = currentModule==='reviews';
