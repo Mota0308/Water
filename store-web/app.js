@@ -8441,20 +8441,54 @@ async function loadRosterMonth(month){
     if(currentView==='roster' && rosterMonth===month) render();
   }
 }
+function rosterChoiceButtons(userId, date, current){
+  const buttons = ROSTER_CHOICES.map(function(choice){
+    const on = current===choice ? ' green' : '';
+    return '<button type="button" class="btn sm'+on+'" data-call="saveRosterCell" data-arg0="'+escHtml(userId)+'" data-arg1="'+escHtml(date)+'" data-arg2="'+escHtml(choice)+'">'+escHtml(choice)+'</button>';
+  }).join('');
+  return '<div class="actions" style="flex-wrap:wrap">'+buttons
+    +'<button type="button" class="btn gray sm" data-call="saveRosterCell" data-arg0="'+escHtml(userId)+'" data-arg1="'+escHtml(date)+'" data-arg2="">清除</button>'
+    +'<button type="button" class="btn gray sm" onclick="closeModal()">取消</button></div>';
+}
 function askRosterCell(userId, date){
   if(!canEditRoster()) return;
   userId = String(userId||'');
   date = String(date||'');
   const person = users.find(function(u){ return String(u.id)===userId; });
   const current = rosterCellValue(userId, date);
-  const buttons = ROSTER_CHOICES.map(function(choice){
-    const on = current===choice ? ' green' : '';
-    return '<button type="button" class="btn sm'+on+'" data-call="saveRosterCell" data-arg0="'+escHtml(userId)+'" data-arg1="'+escHtml(date)+'" data-arg2="'+escHtml(choice)+'">'+escHtml(choice)+'</button>';
+  showModal('<h3>編更</h3><p id="roster-edit-now" style="font-size:13px">'+escHtml(person?person.name:userId)+'｜'+escHtml(date)+(current?'｜目前 '+escHtml(current):'｜尚未編更')+'</p>'
+    +rosterChoiceButtons(userId, date, current));
+}
+function openRosterAssign(){
+  if(!canEditRoster()){ alert2('只有經理、主管或系統管理員可以編更。'); return; }
+  const people = rosterPeople().filter(function(u){ return u.active!==false; });
+  if(!people.length){ alert2('沒有可編更的員工。'); return; }
+  const today = hkYmd();
+  const days = rosterDays(rosterMonth);
+  const defaultDate = today.slice(0,7)===rosterMonth ? today : (days[0] ? days[0].date : rosterMonth+'-01');
+  const lastDate = days.length ? days[days.length-1].date : defaultDate;
+  const personOpts = people.map(function(u){
+    return '<option value="'+escHtml(String(u.id))+'">'+escHtml(u.name||String(u.id))+'</option>';
   }).join('');
-  showModal('<h3>編排更表</h3><p style="font-size:13px">'+escHtml(person?person.name:userId)+'｜'+escHtml(date)+(current?'｜目前 '+escHtml(current):'｜尚未編更')+'</p>'
-    +'<div class="actions" style="flex-wrap:wrap">'+buttons
-    +'<button type="button" class="btn gray sm" data-call="saveRosterCell" data-arg0="'+escHtml(userId)+'" data-arg1="'+escHtml(date)+'" data-arg2="">清除</button>'
-    +'<button type="button" class="btn gray sm" onclick="closeModal()">取消</button></div>');
+  showModal('<h3>編更</h3>'
+    +'<label>員工</label><select id="roster-edit-user" onchange="refreshRosterAssign()">'+personOpts+'</select>'
+    +'<label>日期</label><input id="roster-edit-date" type="date" value="'+escHtml(defaultDate)+'" min="'+escHtml(days[0]?days[0].date:defaultDate)+'" max="'+escHtml(lastDate)+'" onchange="refreshRosterAssign()">'
+    +'<p id="roster-edit-now" style="font-size:13px;margin:8px 0"></p>'
+    +'<div id="roster-edit-actions"></div>');
+  refreshRosterAssign();
+}
+function refreshRosterAssign(){
+  const userEl = document.getElementById('roster-edit-user');
+  const dateEl = document.getElementById('roster-edit-date');
+  const nowEl = document.getElementById('roster-edit-now');
+  const actions = document.getElementById('roster-edit-actions');
+  if(!userEl || !dateEl || !nowEl || !actions) return;
+  const userId = String(userEl.value||'');
+  const date = String(dateEl.value||'');
+  const person = users.find(function(u){ return String(u.id)===userId; });
+  const current = date ? rosterCellValue(userId, date) : '';
+  nowEl.textContent = (person?person.name:userId)+(date?'｜'+date:'')+(current?'｜目前 '+current:'｜尚未編更');
+  actions.innerHTML = date ? rosterChoiceButtons(userId, date, current) : '';
 }
 async function saveRosterCell(userId, date, value){
   if(!canEditRoster()){ alert2('只有經理、主管或系統管理員可以改更表。'); return; }
@@ -8502,7 +8536,7 @@ function vRoster(){
       const isToday = day.date===today ? ' roster-today' : '';
       const tone = value ? ' roster-v-'+value : '';
       const cls = 'roster-cell'+weekend+isToday+tone+(editable?' editable':'');
-      const label = value ? escHtml(value) : '';
+      const label = value ? escHtml(value) : (editable ? '<span class="roster-plus">編</span>' : '');
       if(!editable) return '<td class="'+cls+'">'+label+'</td>';
       return '<td class="'+cls+'" data-call="askRosterCell" data-arg0="'+escHtml(String(u.id))+'" data-arg1="'+escHtml(day.date)+'">'+label+'</td>';
     }).join('');
@@ -8513,8 +8547,9 @@ function vRoster(){
     return '<option'+(rosterFilter===name?' selected':'')+'>'+name+'</option>';
   }).join('');
   return '<div class="card"><h2>🗓️ 更表｜'+title+'</h2>'
-    +'<p style="font-size:13px;color:#666;margin:0 0 10px">'+(editable?'點一格即可改門市或休息，儲存後立即生效。':'你可以查看所有同事的更表。')+'</p>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px">'+(editable?'按「編更」，或點日曆上的「編」，即可安排門市或休息。':'你可以查看所有同事的更表。編更由經理、主管或系統管理員負責。')+'</p>'
     +'<div class="roster-bar">'
+    +(editable?'<button type="button" class="btn green sm" data-call="openRosterAssign">編更</button>':'')
     +'<button type="button" class="btn gray sm" data-call="rosterShiftMonth" data-arg0="-1">上一月</button>'
     +'<input type="month" value="'+escHtml(rosterMonth)+'" onchange="rosterSetMonth(this.value)">'
     +'<button type="button" class="btn gray sm" data-call="rosterShiftMonth" data-arg0="1">下一月</button>'
