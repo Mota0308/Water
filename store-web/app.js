@@ -30,7 +30,7 @@ function isPartTimeAccount(user){
   if(user.login==='admin' || user.id==='adm') return false;
   return String(user.position||user.employment||'')==='兼職';
 }
-const PART_TIME_VIEWS = { dailyToday:1, pushAll:1, pushUnread:1, pushRead:1, pushEnded:1, pushDetail:1, roster:1 };
+const PART_TIME_VIEWS = { dailyToday:1, pushAll:1, pushUnread:1, pushRead:1, pushEnded:1, pushDetail:1, roster:1, clockIn:1 };
 function partTimeAllowsView(v){ return !!PART_TIME_VIEWS[v]; }
 /** 可被指派為項目經手人／負責人：僅經理、主管（不含系統帳 admin、不含員工） */
 function listAssignableStaff(){
@@ -6430,6 +6430,7 @@ function setWorkingStore(store){
 /* ═══════════ 登入/登出 ═══════════ */
 function enterAppAs(user, opts){
   opts = opts || {};
+  resetClockView();
   currentUser = normalizeUser(user);
   if(userNeedsPhoneBind(currentUser)){
     document.getElementById('page-login').classList.add('hidden');
@@ -6535,6 +6536,7 @@ async function logout(){
     if(apiEnabled) await apiFetch('/api/auth/logout', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
   }catch(e){}
   clearAuthToken();
+  resetClockView();
   currentUser=null;
   pushUrgentPrompted = false;
   closeMailbox();
@@ -6549,8 +6551,8 @@ async function logout(){
 
 /* ═══════════ 導航及渲染 ═══════════ */
 function setModule(m){
-  if(isPartTimeAccount() && m!=='daily' && m!=='push' && m!=='roster'){
-    alert2('兼職賬號只能使用今日工作與通知。');
+  if(isPartTimeAccount() && m!=='daily' && m!=='push' && m!=='roster' && m!=='clockIn'){
+    alert2('兼職賬號不能使用這個頁面。');
     m='daily';
   }
   // 員工職位不可進入開發及生產
@@ -6578,6 +6580,7 @@ function setModule(m){
   }
   else if(m==='push'){ currentView='pushAll'; pushFilterCat='全部'; pushFilterRead='全部'; pushFilterKw=''; }
   else if(m==='roster'){ currentView='roster'; }
+  else if(m==='clockIn'){ currentView='clockIn'; }
   else if(m==='createStaff'){ currentView='createStaff'; }
   else if(m==='staffDirectory'){ currentView='staffDirectory'; }
   else if(m==='settings'){ currentView='settings'; }
@@ -6598,12 +6601,14 @@ function getSidebarTree(){
     return [{ id:'features', label:'功能', children: [
       { mod:'daily', label:'今日工作' },
       { mod:'roster', label:'更表' },
+      { mod:'clockIn', label:'打卡' },
       { mod:'push', label:'推送通知' }
     ] }];
   }
   const features = [
     { mod:'daily', label:'今日工作' },
     { mod:'roster', label:'更表' },
+    { mod:'clockIn', label:'打卡' },
     { mod:'push', label:'推送通知' }
   ];
   if(canCreateEmployee()) features.push({ mod:'staffDirectory', label:'員工資料' });
@@ -6673,6 +6678,7 @@ function toggleSidebarL2(mod){
 /** 某模組下的第三層子頁 */
 function getSidebarItemsForModule(mod){
   if(mod==='roster') return [['roster','更表']];
+  if(mod==='clockIn') return [['clockIn','打卡']];
   if(mod==='daily'){
     if(isPartTimeAccount()) return [['dailyToday','今日工作']];
     const items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyHistory','歷史記錄'],['dailyRecords','我的記錄']];
@@ -6896,7 +6902,7 @@ function render(){
   const views = {
     home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : currentModule==='seconds' ? vHomeFiltered('sec') : currentModule==='reviews' ? vHomeFiltered('rev') : vHomeFiltered('dev'),
     devList:()=>vList('dev'), repList:()=>vList('rep'), secList:()=>vList('sec'), revList:()=>vList('rev'), myTasks:vMyTasks, addProject:vAddProject, sysLogs:vSysLogs, project:vProject,
-    dailyToday:()=>vDailyToday(currentUser), roster:vRoster, dailyProgress:()=>vDailyProgress(currentUser),
+    dailyToday:()=>vDailyToday(currentUser), roster:vRoster, clockIn:vClockIn, dailyProgress:()=>vDailyProgress(currentUser),
     dailyUnit:()=>vDailyUnit(currentUser), dailyHistory:()=>vDailyHistory(currentUser),
     dailyRecords:()=>vDailyRecords(currentUser),
     dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser),
@@ -6977,6 +6983,7 @@ function go(v){
   if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProductLog' || v==='transferProducts'){ currentModule='transfer'; }
   if(v==='dailyToday' || v==='dailyProgress' || v==='dailyUnit' || v==='dailyHistory' || v==='dailyRecords' || v==='dailyNew' || v==='dailyRecurring' || v==='dailyOpLogs'){ currentModule='daily'; }
   if(v==='roster'){ currentModule='roster'; }
+  if(v==='clockIn'){ currentModule='clockIn'; }
   if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posSettlement' || v==='posReport' || v==='posReset'){ currentModule='pos'; }
   fCat='全部'; fStatus='全部'; fKw='';
   closeAppSidebar();
@@ -8517,6 +8524,116 @@ function vRoster(){
     +'<div class="roster-wrap"><table class="roster-table"><thead><tr><th class="roster-name">員工</th>'+head+'</tr></thead><tbody>'
     +(rows || '<tr><td class="roster-name" colspan="'+(days.length+1)+'">'+(rosterFilter==='全部'?'沒有可顯示的員工。':'這個月沒有符合篩選的員工。')+'</td></tr>')
     +'</tbody></table></div></div>';
+}
+let clockRows = [];
+let clockCanManage = false;
+let clockLoaded = false;
+let clockLoading = false;
+let clockBusy = false;
+let clockMessage = '';
+let clockLoadGen = 0;
+function resetClockView(){
+  clockRows = [];
+  clockCanManage = false;
+  clockLoaded = false;
+  clockLoading = false;
+  clockBusy = false;
+  clockMessage = '';
+  clockLoadGen++;
+}
+function clockGeoError(err){
+  const code = err && err.code;
+  if(code===1) return '請允許定位權限，才能打卡';
+  if(code===3) return '定位逾時，請再到空曠一點的位置試一次';
+  return '未能取得位置，請確認手機已開啟定位';
+}
+function readPhonePosition(){
+  return new Promise(function(resolve, reject){
+    if(!navigator.geolocation){
+      reject(new Error('這部手機不支援定位'));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(resolve, reject, {
+      enableHighAccuracy: true,
+      timeout: 15000,
+      maximumAge: 0
+    });
+  });
+}
+async function loadClockIns(){
+  const gen = ++clockLoadGen;
+  clockLoading = true;
+  try{
+    const data = await apiFetch('/api/clock-ins');
+    if(gen!==clockLoadGen) return;
+    clockRows = Array.isArray(data.rows) ? data.rows : [];
+    clockCanManage = !!data.canManage;
+    clockLoaded = true;
+  }catch(e){
+    clockLoaded = true;
+    alert2(e.message||'打卡紀錄載入失敗');
+  }finally{
+    clockLoading = false;
+    if(currentView==='clockIn') render();
+  }
+}
+async function doClockIn(){
+  if(!isMobileChrome()){ alert2('請用手機打卡'); return; }
+  if(clockBusy) return;
+  clockBusy = true;
+  clockMessage = '正在定位…';
+  render();
+  let pos;
+  try{
+    pos = await readPhonePosition();
+  }catch(e){
+    clockBusy = false;
+    clockMessage = '';
+    alert2(e && e.code ? clockGeoError(e) : (e.message||'未能取得位置'));
+    render();
+    return;
+  }
+  const coords = pos.coords || {};
+  try{
+    const saved = await apiFetch('/api/clock-ins', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ lat: coords.latitude, lng: coords.longitude, accuracy: coords.accuracy })
+    });
+    clockLoadGen++;
+    clockRows = [saved].concat(clockRows.filter(function(row){ return row.id!==saved.id; }));
+    clockMessage = '已在'+saved.store+'打卡｜'+saved.atLabel;
+  }catch(e){
+    clockMessage = '';
+    alert2(e.message||'打卡失敗');
+  }finally{
+    clockBusy = false;
+    if(currentView==='clockIn') render();
+  }
+}
+function vClockIn(){
+  if(!clockLoaded && !clockLoading){
+    clockLoading = true;
+    setTimeout(function(){ loadClockIns(); }, 0);
+  }
+  const mobile = isMobileChrome();
+  const rows = clockRows.map(function(row){
+    const who = clockCanManage ? escHtml(row.userName||row.userId)+'｜' : '';
+    return '<tr><td>'+escHtml(row.atLabel||'')+'</td><td>'+who+escHtml(row.store||'')+'</td></tr>';
+  }).join('');
+  const punch = mobile
+    ? '<button type="button" class="btn clock-btn" data-call="doClockIn"'+(clockBusy?' disabled':'')+'>'+(clockBusy?'正在定位…':'打卡')+'</button>'
+    : '<div class="info-banner" style="margin-bottom:12px">請用手機打開這個頁面再打卡。電腦不能定位到門市。</div>';
+  return '<div class="card"><h2>📍 打卡</h2>'
+    +'<p class="clock-note">在觀塘、荔枝角、灣仔或屯門門市約 150 米內，用手機會記下你的打卡。</p>'
+    +punch
+    +(clockMessage?'<p style="font-size:15px;font-weight:bold;color:#2e7d32">'+escHtml(clockMessage)+'</p>':'')
+    +'<h3 style="margin-top:8px">'+(clockCanManage?'今日全部打卡':'我的今日打卡')+'</h3>'
+    +(clockLoading && !clockLoaded ? '<p style="color:#888">載入中…</p>' : (
+      rows ? '<div class="table-wrap"><table><tr><th>時間</th><th>'+(clockCanManage?'員工｜門市':'門市')+'</th></tr>'+rows+'</table></div>'
+        : '<p style="color:#888">今日還沒有打卡。</p>'
+    ))
+    +'</div>';
 }
 function vAddProject(){
   const reviewCreate = currentModule==='reviews';

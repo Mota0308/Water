@@ -32,6 +32,8 @@ import {
   listUsersPublic,
   getRosterMonth,
   setRosterCell,
+  listClockInsToday,
+  createClockIn,
   createUser,
   updateUserProfile,
   canCreateEmployee,
@@ -492,6 +494,23 @@ app.put('/api/roster', requireAuth, async (req, res) => {
   } catch (e) {
     const msg = String(e.message || e);
     res.status(/沒有權限/.test(msg) ? 403 : 400).json({ error: msg });
+  }
+});
+
+app.get('/api/clock-ins', requireAuth, async (req, res) => {
+  try {
+    res.json(await listClockInsToday(req.user));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/clock-ins', requireAuth, async (req, res) => {
+  try {
+    res.json(await createClockIn(req.user, req.body || {}));
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
   }
 });
 

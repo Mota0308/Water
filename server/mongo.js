@@ -1352,6 +1352,116 @@ export async function setRosterCell(actor, body) {
   return { ok: true, userId: String(target.id || target._id), date, value: raw };
 }
 
+const CLOCK_STORES = [
+  { name: '觀塘', lat: 22.3100929, lng: 114.2250637 },
+  { name: '荔枝角', lat: 22.3366656, lng: 114.1475776 },
+  { name: '灣仔', lat: 22.2770765, lng: 114.1775473 },
+  { name: '屯門', lat: 22.394665, lng: 113.9689791 },
+];
+const CLOCK_RADIUS_M = 150;
+const CLOCK_MAX_ACCURACY_M = 200;
+
+function clockInsCol() {
+  return db.collection('clock_ins');
+}
+
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+function hkClockLabel(date) {
+  const parts = new Intl.DateTimeFormat('zh-HK', {
+    timeZone: 'Asia/Hong_Kong',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type) => parts.find((p) => p.type === type)?.value || '';
+  return `${get('year')}年${get('month')}月${get('day')}日 ${get('hour')}:${get('minute')}`;
+}
+
+function hkDayRange(now = new Date()) {
+  const ymd = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Hong_Kong',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+  const start = new Date(`${ymd}T00:00:00+08:00`);
+  return { start, end: new Date(start.getTime() + 24 * 60 * 60 * 1000) };
+}
+
+export function matchClockStore(lat, lng, accuracy) {
+  const latitude = Number(lat);
+  const longitude = Number(lng);
+  const accuracyM = Number(accuracy);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    return { ok: false, error: '未能取得位置' };
+  }
+  if (!Number.isFinite(accuracyM) || accuracyM > CLOCK_MAX_ACCURACY_M) {
+    return { ok: false, error: '定位不夠準確，請到較空曠的位置再試' };
+  }
+  let nearest = null;
+  for (const store of CLOCK_STORES) {
+    const distanceM = haversineMeters(latitude, longitude, store.lat, store.lng);
+    if (!nearest || distanceM < nearest.distanceM) nearest = { store: store.name, distanceM };
+  }
+  if (!nearest || nearest.distanceM > CLOCK_RADIUS_M) {
+    return { ok: false, error: '你目前不在觀塘、荔枝角、灣仔或屯門門市附近' };
+  }
+  return { ok: true, store: nearest.store, distanceM: Math.round(nearest.distanceM) };
+}
+
+function publicClockIn(doc) {
+  const at = doc.createdAt instanceof Date ? doc.createdAt : new Date(doc.createdAt);
+  return {
+    id: String(doc._id),
+    userId: String(doc.userId || ''),
+    userName: String(doc.userName || ''),
+    store: String(doc.store || ''),
+    distanceM: doc.distanceM,
+    at: at.toISOString(),
+    atLabel: hkClockLabel(at),
+  };
+}
+
+export async function listClockInsToday(actor) {
+  await connectMongo();
+  const { start, end } = hkDayRange();
+  const query = { createdAt: { $gte: start, $lt: end } };
+  if (!canEditRoster(actor)) query.userId = String(actor.id || actor._id || '');
+  const docs = await clockInsCol().find(query).sort({ createdAt: -1 }).limit(200).toArray();
+  return { rows: docs.map(publicClockIn), canManage: canEditRoster(actor) };
+}
+
+export async function createClockIn(actor, body) {
+  await connectMongo();
+  const matched = matchClockStore(body?.lat, body?.lng, body?.accuracy);
+  if (!matched.ok) throw new Error(matched.error);
+  const createdAt = new Date();
+  const doc = {
+    userId: String(actor.id || actor._id || ''),
+    userName: String(actor.name || ''),
+    store: matched.store,
+    lat: Number(body.lat),
+    lng: Number(body.lng),
+    accuracy: Number(body.accuracy),
+    distanceM: matched.distanceM,
+    createdAt,
+  };
+  const inserted = await clockInsCol().insertOne(doc);
+  return publicClockIn({ ...doc, _id: inserted.insertedId });
+}
+
 export async function getUserByLogin(login) {
   await connectMongo();
   const raw = String(login || '').trim();
