@@ -58,6 +58,8 @@ export interface MemberPricing {
   level?: string
   rate?: number
   fold?: string
+  /** 收銀員改過折扣時，按這個折扣率計，不再跟會員價取較低。 */
+  manualRate?: boolean
   isRedDay?: boolean
   isWeekend?: boolean
   isBirthday?: boolean

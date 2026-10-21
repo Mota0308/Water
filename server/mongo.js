@@ -1462,6 +1462,139 @@ export async function createClockIn(actor, body) {
   return publicClockIn({ ...doc, _id: inserted.insertedId });
 }
 
+const HOLD_STORES = ['觀塘', '荔枝角', '灣仔', '屯門'];
+const HOLD_STATUSES = ['留貨', '已付', '換貨'];
+let holdIndexReady = false;
+
+function holdsCol() {
+  return db.collection('holds');
+}
+
+async function ensureHoldIndexes() {
+  if (holdIndexReady) return;
+  await holdsCol().createIndex({ createdAt: -1 });
+  await holdsCol().createIndex({ phone: 1 });
+  holdIndexReady = true;
+}
+
+function isHoldStaff(u) {
+  if (!u || u.active === false || isAdminAccount(u)) return false;
+  return staffFields(u).identity !== '系統管理員';
+}
+
+function canDeleteHold(actor, doc) {
+  if (!actor || !doc) return false;
+  if (String(actor.id || actor._id || '') === String(doc.handlerId || '')) return true;
+  return canEditRoster(actor);
+}
+
+function publicHold(doc, actor) {
+  const at = doc.createdAt instanceof Date ? doc.createdAt : new Date(doc.createdAt);
+  return {
+    id: String(doc._id),
+    no: String(doc.no || doc._id),
+    customerName: String(doc.customerName || ''),
+    phone: String(doc.phone || ''),
+    sku: String(doc.sku || ''),
+    size: String(doc.size || ''),
+    status: String(doc.status || ''),
+    receiveStore: String(doc.receiveStore || ''),
+    shipStore: String(doc.shipStore || ''),
+    handlerId: String(doc.handlerId || ''),
+    handlerName: String(doc.handlerName || ''),
+    at: at.toISOString(),
+    atLabel: formatHkDateTime(at),
+    canDelete: canDeleteHold(actor, doc),
+  };
+}
+
+async function nextHoldNo() {
+  const result = await metaCol().findOneAndUpdate(
+    { _id: 'hold_seq' },
+    { $inc: { seq: 1 }, $set: { updatedAt: new Date() } },
+    { upsert: true, returnDocument: 'after' },
+  );
+  const saved = result?.value ?? result;
+  const seq = typeof saved?.seq === 'number' ? saved.seq : 1;
+  return `L${String(seq).padStart(3, '0')}`;
+}
+
+export async function listHolds(actor, phoneQuery) {
+  await connectMongo();
+  await ensureHoldIndexes();
+  const digits = String(phoneQuery || '').replace(/\D/g, '');
+  const query = digits ? { phone: { $regex: digits } } : {};
+  const docs = await holdsCol().find(query).sort({ createdAt: -1 }).limit(200).toArray();
+  return { rows: docs.map((doc) => publicHold(doc, actor)), phone: digits };
+}
+
+export async function getHold(actor, id) {
+  await connectMongo();
+  const doc = await holdsCol().findOne({ _id: String(id || '') });
+  if (!doc) throw new Error('找不到這張留貨');
+  return publicHold(doc, actor);
+}
+
+export async function createHold(actor, body) {
+  await connectMongo();
+  await ensureHoldIndexes();
+  const customerName = String(body?.customerName || '').trim();
+  const phone = normalizePhone(body?.phone);
+  const sku = String(body?.sku || '').trim();
+  const size = String(body?.size || '').trim();
+  const status = String(body?.status || '').trim();
+  const receiveStore = String(body?.receiveStore || '').trim();
+  const shipStore = String(body?.shipStore || '').trim();
+  const handlerId = String(body?.handlerId || '').trim();
+  if (!customerName) throw new Error('請填寫客人名稱');
+  if (!phone) throw new Error('請輸入有效的香港 8 位電話號碼');
+  if (!sku) throw new Error('請填寫貨號');
+  if (!size) throw new Error('請填寫碼數');
+  if (!HOLD_STATUSES.includes(status)) throw new Error('請選擇狀態');
+  if (!HOLD_STORES.includes(receiveStore)) throw new Error('請選擇收貨門市');
+  if (!HOLD_STORES.includes(shipStore)) throw new Error('請選擇出貨門市');
+  const handler = await getUserById(handlerId);
+  if (!handler || !isHoldStaff(handler)) throw new Error('請選擇經手同事');
+  const no = await nextHoldNo();
+  const doc = {
+    _id: no,
+    no,
+    customerName,
+    phone,
+    sku,
+    size,
+    status,
+    receiveStore,
+    shipStore,
+    handlerId: String(handler.id || handler._id),
+    handlerName: String(handler.name || ''),
+    createdAt: new Date(),
+    createdBy: String(actor?.id || actor?._id || ''),
+  };
+  await holdsCol().insertOne(doc);
+  return publicHold(doc, actor);
+}
+
+export async function updateHoldStatus(actor, id, status) {
+  await connectMongo();
+  const next = String(status || '').trim();
+  if (!HOLD_STATUSES.includes(next)) throw new Error('請選擇狀態');
+  const doc = await holdsCol().findOne({ _id: String(id || '') });
+  if (!doc) throw new Error('找不到這張留貨');
+  doc.status = next;
+  await holdsCol().updateOne({ _id: doc._id }, { $set: { status: next, updatedAt: new Date() } });
+  return publicHold(doc, actor);
+}
+
+export async function deleteHold(actor, id) {
+  await connectMongo();
+  const doc = await holdsCol().findOne({ _id: String(id || '') });
+  if (!doc) throw new Error('找不到這張留貨');
+  if (!canDeleteHold(actor, doc)) throw new Error('沒有權限刪除這張留貨');
+  await holdsCol().deleteOne({ _id: doc._id });
+  return { ok: true };
+}
+
 export async function getUserByLogin(login) {
   await connectMongo();
   const raw = String(login || '').trim();
@@ -4411,8 +4544,29 @@ function memberRateBase(product, list) {
   return Math.min(...candidates);
 }
 
+function discountFoldFromRate(rate) {
+  if (rate >= 0.999) return '原價';
+  const pct = Math.round(rate * 1000) / 10;
+  if (Number.isInteger(pct) && pct % 10 === 0) return `${pct / 10}折`;
+  return `${String(pct).replace(/\.0$/, '')}折`;
+}
+
+/** 收銀員手動折扣。8折傳 0.8，85折傳 0.85，原價傳 1。未傳代表沿用會員預設。 */
+export function normalizeCheckoutDiscount(raw) {
+  if (raw == null || raw === '') return null;
+  const rate = Math.round(Number(raw) * 1000) / 1000;
+  if (!Number.isFinite(rate) || rate < 0.1 || rate > 1) throw new Error('折扣須為 1 折至原價');
+  return { rate, fold: discountFoldFromRate(rate), manualRate: true };
+}
+
 export function resolveMemberUnitPrice(product, pricing) {
   const list = transferListPrice(product) || Number(product?.price) || 0;
+  if (pricing?.manualRate) {
+    const base = memberRateBase(product, list) || list;
+    const rate = Number(pricing.rate);
+    if (!(base > 0) || !(rate > 0) || rate > 1) return Math.round((list || 0) * 100) / 100;
+    return Math.round(base * rate * 100) / 100;
+  }
   const nets = transferPriceNets(product);
   const lv = pricing?.level || '';
   let unit = nets.new;
@@ -4791,6 +4945,10 @@ export async function checkoutPos(user, payload = {}) {
     birthDay: memberDoc?.birthDay,
     birthMonth: memberDoc?.birthMonth,
   });
+  const discountOverride = normalizeCheckoutDiscount(payload.discountRate);
+  const linePricing = discountOverride
+    ? { level: memberDoc ? pricing.level : '', rate: discountOverride.rate, fold: discountOverride.fold, manualRate: true }
+    : (memberDoc ? pricing : null);
 
   const tpIds = [...new Set(deducted.map((d) => String(d.sellable.transferProductId || '')).filter(Boolean))];
   const transferDocs = tpIds.length
@@ -4811,7 +4969,7 @@ export async function checkoutPos(user, payload = {}) {
     const listUnit = transferListPrice(tp) || Number(d.sellable.price) || 0;
     const unitPrice = resolveMemberUnitPrice(
       Object.keys(tp).length ? tp : { price: d.sellable.price },
-      memberDoc ? pricing : null,
+      linePricing,
     ) || listUnit;
     const listLine = Math.round(listUnit * d.qty * 100) / 100;
     const lineTotal = Math.round(unitPrice * d.qty * 100) / 100;
@@ -4831,9 +4989,10 @@ export async function checkoutPos(user, payload = {}) {
   });
   const subtotal = Math.round(listSubtotal * 100) / 100;
   const roundedSubtotal = Math.round(subtotal);
-  const memberDue = memberDoc ? Math.round(memberSubtotal) : roundedSubtotal;
-  const memberDiscount = memberDoc ? Math.max(0, roundedSubtotal - memberDue) : 0;
-  const afterMember = memberDoc ? memberDue : subtotal;
+  const usePricedTotal = !!(memberDoc || discountOverride);
+  const memberDue = usePricedTotal ? Math.round(memberSubtotal) : roundedSubtotal;
+  const memberDiscount = usePricedTotal ? Math.max(0, roundedSubtotal - memberDue) : 0;
+  const afterMember = usePricedTotal ? memberDue : subtotal;
 
   let pointsRedeemed = 0;
   let pointsDiscount = 0;
@@ -4889,8 +5048,8 @@ export async function checkoutPos(user, payload = {}) {
     memberName: String(payload.memberName || memberDoc?.name || ''),
     memberPhone: String(payload.memberPhone || memberDoc?.phone || ''),
     memberLevel: memberDoc ? pricing.level : '',
-    memberDiscountRate: memberDoc ? pricing.rate : 1,
-    memberDiscountFold: memberDoc ? pricing.fold : '',
+    memberDiscountRate: discountOverride ? discountOverride.rate : (memberDoc ? pricing.rate : 1),
+    memberDiscountFold: discountOverride ? `${discountOverride.fold}（手動）` : (memberDoc ? pricing.fold : ''),
     memberDiscount,
     remark: String(payload.remark || '').trim(),
     paymentMethod,
@@ -7170,6 +7329,7 @@ export async function savePosDraft(user, payload = {}) {
   const memberId = String(payload.memberId || '').trim();
   const memberName = String(payload.memberName || '').trim();
   const memberPhone = String(payload.memberPhone || '').trim();
+  const discountInput = String(payload.discountInput ?? '').trim().slice(0, 16);
   const subtotal = Math.round(items.reduce((s, it) => s + it.unitPrice * it.qty, 0) * 100) / 100;
   const itemCount = items.reduce((s, it) => s + it.qty, 0);
   const now = new Date();
@@ -7206,6 +7366,7 @@ export async function savePosDraft(user, payload = {}) {
     memberId,
     memberName,
     memberPhone,
+    discountInput,
     items,
     subtotal,
     itemCount,

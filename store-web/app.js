@@ -30,7 +30,7 @@ function isPartTimeAccount(user){
   if(user.login==='admin' || user.id==='adm') return false;
   return String(user.position||user.employment||'')==='兼職';
 }
-const PART_TIME_VIEWS = { dailyToday:1, pushAll:1, pushUnread:1, pushRead:1, pushEnded:1, pushDetail:1, roster:1, clockIn:1 };
+const PART_TIME_VIEWS = { dailyToday:1, pushAll:1, pushUnread:1, pushRead:1, pushEnded:1, pushDetail:1, roster:1, clockIn:1, hold:1 };
 function partTimeAllowsView(v){ return !!PART_TIME_VIEWS[v]; }
 /** 可被指派為項目經手人／負責人：僅經理、主管（不含系統帳 admin、不含員工） */
 function listAssignableStaff(){
@@ -6431,6 +6431,7 @@ function setWorkingStore(store){
 function enterAppAs(user, opts){
   opts = opts || {};
   resetClockView();
+  resetHoldView();
   currentUser = normalizeUser(user);
   if(userNeedsPhoneBind(currentUser)){
     document.getElementById('page-login').classList.add('hidden');
@@ -6537,6 +6538,7 @@ async function logout(){
   }catch(e){}
   clearAuthToken();
   resetClockView();
+  resetHoldView();
   currentUser=null;
   pushUrgentPrompted = false;
   closeMailbox();
@@ -6551,7 +6553,7 @@ async function logout(){
 
 /* ═══════════ 導航及渲染 ═══════════ */
 function setModule(m){
-  if(isPartTimeAccount() && m!=='daily' && m!=='push' && m!=='roster' && m!=='clockIn'){
+  if(isPartTimeAccount() && m!=='daily' && m!=='push' && m!=='roster' && m!=='clockIn' && m!=='hold'){
     alert2('兼職賬號不能使用這個頁面。');
     m='daily';
   }
@@ -6581,6 +6583,7 @@ function setModule(m){
   else if(m==='push'){ currentView='pushAll'; pushFilterCat='全部'; pushFilterRead='全部'; pushFilterKw=''; }
   else if(m==='roster'){ currentView='roster'; }
   else if(m==='clockIn'){ currentView='clockIn'; }
+  else if(m==='hold'){ currentView='hold'; }
   else if(m==='createStaff'){ currentView='createStaff'; }
   else if(m==='staffDirectory'){ currentView='staffDirectory'; }
   else if(m==='settings'){ currentView='settings'; }
@@ -6602,6 +6605,7 @@ function getSidebarTree(){
       { mod:'daily', label:'今日工作' },
       { mod:'roster', label:'更表' },
       { mod:'clockIn', label:'打卡' },
+      { mod:'hold', label:'留貨' },
       { mod:'push', label:'推送通知' }
     ] }];
   }
@@ -6609,6 +6613,7 @@ function getSidebarTree(){
     { mod:'daily', label:'今日工作' },
     { mod:'roster', label:'更表' },
     { mod:'clockIn', label:'打卡' },
+    { mod:'hold', label:'留貨' },
     { mod:'push', label:'推送通知' }
   ];
   if(canCreateEmployee()) features.push({ mod:'staffDirectory', label:'員工資料' });
@@ -6679,6 +6684,7 @@ function toggleSidebarL2(mod){
 function getSidebarItemsForModule(mod){
   if(mod==='roster') return [['roster','更表']];
   if(mod==='clockIn') return [['clockIn','打卡']];
+  if(mod==='hold') return [['hold','留貨']];
   if(mod==='daily'){
     if(isPartTimeAccount()) return [['dailyToday','今日工作']];
     const items = [['dailyToday','今日工作'],['dailyProgress','各單位進度'],['dailyHistory','歷史記錄'],['dailyRecords','我的記錄']];
@@ -6902,7 +6908,7 @@ function render(){
   const views = {
     home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : currentModule==='seconds' ? vHomeFiltered('sec') : currentModule==='reviews' ? vHomeFiltered('rev') : vHomeFiltered('dev'),
     devList:()=>vList('dev'), repList:()=>vList('rep'), secList:()=>vList('sec'), revList:()=>vList('rev'), myTasks:vMyTasks, addProject:vAddProject, sysLogs:vSysLogs, project:vProject,
-    dailyToday:()=>vDailyToday(currentUser), roster:vRoster, clockIn:vClockIn, dailyProgress:()=>vDailyProgress(currentUser),
+    dailyToday:()=>vDailyToday(currentUser), roster:vRoster, clockIn:vClockIn, hold:vHold, dailyProgress:()=>vDailyProgress(currentUser),
     dailyUnit:()=>vDailyUnit(currentUser), dailyHistory:()=>vDailyHistory(currentUser),
     dailyRecords:()=>vDailyRecords(currentUser),
     dailyNew:()=>vDailyNew(currentUser), dailyRecurring:()=>vDailyRecurring(currentUser),
@@ -6984,6 +6990,7 @@ function go(v){
   if(v==='dailyToday' || v==='dailyProgress' || v==='dailyUnit' || v==='dailyHistory' || v==='dailyRecords' || v==='dailyNew' || v==='dailyRecurring' || v==='dailyOpLogs'){ currentModule='daily'; }
   if(v==='roster'){ currentModule='roster'; }
   if(v==='clockIn'){ currentModule='clockIn'; }
+  if(v==='hold'){ currentModule='hold'; }
   if(v==='posCashier' || v==='posTransactions' || v==='posReceipt' || v==='posMembers' || v==='posSettlement' || v==='posReport' || v==='posReset'){ currentModule='pos'; }
   fCat='全部'; fStatus='全部'; fKw='';
   closeAppSidebar();
@@ -8667,6 +8674,232 @@ function vClockIn(){
     +(clockLoading && !clockLoaded ? '<p style="color:#888">載入中…</p>' : (
       rows ? '<div class="table-wrap"><table><tr><th>時間</th><th>'+(clockCanManage?'員工｜門市':'門市')+'</th></tr>'+rows+'</table></div>'
         : '<p style="color:#888">今日還沒有打卡。</p>'
+    ))
+    +'</div>';
+}
+const HOLD_STORES = ['觀塘','荔枝角','灣仔','屯門'];
+const HOLD_STATUSES = ['留貨','已付','換貨'];
+let holdRows = [];
+let holdLoaded = false;
+let holdLoading = false;
+let holdSaving = false;
+let holdPhone = '';
+let holdDraft = null;
+let holdLoadGen = 0;
+let holdPhoneTimer = null;
+let holdFilterFocus = false;
+let holdSkipDraftRead = false;
+function resetHoldView(){
+  holdRows = [];
+  holdLoaded = false;
+  holdLoading = false;
+  holdSaving = false;
+  holdPhone = '';
+  holdDraft = null;
+  holdLoadGen++;
+  holdFilterFocus = false;
+  holdSkipDraftRead = false;
+}
+function holdHandlers(){
+  return users.filter(function(u){
+    if(!u || u.active===false) return false;
+    if(u.login==='admin' || u.id==='adm' || u.identity==='系統管理員') return false;
+    return true;
+  }).sort(function(a, b){
+    return String(a.name||'').localeCompare(String(b.name||''), 'zh-HK');
+  });
+}
+function defaultHoldDraft(){
+  const working = (typeof getWorkingStore==='function' ? getWorkingStore() : '') || '';
+  const shop = HOLD_STORES.indexOf(working)>=0 ? working : '觀塘';
+  const people = holdHandlers();
+  const mine = currentUser && people.some(function(u){ return String(u.id)===String(currentUser.id); })
+    ? String(currentUser.id) : (people[0] ? String(people[0].id) : '');
+  return { name:'', phone:'', sku:'', size:'', status:'留貨', receive:shop, ship:shop, handler:mine };
+}
+function readHoldDraft(){
+  if(holdSkipDraftRead){ holdSkipDraftRead = false; return; }
+  if(!document.getElementById('hold-name')) return;
+  const val = function(id){
+    const el = document.getElementById(id);
+    return el ? el.value : '';
+  };
+  holdDraft = {
+    name: val('hold-name'),
+    phone: val('hold-phone'),
+    sku: val('hold-sku'),
+    size: val('hold-size'),
+    status: val('hold-status') || '留貨',
+    receive: val('hold-receive'),
+    ship: val('hold-ship'),
+    handler: val('hold-handler')
+  };
+}
+function restoreHoldFilterFocus(){
+  if(!holdFilterFocus) return;
+  holdFilterFocus = false;
+  const el = document.getElementById('hold-phone-filter');
+  if(!el) return;
+  el.focus();
+  const n = el.value.length;
+  try{ el.setSelectionRange(n, n); }catch(e){}
+}
+async function loadHolds(){
+  readHoldDraft();
+  const gen = ++holdLoadGen;
+  holdLoading = true;
+  try{
+    const digits = String(holdPhone||'').replace(/\D/g,'');
+    const data = await apiFetch('/api/holds'+(digits ? '?phone='+encodeURIComponent(digits) : ''));
+    if(gen!==holdLoadGen) return;
+    holdRows = Array.isArray(data.rows) ? data.rows : [];
+    holdLoaded = true;
+  }catch(e){
+    if(gen===holdLoadGen){
+      holdLoaded = true;
+      alert2(e.message||'留貨載入失敗');
+    }
+  }finally{
+    if(gen===holdLoadGen) holdLoading = false;
+    if(currentView==='hold' && gen===holdLoadGen){
+      render();
+      restoreHoldFilterFocus();
+    }
+  }
+}
+function holdSetPhone(value){
+  holdPhone = String(value||'');
+  holdFilterFocus = true;
+  clearTimeout(holdPhoneTimer);
+  holdPhoneTimer = setTimeout(function(){ loadHolds(); }, 300);
+}
+async function downloadHoldPdf(id, no){
+  const r = await apiFetch('/api/holds/'+encodeURIComponent(id)+'/pdf');
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = (no||'留貨')+'.pdf';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+}
+async function submitHold(){
+  if(holdSaving) return;
+  readHoldDraft();
+  const d = holdDraft || defaultHoldDraft();
+  if(!String(d.name||'').trim()){ alert2('請填寫客人名稱'); return; }
+  if(!/^\d{8}$/.test(String(d.phone||'').replace(/\D/g,''))){ alert2('請輸入有效的香港 8 位電話號碼'); return; }
+  if(!String(d.sku||'').trim()){ alert2('請填寫貨號'); return; }
+  if(!String(d.size||'').trim()){ alert2('請填寫碼數'); return; }
+  holdSaving = true;
+  render();
+  try{
+    const saved = await apiFetch('/api/holds', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        customerName: String(d.name).trim(),
+        phone: String(d.phone).replace(/\D/g,''),
+        sku: String(d.sku).trim(),
+        size: String(d.size).trim(),
+        status: d.status,
+        receiveStore: d.receive,
+        shipStore: d.ship,
+        handlerId: d.handler
+      })
+    });
+    holdDraft = null;
+    holdSkipDraftRead = true;
+    await downloadHoldPdf(saved.id, saved.no);
+    holdLoaded = false;
+    await loadHolds();
+  }catch(e){
+    alert2(e.message||'儲存失敗');
+  }finally{
+    holdSaving = false;
+    if(currentView==='hold') render();
+  }
+}
+async function reprintHold(id, no){
+  try{
+    await downloadHoldPdf(id, no);
+  }catch(e){
+    alert2(e.message||'匯出失敗');
+  }
+}
+async function saveHoldStatus(id, status){
+  try{
+    await apiFetch('/api/holds/'+encodeURIComponent(id), {
+      method:'PATCH',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ status: status })
+    });
+    holdRows.forEach(function(row){ if(row.id===id) row.status = status; });
+  }catch(e){
+    alert2(e.message||'狀態更新失敗');
+    loadHolds();
+  }
+}
+async function deleteHold(id){
+  if(!confirm('確定刪除這張留貨？刪了就不能再印。')) return;
+  try{
+    await apiFetch('/api/holds/'+encodeURIComponent(id), { method:'DELETE' });
+    holdRows = holdRows.filter(function(row){ return row.id!==id; });
+    if(currentView==='hold') render();
+  }catch(e){
+    alert2(e.message||'刪除失敗');
+  }
+}
+function vHold(){
+  if(!holdLoaded && !holdLoading){
+    holdLoading = true;
+    setTimeout(function(){ loadHolds(); }, 0);
+  }
+  const draft = holdDraft || defaultHoldDraft();
+  const storeOpts = function(selected){
+    return HOLD_STORES.map(function(name){
+      return '<option'+(selected===name?' selected':'')+'>'+name+'</option>';
+    }).join('');
+  };
+  const people = holdHandlers();
+  const handlerOpts = people.map(function(u){
+    return '<option value="'+escHtml(String(u.id))+'"'+(String(draft.handler)===String(u.id)?' selected':'')+'>'+escHtml(u.name||String(u.id))+'</option>';
+  }).join('');
+  const statusOpts = HOLD_STATUSES.map(function(name){
+    return '<option'+(draft.status===name?' selected':'')+'>'+name+'</option>';
+  }).join('');
+  const rows = holdRows.map(function(row){
+    const statusSelect = HOLD_STATUSES.map(function(name){
+      return '<option'+(row.status===name?' selected':'')+'>'+name+'</option>';
+    }).join('');
+    const del = row.canDelete
+      ? ' <button type="button" class="btn red sm" data-call="deleteHold" data-arg0="'+escHtml(row.id)+'">刪除</button>'
+      : '';
+    return '<tr><td>'+escHtml(row.no)+'</td><td>'+escHtml(row.atLabel)+'</td><td>'+escHtml(row.customerName)+'</td><td>'+escHtml(row.phone)+'</td><td>'+escHtml(row.sku)+'</td><td>'+escHtml(row.size)+'</td>'
+      +'<td><select onchange="saveHoldStatus(\''+escHtml(row.id)+'\', this.value)">'+statusSelect+'</select></td>'
+      +'<td>'+escHtml(row.receiveStore)+'</td><td>'+escHtml(row.shipStore)+'</td><td>'+escHtml(row.handlerName)+'</td>'
+      +'<td><button type="button" class="btn sm" data-call="reprintHold" data-arg0="'+escHtml(row.id)+'" data-arg1="'+escHtml(row.no)+'">重印</button>'+del+'</td></tr>';
+  }).join('');
+  return '<div class="card"><h2>📦 留貨</h2>'
+    +'<p class="clock-note">一張表一件貨。儲存後會下載 PDF，用來打印。印出之後只能改狀態。</p>'
+    +'<div class="hold-grid">'
+    +'<label>客人名稱</label><input id="hold-name" type="text" value="'+escHtml(draft.name)+'">'
+    +'<label>客人電話</label><input id="hold-phone" type="text" inputmode="numeric" maxlength="8" value="'+escHtml(draft.phone)+'" placeholder="8 位數字">'
+    +'<label>貨號</label><input id="hold-sku" type="text" value="'+escHtml(draft.sku)+'">'
+    +'<label>碼數</label><input id="hold-size" type="text" value="'+escHtml(draft.size)+'">'
+    +'<label>狀態</label><select id="hold-status">'+statusOpts+'</select>'
+    +'<label>收貨門市</label><select id="hold-receive">'+storeOpts(draft.receive)+'</select>'
+    +'<label>出貨門市</label><select id="hold-ship">'+storeOpts(draft.ship)+'</select>'
+    +'<label>經手同事</label><select id="hold-handler">'+handlerOpts+'</select>'
+    +'</div>'
+    +'<div class="actions" style="margin-top:12px"><button type="button" class="btn green" data-call="submitHold"'+(holdSaving?' disabled':'')+'>'+(holdSaving?'正在儲存…':'儲存並列印')+'</button></div>'
+    +'<div class="hold-bar"><label style="margin:0">電話</label><input id="hold-phone-filter" type="text" inputmode="numeric" value="'+escHtml(holdPhone)+'" placeholder="打幾位即可" oninput="holdSetPhone(this.value)"></div>'
+    +'<h3 style="margin-top:4px">最新留貨</h3>'
+    +(holdLoading && !holdLoaded ? '<p style="color:#888">載入中…</p>' : (
+      rows ? '<div class="table-wrap"><table><tr><th>編號</th><th>時間</th><th>客人</th><th>電話</th><th>貨號</th><th>碼數</th><th>狀態</th><th>收貨</th><th>出貨</th><th>經手</th><th></th></tr>'+rows+'</table></div>'
+        : '<p style="color:#888">'+(holdPhone?'沒有符合這個電話的留貨。':'還沒有留貨。')+'</p>'
     ))
     +'</div>';
 }

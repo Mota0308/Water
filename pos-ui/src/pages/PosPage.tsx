@@ -20,7 +20,7 @@ import { compareProductSizes, formatHKD, formatHKDWhole } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { PosCartLine, PosMember, PosProduct, PointsSettings } from '@/lib/types'
 import { PAYMENT_METHODS } from '@/lib/types'
-import { resolveMemberUnitPrice } from '@/lib/pricing'
+import { discountInputFromRate, parseDiscountInput, resolveMemberUnitPrice } from '@/lib/pricing'
 import { MEMBER_LEVELS, birthPayloadFromDate, memberLevelNote } from '@/lib/members'
 import { usePosStore } from '@/store/PosStoreContext'
 
@@ -34,6 +34,7 @@ type PosDraft = {
   memberId?: string
   memberName?: string
   memberPhone?: string
+  discountInput?: string
   items: PosCartLine[]
   subtotal?: number
   itemCount?: number
@@ -142,6 +143,9 @@ export function PosPage() {
     redeemEnabled: true,
   })
   const [pointsToRedeem, setPointsToRedeem] = useState(0)
+  const [discountInput, setDiscountInput] = useState('')
+  const pendingDiscountRef = useRef<string | null>(null)
+  const discountMemberKeyRef = useRef<string | null>(null)
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const [remark, setRemark] = useState('')
   const [skuPickGroup, setSkuPickGroup] = useState<PosProductGroup | null>(null)
@@ -222,6 +226,18 @@ export function PosPage() {
     void loadDrafts(store)
   }, [store, loadDrafts])
 
+  useEffect(() => {
+    const memberKey = member?.id || ''
+    if (discountMemberKeyRef.current === memberKey) return
+    discountMemberKeyRef.current = memberKey
+    if (pendingDiscountRef.current != null) {
+      setDiscountInput(pendingDiscountRef.current)
+      pendingDiscountRef.current = null
+      return
+    }
+    setDiscountInput(discountInputFromRate(member?.pricing?.rate))
+  }, [member?.id, member?.pricing?.rate])
+
   const grouped = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
     const active = products.filter((p) => p.active !== false)
@@ -246,8 +262,20 @@ export function PosPage() {
   }, [products, searchQuery])
 
   const productById = useMemo(() => new Map(products.map((p) => [p.id, p])), [products])
-  const lineMemberUnit = (line: PosCartLine) =>
-    resolveMemberUnitPrice(productById.get(line.productId) || { price: line.unitPrice }, member?.pricing)
+  const discountParsed = useMemo(() => parseDiscountInput(discountInput), [discountInput])
+  const salePricing = useMemo(() => {
+    if (!discountParsed.ok) return member?.pricing || null
+    const autoRate = Number(member?.pricing?.rate ?? 1)
+    if (Math.abs(discountParsed.rate - autoRate) <= 0.0005) return member?.pricing || null
+    return {
+      ...(member?.pricing || {}),
+      rate: discountParsed.rate,
+      fold: discountParsed.fold,
+      manualRate: true,
+    }
+  }, [discountParsed, member])
+  const lineSaleUnit = (line: PosCartLine) =>
+    resolveMemberUnitPrice(productById.get(line.productId) || { price: line.unitPrice }, salePricing)
   const subtotal = useMemo(
     () => cart.reduce((s, l) => s + l.unitPrice * l.qty, 0),
     [cart],
@@ -257,15 +285,16 @@ export function PosPage() {
       Math.round(
         cart.reduce((s, l) => {
           const p = productById.get(l.productId)
-          return s + resolveMemberUnitPrice(p || { price: l.unitPrice }, member?.pricing) * l.qty
+          return s + resolveMemberUnitPrice(p || { price: l.unitPrice }, salePricing) * l.qty
         }, 0) * 100,
       ) / 100,
-    [cart, member, productById],
+    [cart, salePricing, productById],
   )
   const roundedSubtotal = Math.round(subtotal)
-  const memberDue = member ? Math.round(memberSubtotal) : roundedSubtotal
-  const memberDiscount = member ? Math.max(0, roundedSubtotal - memberDue) : 0
-  const afterMember = member ? memberDue : subtotal
+  const appliesDiscount = !!salePricing
+  const memberDue = appliesDiscount ? Math.round(memberSubtotal) : roundedSubtotal
+  const memberDiscount = appliesDiscount ? Math.max(0, roundedSubtotal - memberDue) : 0
+  const afterMember = appliesDiscount ? memberDue : subtotal
   const n = Math.max(1, pointsSettings.pointsPerDollar || 1)
   const pointsDiscount = pointsSettings.redeemEnabled ? pointsToRedeem / n : 0
   const grandTotal = Math.max(0, Math.round(afterMember - pointsDiscount))
@@ -444,6 +473,10 @@ export function PosPage() {
       toast.error('購物車是空的')
       return
     }
+    if (!discountParsed.ok) {
+      toast.error(discountParsed.error)
+      return
+    }
     if (pointsToRedeem > 0) {
       if (pointsToRedeem % n !== 0) {
         toast.error(`折抵積分須為 ${n} 的倍數`)
@@ -488,6 +521,7 @@ export function PosPage() {
           memberId: member?.id || '',
           memberName: member?.name || '',
           memberPhone: member?.phone || '',
+          discountInput,
           items: cart.map((line) => ({
             productId: line.productId,
             name: line.name,
@@ -521,6 +555,14 @@ export function PosPage() {
       })),
     )
     setRemark(draft.remark || '')
+    const savedDiscount = draft.discountInput != null ? String(draft.discountInput) : null
+    const nextMemberKey = String(draft.memberId || draft.memberPhone || '')
+    if (savedDiscount != null && nextMemberKey === (member?.id || '')) {
+      discountMemberKeyRef.current = nextMemberKey
+      setDiscountInput(savedDiscount)
+    } else {
+      pendingDiscountRef.current = savedDiscount
+    }
     setPaymentMethod(draft.paymentMethod || 'cash')
     setPointsToRedeem(Math.max(0, Math.floor(Number(draft.pointsToRedeem) || 0)))
     setMemberPhone(draft.memberPhone || '')
@@ -558,6 +600,10 @@ export function PosPage() {
 
   const checkout = async () => {
     if (checkingOut) return
+    if (!discountParsed.ok) {
+      toast.error(discountParsed.error)
+      return
+    }
     if (paymentMethod === 'cash' && isFinite(cashRecv) && cashRecv < grandTotal) {
       toast.error('收款金額不足')
       return
@@ -574,6 +620,7 @@ export function PosPage() {
         items: cart.map((l) => ({ productId: l.productId, qty: l.qty })),
       }
       if (pointsToRedeem > 0) body.pointsToRedeem = pointsToRedeem
+      if (discountParsed.ok && salePricing?.manualRate) body.discountRate = discountParsed.rate
       if (activeDraftId) body.draftId = activeDraftId
       const res = await apiJson<{ transaction: { id: string; orderNo?: string } }>(
         '/api/pos/checkout',
@@ -585,6 +632,8 @@ export function PosPage() {
       setCart([])
       setMember(null)
       setPointsToRedeem(0)
+      setDiscountInput('')
+      discountMemberKeyRef.current = ''
       setRemark('')
       setShowPayDialog(false)
       await load()
@@ -663,7 +712,7 @@ export function PosPage() {
             {grouped.map((group) => {
               const avail = group.items.reduce((sum, item) => sum + stockOf(item, store), 0)
               const thumb = groupThumbSrc(group)
-              const prices = group.items.map((item) => resolveMemberUnitPrice(item, member?.pricing))
+              const prices = group.items.map((item) => resolveMemberUnitPrice(item, salePricing))
               const minPrice = prices.length ? Math.min(...prices) : 0
               const maxPrice = prices.length ? Math.max(...prices) : 0
               const priceLabel = minPrice === maxPrice ? formatHKD(minPrice) : `${formatHKD(minPrice)}起`
@@ -786,12 +835,12 @@ export function PosPage() {
                         </button>
                       </div>
                       <div className="text-right text-sm font-semibold tabular-nums">
-                        {member && lineMemberUnit(item) !== item.unitPrice ? (
+                        {Math.abs(lineSaleUnit(item) - item.unitPrice) > 0.001 ? (
                           <div>
                             <div className="text-xs font-normal text-slate-400 line-through">
                               {formatHKD(item.unitPrice * item.qty)}
                             </div>
-                            <div>{formatHKD(lineMemberUnit(item) * item.qty)}</div>
+                            <div>{formatHKD(lineSaleUnit(item) * item.qty)}</div>
                           </div>
                         ) : (
                           formatHKD(item.unitPrice * item.qty)
@@ -909,12 +958,36 @@ export function PosPage() {
             <span className="text-slate-500">商品小計</span>
             <span className="tabular-nums">{formatHKD(subtotal)}</span>
           </div>
-          {memberDiscount > 0 && (
-            <div className="flex justify-between text-emerald-700">
-              <span>會員折扣{member?.pricing?.fold ? `（${member.pricing.fold}）` : ''}</span>
-              <span className="tabular-nums">-{formatHKDWhole(memberDiscount)}</span>
+          <div className="space-y-1">
+            <div className="flex items-center justify-between gap-2">
+              <label htmlFor="pos-discount" className="text-slate-500">
+                折扣
+              </label>
+              <div className="flex items-center gap-1">
+                <input
+                  id="pos-discount"
+                  value={discountInput}
+                  inputMode="decimal"
+                  onChange={(e) => setDiscountInput(e.target.value)}
+                  placeholder="原價"
+                  className="h-8 w-16 rounded-md border border-slate-200 bg-white px-2 text-right text-sm"
+                />
+                <span className="text-slate-500">折</span>
+              </div>
             </div>
-          )}
+            <div className={cn('flex justify-between', memberDiscount > 0 ? 'text-emerald-700' : 'text-slate-600')}>
+              <span>
+                {discountParsed.ok
+                  ? `${discountParsed.fold}${salePricing?.manualRate ? '（手動）' : ''}`
+                  : discountParsed.error}
+              </span>
+              <span className="tabular-nums">-{formatHKDWhole(discountParsed.ok ? memberDiscount : 0)}</span>
+            </div>
+            <p className="text-[11px] leading-relaxed text-slate-400">
+              留空是原價。8 是 8 折，85 是 85 折。
+              {member?.pricing?.fold ? ` 會員預設 ${member.pricing.fold}。` : ''}
+            </p>
+          </div>
           {pointsDiscount > 0 && (
             <div className="flex justify-between text-red-600">
               <span>積分折抵</span>
@@ -1032,7 +1105,7 @@ export function PosPage() {
                     </div>
                     <div className="shrink-0 text-right">
                       <p className="text-sm font-semibold text-sky-700">
-                        {formatHKD(resolveMemberUnitPrice(item, member?.pricing))}
+                        {formatHKD(resolveMemberUnitPrice(item, salePricing))}
                       </p>
                       <p className={cn('text-[11px]', avail <= 0 ? 'text-red-600' : 'text-slate-400')}>
                         {avail <= 0 ? '缺貨' : '點擊加入'}
@@ -1264,9 +1337,18 @@ export function PosPage() {
                 </button>
               ))}
             </div>
-            <div className="mb-3 flex justify-between text-sm">
-              <span className="text-slate-500">應收金額</span>
-              <span className="text-lg font-bold tabular-nums">{formatHKDWhole(grandTotal)}</span>
+            <div className="mb-3 space-y-1 text-sm">
+              <div className="flex justify-between text-slate-600">
+                <span>折扣</span>
+                <span>
+                  {discountParsed.ok ? discountParsed.fold : '—'}
+                  {memberDiscount > 0 ? ` · -${formatHKDWhole(memberDiscount)}` : ''}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">應收金額</span>
+                <span className="text-lg font-bold tabular-nums">{formatHKDWhole(grandTotal)}</span>
+              </div>
             </div>
             {paymentMethod === 'cash' && (
               <div className="mb-3 space-y-2">

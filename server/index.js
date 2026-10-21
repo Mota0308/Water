@@ -1,4 +1,5 @@
 import express from 'express';
+import { renderHoldPdf } from './holdPdf.js';
 import cors from 'cors';
 import multer from 'multer';
 import path from 'path';
@@ -34,6 +35,11 @@ import {
   setRosterCell,
   listClockInsToday,
   createClockIn,
+  listHolds,
+  getHold,
+  createHold,
+  updateHoldStatus,
+  deleteHold,
   createUser,
   updateUserProfile,
   canCreateEmployee,
@@ -511,6 +517,53 @@ app.post('/api/clock-ins', requireAuth, async (req, res) => {
     res.json(await createClockIn(req.user, req.body || {}));
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/api/holds', requireAuth, async (req, res) => {
+  try {
+    res.json(await listHolds(req.user, req.query?.phone));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/holds', requireAuth, async (req, res) => {
+  try {
+    res.json(await createHold(req.user, req.body || {}));
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.patch('/api/holds/:id', requireAuth, async (req, res) => {
+  try {
+    res.json(await updateHoldStatus(req.user, req.params.id, req.body?.status));
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.delete('/api/holds/:id', requireAuth, async (req, res) => {
+  try {
+    res.json(await deleteHold(req.user, req.params.id));
+  } catch (e) {
+    const msg = String(e.message || e);
+    res.status(/沒有權限/.test(msg) ? 403 : 400).json({ error: msg });
+  }
+});
+
+app.get('/api/holds/:id/pdf', requireAuth, async (req, res) => {
+  try {
+    const hold = await getHold(req.user, req.params.id);
+    const pdf = await renderHoldPdf(hold);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${hold.no}.pdf"`);
+    res.send(pdf);
+  } catch (e) {
+    const msg = String(e.message || e);
+    res.status(/找不到/.test(msg) ? 404 : 500).json({ error: msg });
   }
 });
 
