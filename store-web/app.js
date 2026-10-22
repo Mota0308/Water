@@ -5917,13 +5917,20 @@ function vStaffDirectory(){
       '<td>'+escHtml(u.name||'')+'</td>'+
       '<td>'+escHtml(account)+'</td>'+
       '<td>'+escHtml(units.length?units.join('、'):'—')+'</td>'+
+      '<td>'+escHtml(u.hiredOn||'—')+'</td>'+
+      '<td>'+escHtml(staffLeaveQuotaText(u))+'</td>'+
       '<td><button type="button" class="btn sm" data-call="promptEditStaffProfile" data-arg0="'+id+'">修改</button></td>'+
       '</tr>';
   }).join('');
   return '<div class="card"><h2>員工資料</h2>'+
-    '<p style="font-size:13px;color:#666;margin-bottom:8px">顯示全部賬號的姓名、電話與地區／單位。修改時地區／單位可點選，並可多選。</p>'+
-    '<div class="table-wrap"><table><thead><tr><th>姓名</th><th>電話</th><th>地區／單位</th><th>操作</th></tr></thead>'+
-    '<tbody>'+(rows||'<tr><td colspan="4">尚無賬號</td></tr>')+'</tbody></table></div></div>';
+    '<p style="font-size:13px;color:#666;margin-bottom:8px">假期額度顯示為今年剩餘／每年日數。每年到入職日，已扣的年假不再計算，剩餘會回到每年日數。病假、事假不扣這額度。</p>'+
+    '<div class="table-wrap"><table><thead><tr><th>姓名</th><th>電話</th><th>地區／單位</th><th>入職日期</th><th>假期額度</th><th>操作</th></tr></thead>'+
+    '<tbody>'+(rows||'<tr><td colspan="6">尚無賬號</td></tr>')+'</tbody></table></div></div>';
+}
+function staffLeaveQuotaText(u){
+  if(!u || u.login==='admin' || u.id==='adm' || !u.hiredOn) return '—';
+  const remain = u.leaveRemaining==null ? '—' : String(u.leaveRemaining);
+  return remain+'／'+(Number(u.annualLeaveDays)||0);
 }
 function promptEditStaffProfile(userId){
   if(!canCreateEmployee()){ alert2('沒有權限修改員工資料。'); return; }
@@ -5943,6 +5950,10 @@ function promptEditStaffProfile(userId){
       ? '<label>電話</label><input type="text" value="admin" readonly style="background:#f5f5f5">'
       : '<label>電話（8 位；更改後密碼改為新電話末四位）</label><input type="tel" id="staff-edit-phone" value="'+escHtml(phone)+'">')+
     '<label>地區／單位（點選，可多選）</label><div class="recipient-box" style="max-height:180px">'+checks+'</div>'+
+    (admin ? '' :
+      '<label>入職日期</label><input type="date" id="staff-edit-hired" value="'+escHtml(u.hiredOn||'')+'">'+
+      '<label>每年假期額度（日）</label><input type="number" id="staff-edit-leave" min="0" max="366" step="1" value="'+(Number(u.annualLeaveDays)||0)+'">'+
+      '<p style="font-size:12px;color:#888">到下一個入職日，剩餘年假重置為這個日數。目前剩餘：'+escHtml(staffLeaveQuotaText(u))+'</p>')+
     '<div class="actions">'+
       '<button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'+
       '<button type="button" class="btn sm" data-call="submitEditStaffProfile" data-arg0="'+escHtml(String(u.id))+'">儲存</button>'+
@@ -5961,6 +5972,14 @@ async function submitEditStaffProfile(userId){
   if((u.identity==='員工') && !regions.length){ alert2('員工必須至少選擇 1 個地區／單位。'); return; }
   const body = { name: name, units: regions };
   if(phoneEl) body.phone = phone;
+  const hiredEl = document.getElementById('staff-edit-hired');
+  const leaveEl = document.getElementById('staff-edit-leave');
+  if(hiredEl) body.hiredOn = String(hiredEl.value||'');
+  if(leaveEl){
+    const days = Math.floor(Number(leaveEl.value));
+    if(!Number.isFinite(days) || days<0 || days>366){ alert2('每年假期額度須為 0 至 366 的整數。'); return; }
+    body.annualLeaveDays = days;
+  }
   try{
     const res = await apiFetch('/api/users/'+encodeURIComponent(userId), {
       method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
@@ -6551,6 +6570,7 @@ async function logout(){
   leaveRows = [];
   leaveCanReview = false;
   leaveMessage = '';
+  leaveQuota = null;
   currentUser=null;
   pushUrgentPrompted = false;
   closeMailbox();
@@ -8493,6 +8513,8 @@ let leaveRows = [];
 let leaveCanReview = false;
 let leaveMessage = '';
 let leaveSaving = false;
+let leaveQuota = null;
+const LEAVE_TYPES = ['年假','病假','事假'];
 function canEditRoster(){
   if(!currentUser || isPartTimeAccount()) return false;
   if(currentUser.login==='admin' || currentUser.id==='adm') return true;
@@ -8563,6 +8585,7 @@ function rosterSetMonth(value){
   leaveRows = [];
   leaveCanReview = false;
   leaveMessage = '';
+  leaveQuota = null;
   render();
 }
 function rosterSetFilter(value){
@@ -8578,6 +8601,8 @@ async function loadRosterMonth(month){
     rosterCells = Array.isArray(data.cells) ? data.cells : [];
     leaveRows = Array.isArray(leave.rows) ? leave.rows : [];
     leaveCanReview = !!leave.canReview;
+    leaveQuota = leave.quota || null;
+    applyLeaveQuota(leave.quota);
     rosterLoadedKey = month;
   }catch(e){
     if(rosterMonth===month){
@@ -8610,34 +8635,92 @@ function askRosterCell(userId, date){
 function canApplyLeave(){
   return !!(currentUser && currentUser.active!==false && isRosterPerson(currentUser));
 }
+function leaveInclusiveDays(start, end){
+  const a = String(start||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const b = String(end||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!a || !b || end<start) return 0;
+  const ms = Date.UTC(+b[1], +b[2]-1, +b[3]) - Date.UTC(+a[1], +a[2]-1, +a[3]);
+  return Math.round(ms/86400000)+1;
+}
+function leaveRangeLabel(row){
+  const start = row.startDate || row.date || '';
+  const end = row.endDate || row.date || '';
+  if(!start) return '—';
+  return start===end ? start : start+' 至 '+end;
+}
+function applyLeaveQuota(quota){
+  if(!quota || !quota.id) return;
+  if(currentUser && String(currentUser.id)===String(quota.id)) leaveQuota = quota;
+  const idx = users.findIndex(function(x){ return String(x.id)===String(quota.id); });
+  if(idx>=0){
+    users[idx] = normalizeUser(Object.assign({}, users[idx], {
+      hiredOn: quota.hiredOn||'',
+      annualLeaveDays: quota.annualLeaveDays||0,
+      leaveRemaining: quota.leaveRemaining,
+      leaveYearStart: quota.leaveYearStart||'',
+      leaveYearEnd: quota.leaveYearEnd||''
+    }));
+  }
+}
+function leaveQuotaNote(){
+  const q = leaveQuota;
+  if(!q || !q.hiredOn) return '<p style="font-size:13px;color:#888">年假要先由主管在員工資料填入職日期和每年日數。病假、事假不扣年假。</p>';
+  const remain = q.leaveRemaining==null ? '—' : String(q.leaveRemaining);
+  return '<p style="font-size:13px;color:#555">今年年假尚餘 <b>'+escHtml(remain)+'</b>／'+escHtml(String(q.annualLeaveDays||0))+' 日，由 '+escHtml(q.leaveYearStart||'')+' 起算，到下一個入職日重置。病假、事假不扣年假。</p>';
+}
+function refreshLeaveApplyDays(){
+  const start = String(((document.getElementById('leave-apply-start')||{}).value)||'');
+  const end = String(((document.getElementById('leave-apply-end')||{}).value)||'');
+  const el = document.getElementById('leave-apply-days');
+  if(!el) return;
+  if(!start || !end){ el.textContent = '請選擇開始和結束日期'; return; }
+  if(end<start){ el.textContent = '結束日期不能早於開始日期'; return; }
+  el.textContent = '共 '+leaveInclusiveDays(start, end)+' 天';
+}
 function openLeaveApply(){
   if(!canApplyLeave()){ alert2('這個賬號不能申請請假。'); return; }
   const today = hkYmd();
-  const days = rosterDays(rosterMonth);
-  const defaultDate = today.slice(0,7)===rosterMonth ? today : (days[0] ? days[0].date : rosterMonth+'-01');
-  const lastDate = days.length ? days[days.length-1].date : defaultDate;
+  const typeOpts = LEAVE_TYPES.map(function(name){
+    return '<option value="'+name+'">'+name+'</option>';
+  }).join('');
   showModal('<h3>申請請假</h3>'
-    +'<p style="font-size:13px;color:#666">申請人：'+escHtml(currentUser.name||'')+'。送出後由經理、主管或系統管理員審批。</p>'
-    +'<label>日期</label><input id="leave-apply-date" type="date" value="'+escHtml(defaultDate)+'" min="'+escHtml(days[0]?days[0].date:defaultDate)+'" max="'+escHtml(lastDate)+'">'
+    +'<p style="font-size:13px;color:#666">申請人：'+escHtml(currentUser.name||'')+'。天數包含開始和結束當天。送出後由經理、主管或系統管理員審批。</p>'
+    +leaveQuotaNote()
+    +'<label>開始日期</label><input id="leave-apply-start" type="date" value="'+escHtml(today)+'" onchange="refreshLeaveApplyDays()" oninput="refreshLeaveApplyDays()">'
+    +'<label>結束日期</label><input id="leave-apply-end" type="date" value="'+escHtml(today)+'" onchange="refreshLeaveApplyDays()" oninput="refreshLeaveApplyDays()">'
+    +'<p id="leave-apply-days" style="font-size:15px;font-weight:bold;margin:8px 0">共 1 天</p>'
+    +'<label>假期類型</label><select id="leave-apply-type">'+typeOpts+'</select>'
     +'<div class="actions"><button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'
     +'<button type="button" class="btn sm" data-call="submitLeaveApply">送出申請</button></div>');
 }
 async function submitLeaveApply(){
   if(leaveSaving) return;
   if(!canApplyLeave()){ alert2('這個賬號不能申請請假。'); return; }
-  const date = String(((document.getElementById('leave-apply-date')||{}).value)||'');
-  if(!date){ alert2('請選擇日期。'); return; }
+  const startDate = String(((document.getElementById('leave-apply-start')||{}).value)||'');
+  const endDate = String(((document.getElementById('leave-apply-end')||{}).value)||'');
+  const leaveType = String(((document.getElementById('leave-apply-type')||{}).value)||'');
+  if(!startDate || !endDate){ alert2('請選擇日期段。'); return; }
+  if(endDate<startDate){ alert2('結束日期不能早於開始日期。'); return; }
+  if(LEAVE_TYPES.indexOf(leaveType)<0){ alert2('請選擇假期類型。'); return; }
+  const days = leaveInclusiveDays(startDate, endDate);
   leaveSaving = true;
   try{
     const saved = await apiFetch('/api/leave-requests', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ date: date })
+      body: JSON.stringify({ startDate: startDate, endDate: endDate, leaveType: leaveType })
     });
-    if(saved && saved.id){
-      leaveRows = [saved].concat(leaveRows.filter(function(row){ return row.id!==saved.id; }));
+    const request = saved && saved.request ? saved.request : saved;
+    if(request && request.id){
+      const overlaps = request.startDate && request.startDate.slice(0,7)===rosterMonth
+        || request.endDate && request.endDate.slice(0,7)===rosterMonth
+        || (request.startDate && request.endDate && request.startDate.slice(0,7)<rosterMonth && request.endDate.slice(0,7)>rosterMonth);
+      if(overlaps || leaveCanReview){
+        leaveRows = [request].concat(leaveRows.filter(function(row){ return row.id!==request.id; }));
+      }
     }
-    leaveMessage = '已送出 '+date+' 的請假申請';
+    applyLeaveQuota(saved && saved.quota);
+    leaveMessage = '已送出 '+startDate+' 至 '+endDate+'（'+days+' 天，'+leaveType+'）';
   }catch(e){
     leaveSaving = false;
     alert2(e.message||'申請失敗');
@@ -8661,11 +8744,13 @@ async function decideLeaveRequest(id, decision){
     if(request){
       leaveRows = leaveRows.map(function(row){ return row.id===request.id ? request : row; });
     }
-    const cell = result && result.cell;
-    if(cell && cell.userId && cell.date){
+    const cells = result && Array.isArray(result.cells) ? result.cells : (result && result.cell ? [result.cell] : []);
+    cells.forEach(function(cell){
+      if(!cell || !cell.userId || !cell.date) return;
       rosterCells = rosterCells.filter(function(c){ return !(String(c.userId)===String(cell.userId) && c.date===cell.date); });
       if(cell.value) rosterCells.push({ userId: String(cell.userId), date: cell.date, value: cell.value });
-    }
+    });
+    applyLeaveQuota(result && result.quota);
   }catch(e){
     alert2(e.message||'審批失敗');
     return;
@@ -8680,11 +8765,11 @@ function leaveRequestRowsHtml(){
       ? '<button type="button" class="btn green sm" data-call="decideLeaveRequest" data-arg0="'+escHtml(String(row.id))+'" data-arg1="同意">同意</button>'
         +'<button type="button" class="btn red sm" data-call="decideLeaveRequest" data-arg0="'+escHtml(String(row.id))+'" data-arg1="拒絕">拒絕</button>'
       : '';
-    return '<tr><td>'+escHtml(row.userName||row.userId)+'</td><td>'+escHtml(row.date||'')+'</td><td>'+escHtml(row.atLabel||'')+'</td><td>'+escHtml(row.status||'')+'</td><td class="actions-row">'+actions+'</td></tr>';
+    return '<tr><td>'+escHtml(row.userName||row.userId)+'</td><td>'+escHtml(leaveRangeLabel(row))+'</td><td>'+escHtml(String(row.days||''))+'</td><td>'+escHtml(row.leaveType||'—')+'</td><td>'+escHtml(row.atLabel||'')+'</td><td>'+escHtml(row.status||'')+'</td><td class="actions-row">'+actions+'</td></tr>';
   }).join('');
   return '<h3 style="margin-top:16px">申請記錄</h3>'
     +(rows
-      ? '<div class="table-wrap"><table><tr><th>員工</th><th>日期</th><th>申請時間</th><th>狀態</th><th>審批</th></tr>'+rows+'</table></div>'
+      ? '<div class="table-wrap"><table><tr><th>員工</th><th>日期段</th><th>天數</th><th>類型</th><th>申請時間</th><th>狀態</th><th>審批</th></tr>'+rows+'</table></div>'
       : '<p style="color:#888">這個月還沒有請假申請。</p>');
 }
 async function saveRosterCell(userId, date, value){

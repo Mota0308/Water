@@ -623,6 +623,8 @@ function normalizeUserDoc(u) {
     unit: units[0] || null,
     units,
     active: u.active === false ? false : true,
+    hiredOn: parseRosterDate(u.hiredOn) || '',
+    annualLeaveDays: normalizeAnnualLeaveDays(u.annualLeaveDays),
     needsPhoneBind: false,
     legacyLogin: u.legacyLogin || (!isAdmin && u.login && !normalizePhone(u.login) ? String(u.login) : undefined),
   };
@@ -1260,7 +1262,11 @@ export async function appendModuleLog(entry) {
 export async function listUsersPublic() {
   await connectMongo();
   const docs = await usersCol().find({}).sort({ login: 1 }).toArray();
-  return docs.map(publicUser);
+  const leaves = await leaveRequestsCol().find({
+    leaveType: '年假',
+    status: { $in: ['待審', '已同意'] },
+  }).toArray();
+  return docs.map((doc) => attachLeaveQuota(publicUser(doc), doc, leaves));
 }
 
 const ROSTER_VALUES = new Set(['觀塘', '荔枝角', '灣仔', '屯門', '休息', '請假']);
@@ -1356,11 +1362,152 @@ function leaveRequestsCol() {
   return db.collection('leave_requests');
 }
 
+const LEAVE_TYPES = new Set(['年假', '病假', '事假']);
+const MAX_LEAVE_SPAN = 366;
+
+function normalizeAnnualLeaveDays(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(366, Math.floor(n));
+}
+
+function ymdParts(value) {
+  const m = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  return { y, mo, d };
+}
+
+function ymdString(y, mo, d) {
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+function addDaysYmd(value, days) {
+  const p = ymdParts(value);
+  if (!p) return null;
+  const dt = new Date(Date.UTC(p.y, p.mo - 1, p.d + days));
+  return ymdString(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
+}
+
+function inclusiveLeaveDays(start, end) {
+  const a = ymdParts(start);
+  const b = ymdParts(end);
+  if (!a || !b) return 0;
+  const ms = Date.UTC(b.y, b.mo - 1, b.d) - Date.UTC(a.y, a.mo - 1, a.d);
+  return Math.round(ms / 86400000) + 1;
+}
+
+function eachYmd(start, end) {
+  const n = inclusiveLeaveDays(start, end);
+  const out = [];
+  for (let i = 0; i < n; i += 1) out.push(addDaysYmd(start, i));
+  return out;
+}
+
+function clampYmd(y, mo, d) {
+  const last = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  return ymdString(y, mo, Math.min(d, last));
+}
+
+function leaveYearStart(hiredOn, today) {
+  const hired = ymdParts(hiredOn);
+  const now = ymdParts(today);
+  if (!hired || !now) return null;
+  if (today < hiredOn) return hiredOn;
+  let start = clampYmd(now.y, hired.mo, hired.d);
+  if (start > today) start = clampYmd(now.y - 1, hired.mo, hired.d);
+  if (start < hiredOn) return hiredOn;
+  return start;
+}
+
+function leaveYearEndExclusive(yearStart, hiredOn) {
+  const hired = ymdParts(hiredOn);
+  const start = ymdParts(yearStart);
+  if (!hired || !start) return null;
+  return clampYmd(start.y + 1, hired.mo, hired.d);
+}
+
+function leaveBounds(doc) {
+  const start = parseRosterDate(doc?.startDate || doc?.date);
+  const end = parseRosterDate(doc?.endDate || doc?.startDate || doc?.date);
+  if (!start || !end || end < start) return null;
+  return { start, end, days: inclusiveLeaveDays(start, end) };
+}
+
+function monthBounds(key) {
+  const m = String(key || '').match(/^(\d{4})-(\d{2})$/);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  if (mo < 1 || mo > 12) return null;
+  const start = ymdString(y, mo, 1);
+  const last = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  return { start, end: ymdString(y, mo, last) };
+}
+
+function rangesOverlap(aStart, aEnd, bStart, bEnd) {
+  return aStart <= bEnd && bStart <= aEnd;
+}
+
+function countAnnualLeaveDays(docs, startInclusive, endExclusive) {
+  let n = 0;
+  for (const doc of docs) {
+    if (String(doc.leaveType || '') !== '年假') continue;
+    if (doc.status !== '待審' && doc.status !== '已同意') continue;
+    const bounds = leaveBounds(doc);
+    if (!bounds) continue;
+    for (const day of eachYmd(bounds.start, bounds.end)) {
+      if (day >= startInclusive && day < endExclusive) n += 1;
+    }
+  }
+  return n;
+}
+
+function attachLeaveQuota(pub, userDoc, leaves) {
+  const hiredOn = parseRosterDate(userDoc?.hiredOn || pub?.hiredOn) || '';
+  const annualLeaveDays = normalizeAnnualLeaveDays(
+    userDoc?.annualLeaveDays != null ? userDoc.annualLeaveDays : pub?.annualLeaveDays
+  );
+  const today = hkTodayYmd();
+  const yearStart = hiredOn ? leaveYearStart(hiredOn, today) : '';
+  const yearEnd = yearStart ? leaveYearEndExclusive(yearStart, hiredOn) : '';
+  const userId = String(userDoc?.id || userDoc?._id || pub?.id || '');
+  const mine = (leaves || []).filter((doc) => String(doc.userId) === userId);
+  const used = yearStart && yearEnd ? countAnnualLeaveDays(mine, yearStart, yearEnd) : 0;
+  return {
+    ...pub,
+    hiredOn,
+    annualLeaveDays,
+    leaveRemaining: hiredOn ? Math.max(0, annualLeaveDays - used) : null,
+    leaveYearStart: yearStart || '',
+    leaveYearEnd: yearEnd || '',
+  };
+}
+
+async function actorLeaveQuota(actor) {
+  const user = await getUserById(actor?.id || actor?._id);
+  const source = user || actor || {};
+  const userId = String(source.id || source._id || '');
+  const leaves = userId
+    ? await leaveRequestsCol().find({
+      userId,
+      leaveType: '年假',
+      status: { $in: ['待審', '已同意'] },
+    }).toArray()
+    : [];
+  return attachLeaveQuota(publicUser(source), source, leaves);
+}
+
 let leaveIndexReady = false;
 async function ensureLeaveIndexes() {
   if (leaveIndexReady) return;
   await leaveRequestsCol().createIndex({ date: 1, createdAt: -1 });
   await leaveRequestsCol().createIndex({ userId: 1, date: 1, status: 1 });
+  await leaveRequestsCol().createIndex({ startDate: 1, endDate: 1, createdAt: -1 });
   leaveIndexReady = true;
 }
 
@@ -1371,11 +1518,16 @@ function canApplyLeaveAccount(user) {
 
 function publicLeave(doc) {
   const at = doc.createdAt instanceof Date ? doc.createdAt : new Date(doc.createdAt);
+  const bounds = leaveBounds(doc) || { start: String(doc.date || ''), end: String(doc.date || ''), days: 0 };
   return {
     id: String(doc._id),
     userId: String(doc.userId || ''),
     userName: String(doc.userName || ''),
-    date: String(doc.date || ''),
+    date: bounds.start,
+    startDate: bounds.start,
+    endDate: bounds.end,
+    days: bounds.days,
+    leaveType: String(doc.leaveType || ''),
     status: String(doc.status || ''),
     at: at.toISOString(),
     atLabel: hkClockLabel(at),
@@ -1385,41 +1537,79 @@ function publicLeave(doc) {
 export async function listLeaveRequests(actor, month) {
   await connectMongo();
   await ensureLeaveIndexes();
-  const key = String(month || '');
-  if (!/^\d{4}-\d{2}$/.test(key)) throw new Error('請選擇月份');
-  if (!canEditRoster(actor)) return { rows: [], canReview: false };
+  const bounds = monthBounds(String(month || ''));
+  if (!bounds) throw new Error('請選擇月份');
+  const quota = await actorLeaveQuota(actor);
+  if (!canEditRoster(actor)) return { rows: [], canReview: false, quota };
   const docs = await leaveRequestsCol()
-    .find({ date: { $regex: `^${key}-` } })
+    .find({
+      $or: [
+        { startDate: { $lte: bounds.end }, endDate: { $gte: bounds.start } },
+        { startDate: { $exists: false }, date: { $gte: bounds.start, $lte: bounds.end } },
+      ],
+    })
     .sort({ createdAt: -1 })
     .limit(200)
     .toArray();
-  return { rows: docs.map(publicLeave), canReview: true };
+  return { rows: docs.map(publicLeave), canReview: true, quota };
 }
 
 export async function createLeaveRequest(actor, body) {
   await connectMongo();
   await ensureLeaveIndexes();
   if (!canApplyLeaveAccount(actor)) throw new Error('這個賬號不能申請請假');
-  const date = parseRosterDate(body?.date);
-  if (!date) throw new Error('請選擇日期');
+  const startDate = parseRosterDate(body?.startDate || body?.date);
+  const endDate = parseRosterDate(body?.endDate || body?.startDate || body?.date);
+  if (!startDate || !endDate) throw new Error('請選擇日期段');
+  if (endDate < startDate) throw new Error('結束日期不能早於開始日期');
+  const days = inclusiveLeaveDays(startDate, endDate);
+  if (days < 1 || days > MAX_LEAVE_SPAN) throw new Error('請假天數須在 1 至 366 日');
+  const leaveType = String(body?.leaveType || '').trim();
+  if (!LEAVE_TYPES.has(leaveType)) throw new Error('請選擇假期類型');
   const userId = String(actor.id || actor._id || '');
-  const existing = await leaveRequestsCol().findOne({
+  const existing = await leaveRequestsCol().find({
     userId,
-    date,
     status: { $in: ['待審', '已同意'] },
-  });
-  if (existing) {
-    throw new Error(existing.status === '待審' ? '這天已經有待審的請假申請' : '這天的請假已經同意');
+  }).toArray();
+  for (const doc of existing) {
+    const span = leaveBounds(doc);
+    if (span && rangesOverlap(startDate, endDate, span.start, span.end)) {
+      throw new Error(doc.status === '待審' ? '這段日期已有待審的請假申請' : '這段日期已有同意的請假');
+    }
+  }
+  if (leaveType === '年假') {
+    const quota = await actorLeaveQuota(actor);
+    if (!quota.hiredOn) throw new Error('請先由主管在員工資料設定入職日期');
+    const groups = new Map();
+    for (const day of eachYmd(startDate, endDate)) {
+      const yearStart = leaveYearStart(quota.hiredOn, day);
+      groups.set(yearStart, (groups.get(yearStart) || 0) + 1);
+    }
+    for (const [yearStart, need] of groups) {
+      const yearEnd = leaveYearEndExclusive(yearStart, quota.hiredOn);
+      const used = countAnnualLeaveDays(existing, yearStart, yearEnd);
+      const remaining = Math.max(0, quota.annualLeaveDays - used);
+      if (need > remaining) {
+        throw new Error(`年假餘額不足，${yearStart} 起的年度尚餘 ${remaining} 日`);
+      }
+    }
   }
   const doc = {
     userId,
     userName: String(actor.name || ''),
-    date,
+    date: startDate,
+    startDate,
+    endDate,
+    days,
+    leaveType,
     status: '待審',
     createdAt: new Date(),
   };
   const inserted = await leaveRequestsCol().insertOne(doc);
-  return publicLeave({ ...doc, _id: inserted.insertedId });
+  return {
+    request: publicLeave({ ...doc, _id: inserted.insertedId }),
+    quota: await actorLeaveQuota(actor),
+  };
 }
 
 export async function decideLeaveRequest(actor, id, body) {
@@ -1436,8 +1626,13 @@ export async function decideLeaveRequest(actor, id, body) {
   const doc = await leaveRequestsCol().findOne({ _id: oid });
   if (!doc) throw new Error('找不到這筆申請');
   if (doc.status !== '待審') throw new Error('這筆申請已經處理過');
+  const span = leaveBounds(doc);
+  const dates = span ? eachYmd(span.start, span.end) : [];
   if (decision === '同意') {
-    await setRosterCell(actor, { userId: doc.userId, date: doc.date, value: '請假' });
+    if (!dates.length) throw new Error('這筆申請的日期無效');
+    for (const date of dates) {
+      await setRosterCell(actor, { userId: doc.userId, date, value: '請假' });
+    }
   }
   await leaveRequestsCol().updateOne(
     { _id: oid },
@@ -1451,11 +1646,20 @@ export async function decideLeaveRequest(actor, id, body) {
     }
   );
   const next = await leaveRequestsCol().findOne({ _id: oid });
+  const cells = decision === '同意'
+    ? dates.map((date) => ({ userId: String(doc.userId), date, value: '請假' }))
+    : [];
+  const applicant = await getUserById(doc.userId);
+  const leaves = await leaveRequestsCol().find({
+    userId: String(doc.userId),
+    leaveType: '年假',
+    status: { $in: ['待審', '已同意'] },
+  }).toArray();
   return {
     request: publicLeave(next),
-    cell: decision === '同意'
-      ? { userId: String(doc.userId), date: String(doc.date), value: '請假' }
-      : null,
+    cells,
+    cell: cells[0] || null,
+    quota: applicant ? attachLeaveQuota(publicUser(applicant), applicant, leaves) : null,
   };
 }
 
@@ -1745,7 +1949,7 @@ export async function createUser(input) {
   });
   if (!doc) throw new Error('Invalid user');
   await usersCol().insertOne(doc);
-  return publicUser(doc);
+  return attachLeaveQuota(publicUser(doc), doc, []);
 }
 
 /**
@@ -1862,6 +2066,10 @@ export async function updateUserProfile(actor, id, input = {}) {
         identity: fields.identity,
         position: fields.employment,
         role: fields.identity === '員工' ? 'personal' : 'system_admin',
+        hiredOn: input.hiredOn != null ? (parseRosterDate(input.hiredOn) || '') : (parseRosterDate(existing.hiredOn) || ''),
+        annualLeaveDays: input.annualLeaveDays != null
+          ? normalizeAnnualLeaveDays(input.annualLeaveDays)
+          : normalizeAnnualLeaveDays(existing.annualLeaveDays),
       },
     }
   );
@@ -1871,11 +2079,23 @@ export async function updateUserProfile(actor, id, input = {}) {
     const normalized = normalizePhone(nextPhone);
     if (!normalized) throw new Error('請輸入有效的香港 8 位電話');
     if (!isAdminAccount(existing) && curPhone && normalized !== curPhone) {
-      return changeUserPhone(curPhone, normalized);
+      await changeUserPhone(curPhone, normalized);
+      const moved = await getUserById(normalized);
+      const movedLeaves = await leaveRequestsCol().find({
+        userId: String(moved.id || moved._id),
+        leaveType: '年假',
+        status: { $in: ['待審', '已同意'] },
+      }).toArray();
+      return attachLeaveQuota(publicUser(moved), moved, movedLeaves);
     }
   }
   const updated = await getUserById(existing.id || existing._id);
-  return publicUser(updated);
+  const leaves = await leaveRequestsCol().find({
+    userId: String(updated.id || updated._id),
+    leaveType: '年假',
+    status: { $in: ['待審', '已同意'] },
+  }).toArray();
+  return attachLeaveQuota(publicUser(updated), updated, leaves);
 }
 
 export async function getProjectsState() {
