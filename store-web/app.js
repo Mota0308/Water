@@ -1821,8 +1821,8 @@ function inferSystemNoticeCta(n){
     if(cat==='次貨處理' || title.indexOf('次貨處理')===0){
       return { mod:'seconds', view:'secList', projectId: n.cta && n.cta.projectId, label:'前往項目' };
     }
-    if(cat==='客戶評價' || title.indexOf('客戶評價')===0){
-      return { mod:'reviews', view:'revList', projectId: n.cta && n.cta.projectId, label:'前往評價' };
+    if(cat==='客戶評價' || cat==='新產品提案' || title.indexOf('客戶評價')===0 || title.indexOf('新產品提案')===0){
+      return { mod:'reviews', view:'reviews', label:'前往新產品提案' };
     }
     if(cat==='恆常任務' || cat==='突發任務' || title.indexOf('恆常任務')===0 || title.indexOf('突發任務')===0){
       return { mod:'daily', view:'dailyToday', label:'前往今日工作' };
@@ -1843,8 +1843,8 @@ function inferSystemNoticeCta(n){
   if(cat==='次貨處理' || title.indexOf('次貨處理：')===0){
     return { mod:'seconds', view:'secList', label:'前往項目列表' };
   }
-  if(cat==='客戶評價' || title.indexOf('客戶評價：')===0){
-    return { mod:'reviews', view:'revList', label:'前往評價列表' };
+  if(cat==='客戶評價' || cat==='新產品提案' || title.indexOf('客戶評價：')===0 || title.indexOf('新產品提案：')===0){
+    return { mod:'reviews', view:'reviews', label:'前往新產品提案' };
   }
   return null;
 }
@@ -1902,6 +1902,9 @@ function canAccessNoticeCta(n){
     }
   }
   if(cta.mod==='production' && isPersonal()) return false;
+  if(cta.mod==='reviews' || cta.view==='reviews' || cta.view==='revList'){
+    return (getSidebarItemsForModule('reviews')||[]).some(function(it){ return it[0]==='reviews'; });
+  }
   const items = getSidebarItemsForModule(cta.mod)||[];
   return items.some(function(it){ return it[0]===cta.view; });
 }
@@ -1923,6 +1926,10 @@ function followNoticeCta(id){
   const cta = noticeCtaOf(n);
   if(!cta) return;
   try{ closeMailbox(); }catch(e){}
+  if(cta.mod==='reviews' || cta.view==='reviews' || cta.view==='revList'){
+    go('reviews');
+    return;
+  }
   if(cta.projectId && typeof openProject==='function'){
     openProject(cta.projectId, 'overview');
     return;
@@ -6043,7 +6050,7 @@ function sortProjectsNewestFirst(list){
 function projectTypeLabel(type){
   if(type==='rep') return '補貨';
   if(type==='sec') return '次貨處理';
-  if(type==='rev') return '客戶評價';
+  if(type==='rev') return '新產品提案';
   return '開發及生產';
 }
 function stagesForType(type){
@@ -6142,7 +6149,7 @@ function projStatus(p){
 }
 function typeTag(t){
   if(t==='sec') return '<span class="tag t-sec">次貨處理</span>';
-  if(t==='rev') return '<span class="tag t-rev">客戶評價</span>';
+  if(t==='rev') return '<span class="tag t-rev">新產品提案</span>';
   if(t==='rep') return '<span class="tag t-rep">補貨</span>';
   return '<span class="tag t-dev">開發及生產</span>';
 }
@@ -6539,6 +6546,11 @@ async function logout(){
   clearAuthToken();
   resetClockView();
   resetHoldView();
+  rosterLoadedKey = '';
+  rosterCells = [];
+  leaveRows = [];
+  leaveCanReview = false;
+  leaveMessage = '';
   currentUser=null;
   pushUrgentPrompted = false;
   closeMailbox();
@@ -6577,7 +6589,7 @@ function setModule(m){
     listType='sec';
   }
   else if(m==='reviews'){
-    currentView = 'home';
+    currentView = 'reviews';
     listType='rev';
   }
   else if(m==='push'){ currentView='pushAll'; pushFilterCat='全部'; pushFilterRead='全部'; pushFilterKw=''; }
@@ -6624,7 +6636,7 @@ function getSidebarTree(){
   if(!isPersonal()) products.push({ mod:'production', label:'開發及生產' });
   products.push({ mod:'replenishment', label:'補貨' });
   products.push({ mod:'seconds', label:'次貨處理' });
-  products.push({ mod:'reviews', label:'客戶評價' });
+  products.push({ mod:'reviews', label:'新產品提案' });
   return [
     { id:'features', label:'功能', children: features },
     { id:'pos', label:'POS', children: [
@@ -6718,11 +6730,7 @@ function getSidebarItemsForModule(mod){
     if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
     return items;
   }
-  if(mod==='reviews'){
-    const items = [['home','首頁'],['revList','評價列表'],['myTasks','我的評價'],['addProject','建立評價']];
-    if(isAdmin()||isManager()) items.push(['sysLogs','操作記錄']);
-    return items;
-  }
+  if(mod==='reviews') return [['reviews','新產品提案']];
   if(mod==='push'){
     const unreadN = myUnreadAnnouncements().length;
     if(isPartTimeAccount()){
@@ -6873,6 +6881,7 @@ function render(){
     currentModule='daily';
     currentView='dailyToday';
   }
+  if(currentModule==='reviews') currentView='reviews';
   const sideNav = document.getElementById('side-nav');
   if(sideNav){
     ensureSidebarNavOpen();
@@ -6906,7 +6915,8 @@ function render(){
     }).join('');
   }
   const views = {
-    home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : currentModule==='seconds' ? vHomeFiltered('sec') : currentModule==='reviews' ? vHomeFiltered('rev') : vHomeFiltered('dev'),
+    home: ()=> currentModule==='replenishment' ? vHomeFiltered('rep') : currentModule==='seconds' ? vHomeFiltered('sec') : currentModule==='reviews' ? vReviewBoard() : vHomeFiltered('dev'),
+    reviews: vReviewBoard,
     devList:()=>vList('dev'), repList:()=>vList('rep'), secList:()=>vList('sec'), revList:()=>vList('rev'), myTasks:vMyTasks, addProject:vAddProject, sysLogs:vSysLogs, project:vProject,
     dailyToday:()=>vDailyToday(currentUser), roster:vRoster, clockIn:vClockIn, hold:vHold, dailyProgress:()=>vDailyProgress(currentUser),
     dailyUnit:()=>vDailyUnit(currentUser), dailyHistory:()=>vDailyHistory(currentUser),
@@ -6980,7 +6990,7 @@ function go(v){
   }
   if(v==='repList'){ listType='rep'; currentModule='replenishment'; }
   if(v==='secList'){ listType='sec'; currentModule='seconds'; }
-  if(v==='revList'){ listType='rev'; currentModule='reviews'; }
+  if(v==='revList' || v==='reviews'){ listType='rev'; currentModule='reviews'; currentView='reviews'; }
   if(v==='pushNotify' || v==='pushAll' || v==='pushUnread' || v==='pushRead' || v==='pushEnded' || v==='pushMine' || v==='pushCreate' || v==='pushDetail' || v==='pushStats' || v==='pushLogs'){ currentModule='push'; }
   if(v==='createStaff'){ currentModule='createStaff'; }
   if(v==='staffDirectory'){ currentModule='staffDirectory'; }
@@ -7037,7 +7047,15 @@ function vHomeFiltered(type){
 function openProject(pid, tab){
   const p=projects.find(x=>x.id===pid);
   if(!p) return;
-  if(p.type!=='rep' && p.type!=='sec' && p.type!=='rev' && isPersonal()){
+  if(p.type==='rev'){
+    currentModule='reviews';
+    currentView='reviews';
+    currentProject=null;
+    closeAppSidebar();
+    render();
+    return;
+  }
+  if(p.type!=='rep' && p.type!=='sec' && isPersonal()){
     alert2('員工賬戶無法使用「開發及生產」。');
     return;
   }
@@ -7121,6 +7139,117 @@ function projTable(list){
       <td style="min-width:100px"><div class="pbar"><div style="width:${pct}%"></div></div><div style="font-size:11px;text-align:right;color:#2e7d32">${pct}%</div></td>
     </tr>`;}).join('')}</table></div>`;
 }
+function reviewCardText(p){
+  const stage = (p && p.stages && p.stages[0]) || {};
+  const content = String(stage.content||'').trim();
+  if(content) return content;
+  const desc = String(p && p.desc || '').trim();
+  if(desc) return desc;
+  const name = String(p && p.name || '').trim();
+  const code = String(p && p.code || '').trim();
+  if(name && code && name!==code) return code+'\n'+name;
+  return name || code || '（沒有內容）';
+}
+function reviewAuthorLabel(p){
+  const id = String((p && (p.createdBy || p.owner)) || '');
+  const name = userName(id);
+  if(name && name!=='—') return name;
+  const log = Array.isArray(p && p.logs) ? p.logs.find(function(l){ return l && l.userName; }) : null;
+  return (log && log.userName) || '—';
+}
+function reviewTimeLabel(p){
+  if(p && p.publishedAt) return String(p.publishedAt);
+  const logs = Array.isArray(p && p.logs) ? p.logs : [];
+  const published = logs.find(function(l){ return l && l.action==='發佈評價' && l.time; });
+  if(published) return String(published.time);
+  const created = logs.find(function(l){ return l && l.action==='建立項目' && l.time; });
+  if(created) return String(created.time);
+  const ms = Number(p && p.createdAtMs);
+  if(ms>0){
+    const parts = new Intl.DateTimeFormat('zh-HK', {
+      timeZone:'Asia/Hong_Kong', year:'numeric', month:'numeric', day:'numeric',
+      hour:'2-digit', minute:'2-digit', hour12:false
+    }).formatToParts(new Date(ms));
+    const g = function(type){ return (parts.find(function(x){ return x.type===type; })||{}).value || ''; };
+    return g('year')+'年'+g('month')+'月'+g('day')+'日 '+g('hour')+':'+g('minute');
+  }
+  return String(p && p.created || '');
+}
+function vReviewBoard(){
+  const list = sortProjectsNewestFirst(projects.filter(function(p){ return p && p.type==='rev'; }));
+  const cards = list.map(function(p){
+    const stage = (p.stages||[])[0] || {};
+    const images = (stage.files||[]).length ? '<div style="margin-top:8px">'+secondsImageTiles(stage.files)+'</div>' : '';
+    return '<div class="review-card">'
+      +'<div class="review-body">'+escHtml(reviewCardText(p))+'</div>'
+      +images
+      +'<div class="review-meta">'+escHtml(reviewAuthorLabel(p))+'　'+escHtml(reviewTimeLabel(p))+'</div>'
+      +'</div>';
+  }).join('');
+  return '<div class="card">'
+    +'<div class="review-board-head"><h2>💡 新產品提案</h2>'
+    +'<button type="button" class="btn sm" data-call="askAddReview">新增提案</button></div>'
+    +(cards || '<p style="color:#888">還沒有新產品提案。</p>')
+    +'</div>';
+}
+function askAddReview(){
+  if(!canCreateProjectType('rev')){ alert2('無法新增提案。'); return; }
+  showModal('<h3>新增提案</h3>'
+    +'<label>提案內容</label><textarea id="rv-new-text" placeholder="輸入提案內容" style="min-height:140px"></textarea>'
+    +'<div class="actions"><button class="btn gray sm" onclick="closeModal()">取消</button>'
+    +'<button class="btn sm" data-call="saveNewReview">發佈</button></div>');
+  setTimeout(function(){
+    const el = document.getElementById('rv-new-text');
+    if(el) el.focus();
+  }, 0);
+}
+let reviewSaving = false;
+async function saveNewReview(){
+  if(reviewSaving) return;
+  if(!canCreateProjectType('rev')){ alert2('無法新增提案。'); return; }
+  if(!requireCloud('新增提案')) return;
+  if(!projectsHydrated){ alert2('提案資料仍在載入，請稍候再發佈。'); return; }
+  const text = String(((document.getElementById('rv-new-text')||{}).value)||'').trim();
+  if(!text){ alert2('請輸入提案內容。'); return; }
+  reviewSaving = true;
+  const p = {
+    id:'V'+String(revProjSeq++).padStart(3,'0'),
+    type:'rev',
+    code:text.slice(0, 24),
+    name:text.slice(0, 40),
+    cat:'',
+    icon:'💬',
+    owner:currentUser.id,
+    createdBy:currentUser.id,
+    created:todayStr(),
+    createdAtMs:Date.now(),
+    publishedAt:nowStr(),
+    due:'',
+    desc:text,
+    status:'進行中',
+    files:[],
+    linkedProducts:[],
+    stages:[mkStage('上傳評價內容', [currentUser.id], '進行中', { content:text })],
+    comments:[],
+    logs:[]
+  };
+  projects.unshift(p);
+  addProjLog(p, '發佈評價', text.slice(0, 40));
+  try{
+    await persistProjectsNow();
+  }catch(e){
+    reviewSaving = false;
+    noteCloudError(e);
+    alert2('評價未能同步到雲端：'+(e.message||e));
+    render();
+    return;
+  }
+  reviewSaving = false;
+  closeModal();
+  currentModule = 'reviews';
+  currentView = 'reviews';
+  render();
+}
 function vMyReviewTasks(){
   const mine = projects.filter(function(p){
     if(!p || p.type!=='rev') return false;
@@ -7129,24 +7258,25 @@ function vMyReviewTasks(){
     return (p.stages||[]).some(function(s){ return isStageHandler(s, currentUser && currentUser.id); });
   });
   return `<div class="card"><h2>📌 我的評價（${mine.length}）</h2>
-    <p style="font-size:13px;color:#666;margin-bottom:10px">你建立或負責的客戶評價。其他同事的評價可在「評價列表」查看及留言。</p>
+    <p style="font-size:13px;color:#666;margin-bottom:10px">你建立的新產品提案。</p>
     ${mine.length?`<div class="table-wrap"><table><tr><th>評價標題</th><th>評價摘要</th><th>內容</th><th>操作</th></tr>
     ${mine.map(function(p){
       const s = (p.stages||[])[0] || {};
       const has = String(s.content||'').trim() || (s.files||[]).length;
       return '<tr><td><b>'+escHtml(p.code||'')+'</b></td><td>'+escHtml(p.name||'')+'</td><td>'+(has?'已有內容':'尚未上傳')+'</td>'
         +'<td><button class="btn sm" data-call="openProject" data-arg0="'+escHtml(String(p.id))+'" data-arg1="flow">查看／補內容</button></td></tr>';
-    }).join('')}</table></div>`:'<p style="color:#888">你還沒有負責的客戶評價。</p>'}
+    }).join('')}</table></div>`:'<p style="color:#888">你還沒有新產品提案。</p>'}
   </div>`;
 }
 function vList(type){
+  if(type==='rev') return vReviewBoard();
   listType = type;
   let list = projects.filter(p=>p.type===type);
   if(fCat!=='全部') list = list.filter(p=>p.cat===fCat);
   if(fStatus!=='全部') list = list.filter(p=>projStatus(p)===fStatus);
   if(fKw) list = list.filter(p=>(p.code+p.name+p.desc+p.cat).toLowerCase().includes(fKw.toLowerCase()));
   return `<div class="card">
-    <h2>${type==='rev'?'💬 客戶評價':type==='sec'?'🏷️ 次貨處理項目':type==='dev'?'📐 開發及生產項目':'🔄 補貨項目'}（${list.length}）</h2>
+    <h2>${type==='rev'?'💡 新產品提案':type==='sec'?'🏷️ 次貨處理項目':type==='dev'?'📐 開發及生產項目':'🔄 補貨項目'}（${list.length}）</h2>
     <div class="filters">
       <select onchange="fCat=this.value;render()"><option ${fCat==='全部'?'selected':''}>全部</option>${CATEGORIES.map(c=>`<option ${fCat===c?'selected':''}>${c}</option>`).join('')}</select>
       <select onchange="fStatus=this.value;render()">${['全部','草稿','進行中','待確認','需要修改','已完成','暫停','已取消','已封存'].map(s=>`<option ${fStatus===s?'selected':''}>${s}</option>`).join('')}</select>
@@ -8352,12 +8482,17 @@ async function npOnFilesPick(input){
 }
 const ROSTER_STORES = ['觀塘','荔枝角','灣仔','屯門'];
 const ROSTER_CHOICES = ROSTER_STORES.concat(['休息']);
+const ROSTER_FILTERS = ROSTER_CHOICES.concat(['請假']);
 const ROSTER_WEEKDAYS = ['日','一','二','三','四','五','六'];
 let rosterMonth = '';
 let rosterFilter = '全部';
 let rosterCells = [];
 let rosterLoadedKey = '';
 let rosterLoading = false;
+let leaveRows = [];
+let leaveCanReview = false;
+let leaveMessage = '';
+let leaveSaving = false;
 function canEditRoster(){
   if(!currentUser || isPartTimeAccount()) return false;
   if(currentUser.login==='admin' || currentUser.id==='adm') return true;
@@ -8425,18 +8560,24 @@ function rosterSetMonth(value){
   rosterMonth = value;
   rosterLoadedKey = '';
   rosterCells = [];
+  leaveRows = [];
+  leaveCanReview = false;
+  leaveMessage = '';
   render();
 }
 function rosterSetFilter(value){
-  rosterFilter = ROSTER_CHOICES.indexOf(value)>=0 ? value : '全部';
+  rosterFilter = ROSTER_FILTERS.indexOf(value)>=0 ? value : '全部';
   render();
 }
 async function loadRosterMonth(month){
   rosterLoading = true;
   try{
     const data = await apiFetch('/api/roster?month='+encodeURIComponent(month));
+    const leave = await apiFetch('/api/leave-requests?month='+encodeURIComponent(month));
     if(rosterMonth!==month) return;
     rosterCells = Array.isArray(data.cells) ? data.cells : [];
+    leaveRows = Array.isArray(leave.rows) ? leave.rows : [];
+    leaveCanReview = !!leave.canReview;
     rosterLoadedKey = month;
   }catch(e){
     if(rosterMonth===month){
@@ -8466,36 +8607,85 @@ function askRosterCell(userId, date){
   showModal('<h3>編更</h3><p id="roster-edit-now" style="font-size:13px">'+escHtml(person?person.name:userId)+'｜'+escHtml(date)+(current?'｜目前 '+escHtml(current):'｜尚未編更')+'</p>'
     +rosterChoiceButtons(userId, date, current));
 }
-function openRosterAssign(){
-  if(!canEditRoster()){ alert2('只有經理、主管或系統管理員可以編更。'); return; }
-  const people = rosterPeople().filter(function(u){ return u.active!==false; });
-  if(!people.length){ alert2('沒有可編更的員工。'); return; }
+function canApplyLeave(){
+  return !!(currentUser && currentUser.active!==false && isRosterPerson(currentUser));
+}
+function openLeaveApply(){
+  if(!canApplyLeave()){ alert2('這個賬號不能申請請假。'); return; }
   const today = hkYmd();
   const days = rosterDays(rosterMonth);
   const defaultDate = today.slice(0,7)===rosterMonth ? today : (days[0] ? days[0].date : rosterMonth+'-01');
   const lastDate = days.length ? days[days.length-1].date : defaultDate;
-  const personOpts = people.map(function(u){
-    return '<option value="'+escHtml(String(u.id))+'">'+escHtml(u.name||String(u.id))+'</option>';
-  }).join('');
-  showModal('<h3>編更</h3>'
-    +'<label>員工</label><select id="roster-edit-user" onchange="refreshRosterAssign()">'+personOpts+'</select>'
-    +'<label>日期</label><input id="roster-edit-date" type="date" value="'+escHtml(defaultDate)+'" min="'+escHtml(days[0]?days[0].date:defaultDate)+'" max="'+escHtml(lastDate)+'" onchange="refreshRosterAssign()">'
-    +'<p id="roster-edit-now" style="font-size:13px;margin:8px 0"></p>'
-    +'<div id="roster-edit-actions"></div>');
-  refreshRosterAssign();
+  showModal('<h3>申請請假</h3>'
+    +'<p style="font-size:13px;color:#666">申請人：'+escHtml(currentUser.name||'')+'。送出後由經理、主管或系統管理員審批。</p>'
+    +'<label>日期</label><input id="leave-apply-date" type="date" value="'+escHtml(defaultDate)+'" min="'+escHtml(days[0]?days[0].date:defaultDate)+'" max="'+escHtml(lastDate)+'">'
+    +'<div class="actions"><button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'
+    +'<button type="button" class="btn sm" data-call="submitLeaveApply">送出申請</button></div>');
 }
-function refreshRosterAssign(){
-  const userEl = document.getElementById('roster-edit-user');
-  const dateEl = document.getElementById('roster-edit-date');
-  const nowEl = document.getElementById('roster-edit-now');
-  const actions = document.getElementById('roster-edit-actions');
-  if(!userEl || !dateEl || !nowEl || !actions) return;
-  const userId = String(userEl.value||'');
-  const date = String(dateEl.value||'');
-  const person = users.find(function(u){ return String(u.id)===userId; });
-  const current = date ? rosterCellValue(userId, date) : '';
-  nowEl.textContent = (person?person.name:userId)+(date?'｜'+date:'')+(current?'｜目前 '+current:'｜尚未編更');
-  actions.innerHTML = date ? rosterChoiceButtons(userId, date, current) : '';
+async function submitLeaveApply(){
+  if(leaveSaving) return;
+  if(!canApplyLeave()){ alert2('這個賬號不能申請請假。'); return; }
+  const date = String(((document.getElementById('leave-apply-date')||{}).value)||'');
+  if(!date){ alert2('請選擇日期。'); return; }
+  leaveSaving = true;
+  try{
+    const saved = await apiFetch('/api/leave-requests', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ date: date })
+    });
+    if(saved && saved.id){
+      leaveRows = [saved].concat(leaveRows.filter(function(row){ return row.id!==saved.id; }));
+    }
+    leaveMessage = '已送出 '+date+' 的請假申請';
+  }catch(e){
+    leaveSaving = false;
+    alert2(e.message||'申請失敗');
+    return;
+  }
+  leaveSaving = false;
+  closeModal();
+  render();
+}
+async function decideLeaveRequest(id, decision){
+  if(!canEditRoster()){ alert2('只有經理、主管或系統管理員可以審批。'); return; }
+  id = String(id||'');
+  decision = String(decision||'');
+  try{
+    const result = await apiFetch('/api/leave-requests/'+encodeURIComponent(id)+'/decision', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ decision: decision })
+    });
+    const request = result && result.request;
+    if(request){
+      leaveRows = leaveRows.map(function(row){ return row.id===request.id ? request : row; });
+    }
+    const cell = result && result.cell;
+    if(cell && cell.userId && cell.date){
+      rosterCells = rosterCells.filter(function(c){ return !(String(c.userId)===String(cell.userId) && c.date===cell.date); });
+      if(cell.value) rosterCells.push({ userId: String(cell.userId), date: cell.date, value: cell.value });
+    }
+  }catch(e){
+    alert2(e.message||'審批失敗');
+    return;
+  }
+  render();
+}
+function leaveRequestRowsHtml(){
+  if(!leaveCanReview) return '';
+  const rows = leaveRows.map(function(row){
+    const pending = row.status==='待審';
+    const actions = pending
+      ? '<button type="button" class="btn green sm" data-call="decideLeaveRequest" data-arg0="'+escHtml(String(row.id))+'" data-arg1="同意">同意</button>'
+        +'<button type="button" class="btn red sm" data-call="decideLeaveRequest" data-arg0="'+escHtml(String(row.id))+'" data-arg1="拒絕">拒絕</button>'
+      : '';
+    return '<tr><td>'+escHtml(row.userName||row.userId)+'</td><td>'+escHtml(row.date||'')+'</td><td>'+escHtml(row.atLabel||'')+'</td><td>'+escHtml(row.status||'')+'</td><td class="actions-row">'+actions+'</td></tr>';
+  }).join('');
+  return '<h3 style="margin-top:16px">申請記錄</h3>'
+    +(rows
+      ? '<div class="table-wrap"><table><tr><th>員工</th><th>日期</th><th>申請時間</th><th>狀態</th><th>審批</th></tr>'+rows+'</table></div>'
+      : '<p style="color:#888">這個月還沒有請假申請。</p>');
 }
 async function saveRosterCell(userId, date, value){
   if(!canEditRoster()){ alert2('只有經理、主管或系統管理員可以改更表。'); return; }
@@ -8550,13 +8740,16 @@ function vRoster(){
     const tag = u.active===false ? ' <span class="tag s-cancel">已停用</span>' : (isPartTimeAccount(u) ? ' <span class="tag dept">兼職</span>' : '');
     return '<tr class="'+mine+'"><th class="roster-name">'+escHtml(u.name||'')+tag+'</th>'+cells+'</tr>';
   }).join('');
-  const filterOpts = ['全部'].concat(ROSTER_CHOICES).map(function(name){
+  const filterOpts = ['全部'].concat(ROSTER_FILTERS).map(function(name){
     return '<option'+(rosterFilter===name?' selected':'')+'>'+name+'</option>';
   }).join('');
+  const applyBtn = canApplyLeave()
+    ? '<button type="button" class="btn green sm" data-call="openLeaveApply">申請請假</button>'
+    : '';
   return '<div class="card"><h2>🗓️ 更表｜'+title+'</h2>'
-    +'<p style="font-size:13px;color:#666;margin:0 0 10px">'+(editable?'按「編更」，或點日曆上的「編」，即可安排門市或休息。':'你可以查看所有同事的更表。編更由經理、主管或系統管理員負責。')+'</p>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px">'+(editable?'按「申請請假」送出自己的請假。點日曆上的「編」，可安排門市或休息。':'按「申請請假」送出自己的請假。你可以查看所有同事的更表。')+'</p>'
     +'<div class="roster-bar">'
-    +(editable?'<button type="button" class="btn green sm" data-call="openRosterAssign">編更</button>':'')
+    +applyBtn
     +'<button type="button" class="btn gray sm" data-call="rosterShiftMonth" data-arg0="-1">上一月</button>'
     +'<input type="month" value="'+escHtml(rosterMonth)+'" onchange="rosterSetMonth(this.value)">'
     +'<button type="button" class="btn gray sm" data-call="rosterShiftMonth" data-arg0="1">下一月</button>'
@@ -8565,7 +8758,10 @@ function vRoster(){
     +(rosterLoading && rosterLoadedKey!==rosterMonth ? '<p style="color:#888">更表載入中…</p>' : '')
     +'<div class="roster-wrap"><table class="roster-table"><thead><tr><th class="roster-name">員工</th>'+head+'</tr></thead><tbody>'
     +(rows || '<tr><td class="roster-name" colspan="'+(days.length+1)+'">'+(rosterFilter==='全部'?'沒有可顯示的員工。':'這個月沒有符合篩選的員工。')+'</td></tr>')
-    +'</tbody></table></div></div>';
+    +'</tbody></table></div>'
+    +(leaveMessage?'<p style="font-size:15px;font-weight:bold;color:#2e7d32;margin-top:10px">'+escHtml(leaveMessage)+'</p>':'')
+    +leaveRequestRowsHtml()
+    +'</div>';
 }
 let clockRows = [];
 let clockCanManage = false;
@@ -8906,7 +9102,7 @@ function vHold(){
 function vAddProject(){
   const reviewCreate = currentModule==='reviews';
   if(!isAdmin() && !reviewCreate) return `<div class="card"><h2>➕ 建立新項目</h2><p>只有系統管理員可以建立項目。</p></div>`;
-  if(reviewCreate && isPartTimeAccount()) return `<div class="card"><h2>建立評價</h2><p>兼職賬號不能建立客戶評價。</p></div>`;
+  if(reviewCreate && isPartTimeAccount()) return `<div class="card"><h2>建立提案</h2><p>兼職賬號不能建立新產品提案。</p></div>`;
   const draft = npEditDraftId ? projects.find(function(x){ return x.id===npEditDraftId; }) : null;
   const defaultType = reviewCreate ? 'rev' : ((draft && draft.type) || (currentModule==='replenishment' ? 'rep' : currentModule==='seconds' ? 'sec' : 'dev'));
   const staffOpts = defaultType==='rev'
@@ -8917,7 +9113,7 @@ function vAddProject(){
     : (listAssignableStaff().length
     ? '<p style="font-size:12px;color:#888;margin:4px 0 0">各階段經手人僅可選<strong>經理／主管</strong>，可多選；對方可在「我的工作」看到待辦。</p>'
     : '<p style="font-size:12px;color:#c62828;margin:4px 0 0">尚未有經理／主管賬號。請先到「創建員工」新增職位為「經理」或「主管」的賬號。</p>');
-  const heading = draft && draft.status==='草稿' ? '✏️ 繼續編輯補貨草稿' : (defaultType==='rev' ? '💬 建立客戶評價' : '➕ 建立新項目');
+  const heading = draft && draft.status==='草稿' ? '✏️ 繼續編輯補貨草稿' : (defaultType==='rev' ? '💡 建立新產品提案' : '➕ 建立新項目');
   setTimeout(function(){ renderNpStages(); npRenderCoverPreview(); npRenderFileList(); npRenderRepItems(); },0);
   return `<div class="card"><h2>${heading}</h2>
     ${reviewCreate ? '' : `<label>項目封面圖片（選填）</label>
@@ -8925,7 +9121,7 @@ function vAddProject(){
     <div id="np-cover-preview">${npCoverPreviewHtml()}</div>`}
     <label>項目類型</label>
     <select id="np-type" onchange="renderNpStages()"${draft && draft.status==='草稿' || reviewCreate?' disabled':''}>
-      ${reviewCreate ? '<option value="rev" selected>客戶評價</option>' : `
+      ${reviewCreate ? '<option value="rev" selected>新產品提案</option>' : `
       <option value="dev"${defaultType==='dev'?' selected':''}>開發及生產（7個階段）</option>
       <option value="rep"${defaultType==='rep'?' selected':''}>補貨（6個階段）</option>
       <option value="sec"${defaultType==='sec'?' selected':''}>次貨處理（上傳圖片、檢查、是否已處理）</option>`}
@@ -9131,7 +9327,7 @@ function canCreateProjectType(type){
 }
 function askCreateProject(){
   const formPeek = readNpFormFields();
-  if(!canCreateProjectType(formPeek.type)){ alert2(formPeek.type==='rev'?'無法建立客戶評價。':'只有系統管理員可以建立項目。'); return; }
+  if(!canCreateProjectType(formPeek.type)){ alert2(formPeek.type==='rev'?'無法建立新產品提案。':'只有系統管理員可以建立項目。'); return; }
   if(!requireCloud('建立項目')) return;
   const form = formPeek;
   if(!form.code||!form.name){ alert2(form.type==='rev'?'請輸入評價標題及評價摘要。':'請輸入產品編號及項目簡介。'); return; }
@@ -9155,7 +9351,7 @@ function askCreateProject(){
 }
 async function createProject(){
   const formPeek = readNpFormFields();
-  if(!canCreateProjectType(formPeek.type)){ alert2(formPeek.type==='rev'?'無法建立客戶評價。':'只有系統管理員可以建立項目。'); return; }
+  if(!canCreateProjectType(formPeek.type)){ alert2(formPeek.type==='rev'?'無法建立新產品提案。':'只有系統管理員可以建立項目。'); return; }
   if(!requireCloud('建立項目')) return;
   const form = formPeek;
   if(!form.code||!form.name){ alert2(form.type==='rev'?'請輸入評價標題及評價摘要。':'請輸入產品編號及項目簡介。'); return; }

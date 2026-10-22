@@ -33,6 +33,9 @@ import {
   listUsersPublic,
   getRosterMonth,
   setRosterCell,
+  listLeaveRequests,
+  createLeaveRequest,
+  decideLeaveRequest,
   listClockInsToday,
   createClockIn,
   listHolds,
@@ -497,6 +500,33 @@ app.get('/api/roster', requireAuth, async (req, res) => {
 app.put('/api/roster', requireAuth, async (req, res) => {
   try {
     res.json(await setRosterCell(req.user, req.body || {}));
+  } catch (e) {
+    const msg = String(e.message || e);
+    res.status(/沒有權限/.test(msg) ? 403 : 400).json({ error: msg });
+  }
+});
+
+app.get('/api/leave-requests', requireAuth, async (req, res) => {
+  try {
+    res.json(await listLeaveRequests(req.user, req.query?.month));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+app.post('/api/leave-requests', requireAuth, async (req, res) => {
+  try {
+    res.json(await createLeaveRequest(req.user, req.body || {}));
+  } catch (e) {
+    const msg = String(e.message || e);
+    res.status(/不能申請/.test(msg) ? 403 : 400).json({ error: msg });
+  }
+});
+
+app.post('/api/leave-requests/:id/decision', requireAuth, async (req, res) => {
+  try {
+    res.json(await decideLeaveRequest(req.user, req.params.id, req.body || {}));
   } catch (e) {
     const msg = String(e.message || e);
     res.status(/沒有權限/.test(msg) ? 403 : 400).json({ error: msg });

@@ -1263,7 +1263,7 @@ export async function listUsersPublic() {
   return docs.map(publicUser);
 }
 
-const ROSTER_VALUES = new Set(['觀塘', '荔枝角', '灣仔', '屯門', '休息']);
+const ROSTER_VALUES = new Set(['觀塘', '荔枝角', '灣仔', '屯門', '休息', '請假']);
 
 function rosterCol() {
   return db.collection('roster_cells');
@@ -1325,7 +1325,7 @@ export async function setRosterCell(actor, body) {
   const date = parseRosterDate(body?.date);
   const raw = body?.value == null ? '' : String(body.value).trim();
   if (!userId || !date) throw new Error('請選擇員工和日期');
-  if (raw && !ROSTER_VALUES.has(raw)) throw new Error('請選擇門市或休息');
+  if (raw && !ROSTER_VALUES.has(raw)) throw new Error('請選擇門市、休息或請假');
   const target = await usersCol().findOne({ $or: [{ _id: userId }, { id: userId }, { phone: userId }] });
   if (!target || isAdminAccount(target)) throw new Error('找不到這位員工');
   const month = date.slice(0, 7);
@@ -1350,6 +1350,113 @@ export async function setRosterCell(actor, body) {
     { upsert: true }
   );
   return { ok: true, userId: String(target.id || target._id), date, value: raw };
+}
+
+function leaveRequestsCol() {
+  return db.collection('leave_requests');
+}
+
+let leaveIndexReady = false;
+async function ensureLeaveIndexes() {
+  if (leaveIndexReady) return;
+  await leaveRequestsCol().createIndex({ date: 1, createdAt: -1 });
+  await leaveRequestsCol().createIndex({ userId: 1, date: 1, status: 1 });
+  leaveIndexReady = true;
+}
+
+function canApplyLeaveAccount(user) {
+  if (!user || user.active === false || isAdminAccount(user)) return false;
+  return staffFields(user).identity !== '系統管理員';
+}
+
+function publicLeave(doc) {
+  const at = doc.createdAt instanceof Date ? doc.createdAt : new Date(doc.createdAt);
+  return {
+    id: String(doc._id),
+    userId: String(doc.userId || ''),
+    userName: String(doc.userName || ''),
+    date: String(doc.date || ''),
+    status: String(doc.status || ''),
+    at: at.toISOString(),
+    atLabel: hkClockLabel(at),
+  };
+}
+
+export async function listLeaveRequests(actor, month) {
+  await connectMongo();
+  await ensureLeaveIndexes();
+  const key = String(month || '');
+  if (!/^\d{4}-\d{2}$/.test(key)) throw new Error('請選擇月份');
+  if (!canEditRoster(actor)) return { rows: [], canReview: false };
+  const docs = await leaveRequestsCol()
+    .find({ date: { $regex: `^${key}-` } })
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .toArray();
+  return { rows: docs.map(publicLeave), canReview: true };
+}
+
+export async function createLeaveRequest(actor, body) {
+  await connectMongo();
+  await ensureLeaveIndexes();
+  if (!canApplyLeaveAccount(actor)) throw new Error('這個賬號不能申請請假');
+  const date = parseRosterDate(body?.date);
+  if (!date) throw new Error('請選擇日期');
+  const userId = String(actor.id || actor._id || '');
+  const existing = await leaveRequestsCol().findOne({
+    userId,
+    date,
+    status: { $in: ['待審', '已同意'] },
+  });
+  if (existing) {
+    throw new Error(existing.status === '待審' ? '這天已經有待審的請假申請' : '這天的請假已經同意');
+  }
+  const doc = {
+    userId,
+    userName: String(actor.name || ''),
+    date,
+    status: '待審',
+    createdAt: new Date(),
+  };
+  const inserted = await leaveRequestsCol().insertOne(doc);
+  return publicLeave({ ...doc, _id: inserted.insertedId });
+}
+
+export async function decideLeaveRequest(actor, id, body) {
+  await connectMongo();
+  if (!canEditRoster(actor)) throw new Error('沒有權限審批請假');
+  const decision = String(body?.decision || '');
+  if (decision !== '同意' && decision !== '拒絕') throw new Error('請選擇同意或拒絕');
+  let oid;
+  try {
+    oid = new ObjectId(String(id));
+  } catch {
+    throw new Error('找不到這筆申請');
+  }
+  const doc = await leaveRequestsCol().findOne({ _id: oid });
+  if (!doc) throw new Error('找不到這筆申請');
+  if (doc.status !== '待審') throw new Error('這筆申請已經處理過');
+  if (decision === '同意') {
+    await setRosterCell(actor, { userId: doc.userId, date: doc.date, value: '請假' });
+  }
+  await leaveRequestsCol().updateOne(
+    { _id: oid },
+    {
+      $set: {
+        status: decision === '同意' ? '已同意' : '已拒絕',
+        decidedAt: new Date(),
+        decidedBy: String(actor.id || actor._id || ''),
+        decidedByName: String(actor.name || ''),
+      },
+    }
+  );
+  const next = await leaveRequestsCol().findOne({ _id: oid });
+  return {
+    request: publicLeave(next),
+    cell: decision === '同意'
+      ? { userId: String(doc.userId), date: String(doc.date), value: '請假' }
+      : null,
+  };
 }
 
 const CLOCK_STORES = [
