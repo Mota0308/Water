@@ -8667,7 +8667,7 @@ function vClockIn(){
     ? '<button type="button" class="btn clock-btn" data-call="doClockIn"'+(clockBusy?' disabled':'')+'>'+(clockBusy?'正在定位…':'打卡')+'</button>'
     : '<div class="info-banner" style="margin-bottom:12px">請用手機打開這個頁面再打卡。電腦不能定位到門市。</div>';
   return '<div class="card"><h2>📍 打卡</h2>'
-    +'<p class="clock-note">在觀塘、荔枝角、灣仔或屯門門市約 150 米內，用手機會記下你的打卡。</p>'
+    +'<p class="clock-note">在觀塘、荔枝角、灣仔或屯門門市約 100 米內，用手機會記下你的打卡。</p>'
     +punch
     +(clockMessage?'<p style="font-size:15px;font-weight:bold;color:#2e7d32">'+escHtml(clockMessage)+'</p>':'')
     +'<h3 style="margin-top:8px">'+(clockCanManage?'今日全部打卡':'我的今日打卡')+'</h3>'
