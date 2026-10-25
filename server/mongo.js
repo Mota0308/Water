@@ -1669,7 +1669,7 @@ const CLOCK_STORES = [
   { name: '灣仔', lat: 22.2770765, lng: 114.1775473 },
   { name: '屯門', lat: 22.394665, lng: 113.9689791 },
 ];
-const CLOCK_RADIUS_M = 100;
+const CLOCK_RADIUS_M = 10;
 const CLOCK_MAX_ACCURACY_M = 200;
 
 function clockInsCol() {
