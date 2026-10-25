@@ -121,6 +121,72 @@ const emptyCreateMember = {
   level: '新會員',
 }
 
+const CASHIER_SESSION_PREFIX = 'store-web-pos-cashier-session-v1:'
+
+type CashierSession = {
+  store: string
+  cart: PosCartLine[]
+  member: PosMember | null
+  memberPhone: string
+  discountInput: string
+  paymentMethod: string
+  remark: string
+  pointsToRedeem: number
+  activeDraftId: string
+}
+
+function cashierSessionKey(store: string) {
+  return CASHIER_SESSION_PREFIX + store
+}
+
+function isSavedCartLine(value: unknown): value is PosCartLine {
+  if (!value || typeof value !== 'object') return false
+  const line = value as PosCartLine
+  return !!line.productId && !!line.name && Number.isFinite(Number(line.qty)) && Number(line.qty) > 0
+}
+
+function readCashierSession(store: string): CashierSession | null {
+  if (!store) return null
+  try {
+    const raw = sessionStorage.getItem(cashierSessionKey(store))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<CashierSession>
+    const cart = Array.isArray(parsed.cart) ? parsed.cart.filter(isSavedCartLine).map((line) => ({
+      productId: String(line.productId),
+      name: String(line.name),
+      sku: String(line.sku || ''),
+      size: String(line.size || ''),
+      unitPrice: Number(line.unitPrice) || 0,
+      qty: Math.floor(Number(line.qty)),
+    })) : []
+    if (!cart.length) return null
+    const member = parsed.member && typeof parsed.member === 'object' ? parsed.member : null
+    return {
+      store,
+      cart,
+      member,
+      memberPhone: String(parsed.memberPhone || member?.phone || ''),
+      discountInput: String(parsed.discountInput || ''),
+      paymentMethod: String(parsed.paymentMethod || 'cash'),
+      remark: String(parsed.remark || ''),
+      pointsToRedeem: Math.max(0, Math.floor(Number(parsed.pointsToRedeem) || 0)),
+      activeDraftId: String(parsed.activeDraftId || ''),
+    }
+  } catch {
+    return null
+  }
+}
+
+function writeCashierSession(store: string, session: CashierSession | null) {
+  if (!store) return
+  try {
+    if (!session?.cart.length) sessionStorage.removeItem(cashierSessionKey(store))
+    else sessionStorage.setItem(cashierSessionKey(store), JSON.stringify(session))
+  } catch {
+    /* ignore private mode */
+  }
+}
+
 export function PosPage() {
   const navigate = useNavigate()
   const barcodeRef = useRef<HTMLInputElement>(null)
@@ -132,6 +198,7 @@ export function PosPage() {
   const [barcodeInput, setBarcodeInput] = useState('')
   const [cart, setCart] = useState<PosCartLine[]>([])
   const prevStoreRef = useRef(store)
+  const cashierHydratedRef = useRef(false)
   const [member, setMember] = useState<PosMember | null>(null)
   const [memberPhone, setMemberPhone] = useState('')
   const [showMemberDialog, setShowMemberDialog] = useState(false)
@@ -186,16 +253,63 @@ export function PosPage() {
   }, [load])
 
   useEffect(() => {
-    if (prevStoreRef.current && prevStoreRef.current !== store) {
+    if (!store) return
+    const previousStore = prevStoreRef.current
+    const switching = !!(previousStore && previousStore !== store)
+    if (switching) {
+      writeCashierSession(previousStore, null)
+      prevStoreRef.current = store
+      cashierHydratedRef.current = true
       setCart([])
       setActiveDraftId('')
       setMember(null)
       setMemberPhone('')
       setPointsToRedeem(0)
+      setDiscountInput('')
+      discountMemberKeyRef.current = ''
       setRemark('')
+      return
+    }
+    if (!cashierHydratedRef.current) {
+      cashierHydratedRef.current = true
+      prevStoreRef.current = store
+      const saved = readCashierSession(store)
+      if (saved) {
+        setCart(saved.cart)
+        setMember(saved.member)
+        setMemberPhone(saved.memberPhone)
+        setDiscountInput(saved.discountInput)
+        discountMemberKeyRef.current = saved.member?.id || ''
+        setPaymentMethod(saved.paymentMethod)
+        setPointsToRedeem(saved.pointsToRedeem)
+        setRemark(saved.remark)
+        setActiveDraftId(saved.activeDraftId)
+        return
+      }
     }
     prevStoreRef.current = store
-  }, [store])
+    writeCashierSession(store, {
+      store,
+      cart,
+      member,
+      memberPhone,
+      discountInput,
+      paymentMethod,
+      remark,
+      pointsToRedeem,
+      activeDraftId,
+    })
+  }, [
+    store,
+    cart,
+    member,
+    memberPhone,
+    discountInput,
+    paymentMethod,
+    remark,
+    pointsToRedeem,
+    activeDraftId,
+  ])
 
   const loadDrafts = useCallback(async (targetStore: string) => {
     if (!targetStore) {
@@ -222,11 +336,11 @@ export function PosPage() {
   }, [])
 
   useEffect(() => {
-    setActiveDraftId('')
     void loadDrafts(store)
   }, [store, loadDrafts])
 
   useEffect(() => {
+    if (!cashierHydratedRef.current) return
     const memberKey = member?.id || ''
     if (discountMemberKeyRef.current === memberKey) return
     discountMemberKeyRef.current = memberKey

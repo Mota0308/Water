@@ -6571,6 +6571,12 @@ async function logout(){
   leaveCanReview = false;
   leaveMessage = '';
   leaveQuota = null;
+  try{
+    for(let i = sessionStorage.length - 1; i >= 0; i--){
+      const key = sessionStorage.key(i);
+      if(key && key.indexOf('store-web-pos-cashier-session-v1:')===0) sessionStorage.removeItem(key);
+    }
+  }catch(e){}
   currentUser=null;
   pushUrgentPrompted = false;
   closeMailbox();
