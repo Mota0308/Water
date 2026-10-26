@@ -3045,6 +3045,34 @@ function transferProductModel(p){
   if(!p) return '';
   return String(p.model || p.id || '');
 }
+function secProductLabel(p){
+  if(!p) return '';
+  return transferProductModel(p)+'｜'+(p.name||'')+(p.color?'｜'+p.color:'')+'｜'+(p.category||'');
+}
+function secProductFields(p){
+  const model = transferProductModel(p);
+  return {
+    code: model,
+    name: [p.name, p.color].filter(Boolean).join('｜') || model,
+    cat: p.category || '其他',
+    linked: {
+      productId: transferProductUid(p),
+      model: model,
+      name: p.name||'',
+      category: p.category||'其他',
+      color: p.color||'',
+      qty: 1
+    }
+  };
+}
+function filterTransferProducts(kw){
+  kw = String(kw||'').trim().toLowerCase();
+  return (transferProductsCache||[]).filter(function(p){
+    if(!p) return false;
+    if(!kw) return true;
+    return [p.id, p.model, p.name, p.nameEn, p.color, p.category, p.brand, transferProductModel(p)].join(' ').toLowerCase().indexOf(kw)>=0;
+  });
+}
 function transferRefModel(ref){
   const p = findTransferProduct(ref);
   return p ? transferProductModel(p) : String(ref||'');
@@ -7536,9 +7564,14 @@ function askEditProject(pid){
     <input type="file" id="ep-cover" accept="image/*" onchange="epOnCoverPick(this,'${pid}')">
     <div id="ep-cover-preview">${epCoverPreviewHtml(p)}</div>
     <p style="font-size:12px;color:#888;margin:4px 0 10px">封面用於列表／標題縮圖，不會加入「文件及圖片」。</p>
-    <label>產品編號</label><input type="text" id="ep-code" value="${escHtml(p.code)}">
+    ${p.type==='sec'
+      ? `<label>商品</label>
+        <p style="font-size:12px;color:#888;margin:0 0 6px">從已輸入的商品選擇。可輸入編號、名稱或類型篩選。</p>
+        <input type="text" id="ep-sec-kw" placeholder="輸入關鍵字篩選" oninput="npRenderEditSecPicker()">
+        <select id="ep-sec-pick" data-selected=""></select>`
+      : `<label>產品編號</label><input type="text" id="ep-code" value="${escHtml(p.code)}">
     <label>項目簡介</label><input type="text" id="ep-name" value="${escHtml(p.name)}">
-    <label>產品類別</label><select id="ep-cat">${CATEGORIES.map(c=>`<option${c===p.cat?' selected':''}>${c}</option>`).join('')}</select>
+    <label>產品類別</label><select id="ep-cat">${CATEGORIES.map(c=>`<option${c===p.cat?' selected':''}>${c}</option>`).join('')}</select>`}
     <label>項目負責人</label><select id="ep-owner">${projectAssigneeOpts(p.owner)}</select>
     <label>預計完成日期</label><input type="date" id="ep-due" value="${(p.due&&p.due!=='—')?p.due:''}">
     <label>項目詳細內容</label><textarea id="ep-desc">${escHtml(p.desc||'')}</textarea>
@@ -7547,18 +7580,40 @@ function askEditProject(pid){
       <button class="btn sm gray" onclick="closeModal()">取消</button>
       <button class="btn sm green" data-call="saveProjectEdit" data-arg0="${escHtml(String(pid))}">儲存變更</button>
     </div>`);
+  if(p.type==='sec'){
+    const linkedId = (p.linkedProducts && p.linkedProducts[0] && (p.linkedProducts[0].productId || p.linkedProducts[0].id)) || '';
+    loadTransferProducts().then(function(){
+      const sel = document.getElementById('ep-sec-pick');
+      if(!sel) return;
+      const matched = findTransferProduct(linkedId) || (transferProductsCache||[]).find(function(item){
+        return transferProductModel(item)===String(p.code||'') || String(item.id)===String(p.code||'');
+      });
+      if(matched) sel.setAttribute('data-selected', transferProductUid(matched));
+      npRenderEditSecPicker();
+    }).catch(function(){ npRenderEditSecPicker(); });
+  }
 }
 async function saveProjectEdit(pid){
   if(!isAdmin()){ alert2('只有系統管理員可以編輯項目。'); return; }
   const p = projects.find(x=>x.id===pid);
   if(!p) return;
-  const code = ((document.getElementById('ep-code')||{}).value||'').trim();
-  const name = ((document.getElementById('ep-name')||{}).value||'').trim();
-  const cat = ((document.getElementById('ep-cat')||{}).value||p.cat);
+  let code = ((document.getElementById('ep-code')||{}).value||'').trim();
+  let name = ((document.getElementById('ep-name')||{}).value||'').trim();
+  let cat = ((document.getElementById('ep-cat')||{}).value||p.cat);
+  let secLinked = null;
+  if(p.type==='sec'){
+    const picked = findTransferProduct(((document.getElementById('ep-sec-pick')||{}).value)||'');
+    if(!picked){ alert2('請選擇商品。'); return; }
+    const fields = secProductFields(picked);
+    code = fields.code;
+    name = fields.name;
+    cat = fields.cat;
+    secLinked = fields.linked;
+  }
   const owner = ((document.getElementById('ep-owner')||{}).value||p.owner);
   const due = ((document.getElementById('ep-due')||{}).value||'').trim() || '—';
   const desc = ((document.getElementById('ep-desc')||{}).value||'').trim();
-  if(!code||!name){ alert2('請輸入產品編號及項目簡介。'); return; }
+  if(!code||!name){ alert2(p.type==='sec'?'請選擇商品。':'請輸入產品編號及項目簡介。'); return; }
   const coverChanged = !!(epCoverDraft || (epCoverRemove && p.coverUrl));
   if(coverChanged && !requireCloud('更新封面')) return;
   const before = {
@@ -7599,6 +7654,7 @@ async function saveProjectEdit(pid){
   });
   if(p.revisions.length>30) p.revisions = p.revisions.slice(0,30);
   p.code = code; p.name = name; p.cat = cat; p.owner = owner; p.due = due; p.desc = desc;
+  if(secLinked) p.linkedProducts = [secLinked];
   p.coverUrl = nextCoverUrl;
   p.coverFileId = nextCoverFileId;
   addProjLog(p,'編輯項目資料', changes.join('；'));
@@ -9217,9 +9273,15 @@ function vAddProject(){
       <option value="rep"${defaultType==='rep'?' selected':''}>補貨（6個階段）</option>
       <option value="sec"${defaultType==='sec'?' selected':''}>次貨處理（上傳圖片、檢查、是否已處理）</option>`}
     </select>
-    <label id="np-code-label">${defaultType==='rev'?'評價標題':'產品編號'}</label><input type="text" id="np-code" placeholder="${defaultType==='rev'?'例如：陳小姐｜抓毛套裝':'例如：WS-666'}" value="${escHtml(draft&&draft.code?draft.code:'')}">
-    <label id="np-name-label">${defaultType==='rev'?'評價摘要':'項目簡介'}</label><input type="text" id="np-name" placeholder="${defaultType==='rev'?'一句話寫出客戶怎麼說':'例如：成人抓毛套裝'}" value="${escHtml(draft&&draft.name?draft.name:'')}">
-    <label>產品類別</label><select id="np-cat">${CATEGORIES.map(function(c){ return '<option'+(draft&&draft.cat===c?' selected':'')+'>'+c+'</option>'; }).join('')}</select>
+    <div id="np-sec-product" style="${defaultType==='sec'?'':'display:none'}">
+      <label>商品</label>
+      <p style="font-size:12px;color:#888;margin:0 0 6px">從已輸入的商品選擇。可輸入編號、名稱或類型篩選。</p>
+      <input type="text" id="np-sec-kw" placeholder="輸入關鍵字篩選" oninput="npRenderSecProductPicker()">
+      <select id="np-sec-pick"></select>
+    </div>
+    <label id="np-code-label" style="${defaultType==='sec'?'display:none':''}">${defaultType==='rev'?'評價標題':'產品編號'}</label><input type="text" id="np-code" style="${defaultType==='sec'?'display:none':''}" placeholder="${defaultType==='rev'?'例如：陳小姐｜抓毛套裝':'例如：WS-666'}" value="${escHtml(draft&&draft.code?draft.code:'')}">
+    <label id="np-name-label" style="${defaultType==='sec'?'display:none':''}">${defaultType==='rev'?'評價摘要':'項目簡介'}</label><input type="text" id="np-name" style="${defaultType==='sec'?'display:none':''}" placeholder="${defaultType==='rev'?'一句話寫出客戶怎麼說':'例如：成人抓毛套裝'}" value="${escHtml(draft&&draft.name?draft.name:'')}">
+    <label id="np-cat-label" style="${defaultType==='sec'?'display:none':''}">產品類別</label><select id="np-cat" style="${defaultType==='sec'?'display:none':''}">${CATEGORIES.map(function(c){ return '<option'+(draft&&draft.cat===c?' selected':'')+'>'+c+'</option>'; }).join('')}</select>
     ${reviewCreate ? '' : `<label>項目詳細內容（支援分行）</label><textarea id="np-desc" placeholder="• 要求一&#10;• 要求二">${escHtml(draft&&draft.desc?draft.desc:'')}</textarea>`}
     <label id="np-owner-label">${defaultType==='rev'?'負責人（預設為建立者，可選員工）':'項目負責人（經理／主管）'}</label><select id="np-owner">${staffOpts}</select>
     ${reviewCreate ? '' : `<label>預計完成日期</label><input type="date" id="np-due" value="${(draft&&draft.due&&draft.due!=='—')?escHtml(draft.due):''}">`}
@@ -9245,6 +9307,42 @@ function vAddProject(){
       <button type="button" class="btn gray" id="np-draft-btn" style="${defaultType==='rep'?'':'display:none'}" data-call="saveReplenishmentDraft">保存草稿</button>
     </div>
   </div>`;
+}
+function npRenderProductPicker(selectId, keywordId, emptyText){
+  const sel = document.getElementById(selectId);
+  if(!sel) return;
+  const kw = String(((document.getElementById(keywordId)||{}).value)||'').trim().toLowerCase();
+  const selected = sel.value || sel.getAttribute('data-selected') || '';
+  const list = filterTransferProducts(kw);
+  const shown = list.slice(0, 80);
+  if(selected && !shown.some(function(p){ return transferProductUid(p)===selected; })){
+    const current = findTransferProduct(selected);
+    if(current && (!kw || secProductLabel(current).toLowerCase().indexOf(kw)>=0)) shown.unshift(current);
+  }
+  sel.innerHTML = '<option value="">'+(shown.length?emptyText:'沒有符合的商品')+'</option>'
+    +shown.map(function(p){
+      const id = transferProductUid(p);
+      return '<option value="'+escHtml(id)+'"'+(id===selected?' selected':'')+'>'+escHtml(secProductLabel(p))+'</option>';
+    }).join('');
+  if(selected) sel.value = selected;
+}
+function npRenderSecProductPicker(){
+  npRenderProductPicker('np-sec-pick', 'np-sec-kw', '選擇商品…');
+}
+function npRenderEditSecPicker(){
+  npRenderProductPicker('ep-sec-pick', 'ep-sec-kw', '選擇商品…');
+}
+function npSyncSecProductFields(type){
+  const sec = type==='sec';
+  const box = document.getElementById('np-sec-product');
+  if(box) box.style.display = sec ? '' : 'none';
+  ['np-code-label','np-code','np-name-label','np-name','np-cat-label','np-cat'].forEach(function(id){
+    const el = document.getElementById(id);
+    if(el) el.style.display = sec ? 'none' : '';
+  });
+  if(sec){
+    loadTransferProducts().then(function(){ npRenderSecProductPicker(); }).catch(function(){ npRenderSecProductPicker(); });
+  }
 }
 function npRenderRepPicker(){
   const sel = document.getElementById('np-rep-pick');
@@ -9334,6 +9432,7 @@ function npToggleRepSection(){
   const draftBtn = document.getElementById('np-draft-btn');
   if(wrap) wrap.style.display = (type==='rep' || type==='sec' || type==='rev') ? '' : 'none';
   if(draftBtn) draftBtn.style.display = type==='rep' ? '' : 'none';
+  npSyncSecProductFields(type);
   if(type==='rep' || type==='sec' || type==='rev'){
     loadTransferProducts().then(function(){ npRenderRepItems(); }).catch(function(){ npRenderRepItems(); });
   }
@@ -9347,16 +9446,35 @@ function readNpHandlers(stages){
 }
 function readNpFormFields(){
   const type = ((document.getElementById('np-type')||{}).value)||'dev';
+  let code = ((document.getElementById('np-code')||{}).value||'').trim();
+  let name = ((document.getElementById('np-name')||{}).value||'').trim();
+  let cat = ((document.getElementById('np-cat')||{}).value)||CATEGORIES[0];
+  let linkedProducts = (type==='rep' || type==='sec' || type==='rev') ? npRepItems.slice() : [];
+  if(type==='sec'){
+    const picked = findTransferProduct(((document.getElementById('np-sec-pick')||{}).value)||'');
+    if(picked){
+      const fields = secProductFields(picked);
+      code = fields.code;
+      name = fields.name;
+      cat = fields.cat;
+      if(!linkedProducts.some(function(it){ return String(it.productId)===fields.linked.productId; })){
+        linkedProducts.unshift(fields.linked);
+      }
+    } else {
+      code = '';
+      name = '';
+    }
+  }
   return {
     type: type,
-    code: ((document.getElementById('np-code')||{}).value||'').trim(),
-    name: ((document.getElementById('np-name')||{}).value||'').trim(),
-    cat: ((document.getElementById('np-cat')||{}).value)||CATEGORIES[0],
+    code: code,
+    name: name,
+    cat: cat,
     desc: ((document.getElementById('np-desc')||{}).value||'').trim(),
     owner: ((document.getElementById('np-owner')||{}).value)||'',
     due: ((document.getElementById('np-due')||{}).value)||'—',
     stages: stagesForType(type),
-    linkedProducts: (type==='rep' || type==='sec' || type==='rev') ? npRepItems.slice() : []
+    linkedProducts: linkedProducts
   };
 }
 async function npUploadNewAssets(existing){
@@ -9421,7 +9539,7 @@ function askCreateProject(){
   if(!canCreateProjectType(formPeek.type)){ alert2(formPeek.type==='rev'?'無法建立新產品提案。':'只有系統管理員可以建立項目。'); return; }
   if(!requireCloud('建立項目')) return;
   const form = formPeek;
-  if(!form.code||!form.name){ alert2(form.type==='rev'?'請輸入評價標題及評價摘要。':'請輸入產品編號及項目簡介。'); return; }
+  if(!form.code||!form.name){ alert2(form.type==='sec'?'請選擇商品。':form.type==='rev'?'請輸入評價標題及評價摘要。':'請輸入產品編號及項目簡介。'); return; }
   const typeLabel = projectTypeLabel(form.type);
   const coverNote = npCoverDraft ? '已選封面' : '無封面';
   const fileNote = npDraftFiles.length ? ('附件 '+npDraftFiles.length+' 個') : '無附件';
@@ -9445,7 +9563,7 @@ async function createProject(){
   if(!canCreateProjectType(formPeek.type)){ alert2(formPeek.type==='rev'?'無法建立新產品提案。':'只有系統管理員可以建立項目。'); return; }
   if(!requireCloud('建立項目')) return;
   const form = formPeek;
-  if(!form.code||!form.name){ alert2(form.type==='rev'?'請輸入評價標題及評價摘要。':'請輸入產品編號及項目簡介。'); return; }
+  if(!form.code||!form.name){ alert2(form.type==='sec'?'請選擇商品。':form.type==='rev'?'請輸入評價標題及評價摘要。':'請輸入產品編號及項目簡介。'); return; }
   let handlers = readNpHandlers(form.stages);
   if(form.type==='rev' && currentUser) handlers = [[currentUser.id]];
   const assignedN = handlers.filter(function(hs){ return hs && hs.length; }).length;
