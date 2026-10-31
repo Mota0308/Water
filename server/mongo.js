@@ -1320,6 +1320,8 @@ export async function getRosterMonth(month) {
       userId: String(doc.userId || ''),
       date: String(doc.date || ''),
       value: String(doc.value || ''),
+      shift: String(doc.shift || ''),
+      note: String(doc.note || ''),
     })).filter((cell) => cell.userId && cell.date && ROSTER_VALUES.has(cell.value)),
   };
 }
@@ -1330,8 +1332,16 @@ export async function setRosterCell(actor, body) {
   const userId = String(body?.userId || '').trim();
   const date = parseRosterDate(body?.date);
   const raw = body?.value == null ? '' : String(body.value).trim();
+  const shift = body?.shift == null ? '' : String(body.shift).trim().slice(0, 40);
+  const note = body?.note == null ? '' : String(body.note).trim().slice(0, 200);
   if (!userId || !date) throw new Error('請選擇員工和日期');
   if (raw && !ROSTER_VALUES.has(raw)) throw new Error('請選擇門市、休息或請假');
+  if (shift) {
+    const settings = await getSystemSettingsInternal();
+    if (!settings.shiftPeriods.some((item) => item.label === shift)) {
+      throw new Error('請選擇已設定的時間段');
+    }
+  }
   const target = await usersCol().findOne({ $or: [{ _id: userId }, { id: userId }, { phone: userId }] });
   if (!target || isAdminAccount(target)) throw new Error('找不到這位員工');
   const month = date.slice(0, 7);
@@ -1341,7 +1351,7 @@ export async function setRosterCell(actor, body) {
   const _id = `${String(target.id || target._id)}|${date}`;
   if (!raw) {
     await rosterCol().deleteOne({ _id });
-    return { ok: true, userId: String(target.id || target._id), date, value: null };
+    return { ok: true, userId: String(target.id || target._id), date, value: null, shift: '', note: '' };
   }
   await rosterCol().replaceOne(
     { _id },
@@ -1350,12 +1360,14 @@ export async function setRosterCell(actor, body) {
       userId: String(target.id || target._id),
       date,
       value: raw,
+      shift,
+      note,
       updatedBy: String(actor.id || actor._id || ''),
       updatedAt: new Date(),
     },
     { upsert: true }
   );
-  return { ok: true, userId: String(target.id || target._id), date, value: raw };
+  return { ok: true, userId: String(target.id || target._id), date, value: raw, shift, note };
 }
 
 function leaveRequestsCol() {
@@ -1528,6 +1540,7 @@ function publicLeave(doc) {
     endDate: bounds.end,
     days: bounds.days,
     leaveType: String(doc.leaveType || ''),
+    note: String(doc.note || ''),
     status: String(doc.status || ''),
     at: at.toISOString(),
     atLabel: hkClockLabel(at),
@@ -1602,6 +1615,7 @@ export async function createLeaveRequest(actor, body) {
     endDate,
     days,
     leaveType,
+    note: String(body?.note || '').trim().slice(0, 200),
     status: '待審',
     createdAt: new Date(),
   };
@@ -1631,7 +1645,7 @@ export async function decideLeaveRequest(actor, id, body) {
   if (decision === '同意') {
     if (!dates.length) throw new Error('這筆申請的日期無效');
     for (const date of dates) {
-      await setRosterCell(actor, { userId: doc.userId, date, value: '請假' });
+      await setRosterCell(actor, { userId: doc.userId, date, value: '請假', shift: '', note: '' });
     }
   }
   await leaveRequestsCol().updateOne(
@@ -1647,7 +1661,7 @@ export async function decideLeaveRequest(actor, id, body) {
   );
   const next = await leaveRequestsCol().findOne({ _id: oid });
   const cells = decision === '同意'
-    ? dates.map((date) => ({ userId: String(doc.userId), date, value: '請假' }))
+    ? dates.map((date) => ({ userId: String(doc.userId), date, value: '請假', shift: '', note: '' }))
     : [];
   const applicant = await getUserById(doc.userId);
   const leaves = await leaveRequestsCol().find({
@@ -1669,7 +1683,7 @@ const CLOCK_STORES = [
   { name: '灣仔', lat: 22.2770765, lng: 114.1775473 },
   { name: '屯門', lat: 22.394665, lng: 113.9689791 },
 ];
-const CLOCK_RADIUS_M = 10;
+const CLOCK_RADIUS_M = 20;
 const CLOCK_MAX_ACCURACY_M = 200;
 
 function clockInsCol() {
@@ -6672,7 +6686,23 @@ async function getSystemSettingsInternal() {
     { upsert: true }
   );
   const doc = await metaCol().findOne({ _id: SYSTEM_SETTINGS_ID });
-  return { holidays: normalizeHolidays(doc?.holidays) };
+  return {
+    holidays: normalizeHolidays(doc?.holidays),
+    shiftPeriods: normalizeShiftPeriods(doc?.shiftPeriods),
+  };
+}
+
+function normalizeShiftPeriods(raw) {
+  const seen = new Set();
+  const out = [];
+  for (const item of Array.isArray(raw) ? raw : []) {
+    const label = String(item?.label || item || '').trim().slice(0, 40);
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    out.push({ label });
+    if (out.length >= 40) break;
+  }
+  return out;
 }
 
 async function holidayDatesNow() {
@@ -6767,15 +6797,22 @@ export async function getSystemSettings(user) {
 
 export async function updateSystemSettings(user, input = {}) {
   await connectMongo();
-  if (!posCanManageCatalog(user)) throw new Error('只有管理員／主管可修改系統設置');
+  const touchesHolidays = input.holidays != null;
+  const touchesShifts = input.shiftPeriods != null;
+  if (!touchesHolidays && !touchesShifts) throw new Error('沒有要更新的設定');
+  if (touchesHolidays && !posCanManageCatalog(user)) throw new Error('只有管理員／主管可修改系統設置');
+  if (touchesShifts && !canEditRoster(user)) throw new Error('只有經理、主管或系統管理員可以設定時間段');
   const me = publicUser(user);
-  const holidays = normalizeHolidays(input.holidays);
+  const current = await getSystemSettingsInternal();
+  const holidays = touchesHolidays ? normalizeHolidays(input.holidays) : current.holidays;
+  const shiftPeriods = touchesShifts ? normalizeShiftPeriods(input.shiftPeriods) : current.shiftPeriods;
   const time = formatHkDateTime();
   await metaCol().updateOne(
     { _id: SYSTEM_SETTINGS_ID },
     {
       $set: {
         holidays,
+        shiftPeriods,
         updatedAt: time,
         updatedAtMs: Date.now(),
         updatedBy: String(me.id),
@@ -6788,8 +6825,8 @@ export async function updateSystemSettings(user, input = {}) {
   await appendModuleLog({
     module: 'settings',
     time,
-    action: '更新紅日假期',
-    detail: `共 ${holidays.length} 日`,
+    action: touchesShifts && !touchesHolidays ? '更新更表時間段' : '更新紅日假期',
+    detail: touchesShifts && !touchesHolidays ? `共 ${shiftPeriods.length} 段` : `共 ${holidays.length} 日`,
     userId: me.id,
     userName: me.name || me.login,
     user: me.name || me.login,

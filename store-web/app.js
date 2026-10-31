@@ -5497,7 +5497,8 @@ function vPersonalSettings(){
       <button type="button" class="btn green sm" data-call="exportUsersToGoogleDrive">匯出用戶到 Drive</button>
     </div>
   </div>`
-    : '');
+    : '')
+  + shiftPeriodCard();
 }
 async function exportUsersToGoogleDrive(){
   if(!currentUser){ alert2('請先登入。'); return; }
@@ -5536,7 +5537,7 @@ async function submitChangePassword(){
   }catch(e){ alert2('更改失敗：'+(e.message||e)); }
 }
 
-var systemSettingsState = { loaded: false, loading: false, holidays: [], canEdit: false, error: '', today: null };
+var systemSettingsState = { loaded: false, loading: false, holidays: [], shiftPeriods: [], canEdit: false, error: '', today: null };
 
 async function loadSystemSettings(force){
   if(systemSettingsState.loading) return systemSettingsState;
@@ -5546,6 +5547,7 @@ async function loadSystemSettings(force){
   try{
     const res = await apiFetch('/api/system/settings');
     systemSettingsState.holidays = (res && res.settings && res.settings.holidays) || [];
+    systemSettingsState.shiftPeriods = (res && res.settings && res.settings.shiftPeriods) || [];
     systemSettingsState.canEdit = !!(res && res.canEdit);
     systemSettingsState.today = (res && res.today) || null;
     systemSettingsState.loaded = true;
@@ -5605,6 +5607,76 @@ function vSystemSettings(){
   </div>`;
 }
 
+function shiftPeriodCard(){
+  if(!canEditRoster()) return '';
+  if(!systemSettingsState.loaded && !systemSettingsState.loading){
+    loadSystemSettings().then(function(){ if(currentView==='settings') render(); });
+  }
+  const rows = (systemSettingsState.shiftPeriods || []).map(function(item){
+    const label = String(item.label || '');
+    return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #eee"><span>'+escHtml(label)+'</span>'
+      +'<button type="button" class="btn gray sm" data-call="removeShiftPeriod" data-arg0="'+escHtml(label)+'">移除</button></div>';
+  }).join('');
+  return '<div class="card"><h2>更表時間段</h2>'
+    +'<p class="clock-note">這裡加入的時間段，編更時可以選擇。全公司共用。</p>'
+    +(systemSettingsState.loaded ? '' : '<p class="clock-note">載入中…</p>')
+    +'<div class="shift-add"><input id="shift-start" type="time" aria-label="開始時間"><span>至</span><input id="shift-end" type="time" aria-label="結束時間">'
+    +'<button type="button" class="btn sm" data-call="addShiftPeriod">加入</button></div>'
+    +(rows || '<p class="clock-note">尚未加入時間段。</p>')
+    +'</div>';
+}
+async function saveShiftPeriods(periods){
+  const data = await apiFetch('/api/system/settings', {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ shiftPeriods: periods }),
+  });
+  systemSettingsState.holidays = Array.isArray(data.settings && data.settings.holidays) ? data.settings.holidays : systemSettingsState.holidays;
+  systemSettingsState.shiftPeriods = Array.isArray(data.settings && data.settings.shiftPeriods) ? data.settings.shiftPeriods : periods;
+  systemSettingsState.canEdit = !!data.canEdit;
+  systemSettingsState.loaded = true;
+  systemSettingsState.loading = false;
+  systemSettingsState.error = '';
+  if(currentView==='settings') render();
+}
+async function addShiftPeriod(){
+  const start = String((document.getElementById('shift-start') || {}).value || '').trim().slice(0, 5);
+  const end = String((document.getElementById('shift-end') || {}).value || '').trim().slice(0, 5);
+  if(!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end)){
+    alert2('請選擇開始和結束時間。');
+    return;
+  }
+  if(start === end){
+    alert2('開始和結束時間不能相同。');
+    return;
+  }
+  const label = start + '-' + end;
+  const periods = (systemSettingsState.shiftPeriods || []).map(function(item){ return { label: item.label }; });
+  if(periods.some(function(item){ return item.label === label; })){
+    alert2('這個時間段已經有了。');
+    return;
+  }
+  if(periods.length >= 40){
+    alert2('時間段最多 40 個。');
+    return;
+  }
+  periods.push({ label: label });
+  try{
+    await saveShiftPeriods(periods);
+  }catch(e){
+    alert2(String(e.message || e));
+  }
+}
+async function removeShiftPeriod(label){
+  const periods = (systemSettingsState.shiftPeriods || [])
+    .filter(function(item){ return item.label !== String(label || ''); })
+    .map(function(item){ return { label: item.label }; });
+  try{
+    await saveShiftPeriods(periods);
+  }catch(e){
+    alert2(String(e.message || e));
+  }
+}
 async function addSystemHoliday(){
   if(!systemSettingsState.canEdit){ alert2('只有管理員／主管可修改紅日。'); return; }
   const date = ((document.getElementById('sys-holiday-date')||{}).value||'').trim();
@@ -8588,9 +8660,18 @@ function isRosterPerson(u){
   if(u.login==='admin' || u.id==='adm' || u.identity==='系統管理員') return false;
   return true;
 }
+function rosterCell(userId, date){
+  return rosterCells.find(function(c){ return c && String(c.userId)===String(userId) && c.date===date; }) || null;
+}
 function rosterCellValue(userId, date){
-  const hit = rosterCells.find(function(c){ return c && String(c.userId)===String(userId) && c.date===date; });
+  const hit = rosterCell(userId, date);
   return hit ? hit.value : '';
+}
+function rosterCellBody(cell, editable){
+  if(!cell || !cell.value) return editable ? '<span class="roster-plus">編</span>' : '';
+  return escHtml(cell.value)
+    +(cell.shift ? '<div class="roster-meta">'+escHtml(cell.shift)+'</div>' : '')
+    +(cell.note ? '<div class="roster-meta roster-note">'+escHtml(cell.note)+'</div>' : '');
 }
 function rosterPeople(){
   const current = hkYmd().slice(0, 7);
@@ -8661,6 +8742,7 @@ async function loadRosterMonth(month){
     const leave = await apiFetch('/api/leave-requests?month='+encodeURIComponent(month));
     if(rosterMonth!==month) return;
     rosterCells = Array.isArray(data.cells) ? data.cells : [];
+    try{ await loadSystemSettings(); }catch(e){}
     leaveRows = Array.isArray(leave.rows) ? leave.rows : [];
     leaveCanReview = !!leave.canReview;
     leaveQuota = leave.quota || null;
@@ -8676,12 +8758,28 @@ async function loadRosterMonth(month){
     if(currentView==='roster' && rosterMonth===month) render();
   }
 }
+function rosterPickChoice(btn){
+  const box = btn && btn.parentElement;
+  if(!box) return;
+  box.querySelectorAll('.roster-choice').forEach(function(el){ el.classList.remove('green'); });
+  btn.classList.add('green');
+}
 function rosterChoiceButtons(userId, date, current){
+  const cell = rosterCell(userId, date);
   const buttons = ROSTER_CHOICES.map(function(choice){
     const on = current===choice ? ' green' : '';
-    return '<button type="button" class="btn sm'+on+'" data-call="saveRosterCell" data-arg0="'+escHtml(userId)+'" data-arg1="'+escHtml(date)+'" data-arg2="'+escHtml(choice)+'">'+escHtml(choice)+'</button>';
+    return '<button type="button" class="btn sm roster-choice'+on+'" data-value="'+escHtml(choice)+'" onclick="rosterPickChoice(this)">'+escHtml(choice)+'</button>';
   }).join('');
-  return '<div class="actions" style="flex-wrap:wrap">'+buttons
+  const shifts = (systemSettingsState.shiftPeriods || []).map(function(item){ return String(item.label || ''); }).filter(Boolean);
+  if(cell && cell.shift && shifts.indexOf(cell.shift) < 0) shifts.unshift(cell.shift);
+  const shiftOpts = '<option value="">不指定</option>' + shifts.map(function(label){
+    return '<option'+(cell && cell.shift === label ? ' selected' : '')+'>'+escHtml(label)+'</option>';
+  }).join('');
+  return '<label>時間段</label><select id="roster-edit-shift">'+shiftOpts+'</select>'
+    +'<label>備注</label><textarea id="roster-edit-note" maxlength="200" placeholder="選填">'+escHtml(cell && cell.note || '')+'</textarea>'
+    +'<div class="actions" style="flex-wrap:wrap">'+buttons
+    +'<span style="flex-basis:100%;height:0"></span>'
+    +'<button type="button" class="btn sm" data-call="saveRosterCell" data-arg0="'+escHtml(userId)+'" data-arg1="'+escHtml(date)+'">儲存</button>'
     +'<button type="button" class="btn gray sm" data-call="saveRosterCell" data-arg0="'+escHtml(userId)+'" data-arg1="'+escHtml(date)+'" data-arg2="">清除</button>'
     +'<button type="button" class="btn gray sm" onclick="closeModal()">取消</button></div>';
 }
@@ -8752,6 +8850,7 @@ function openLeaveApply(){
     +'<label>結束日期</label><input id="leave-apply-end" type="date" value="'+escHtml(today)+'" onchange="refreshLeaveApplyDays()" oninput="refreshLeaveApplyDays()">'
     +'<p id="leave-apply-days" style="font-size:15px;font-weight:bold;margin:8px 0">共 1 天</p>'
     +'<label>假期類型</label><select id="leave-apply-type">'+typeOpts+'</select>'
+    +'<label>備注</label><textarea id="leave-apply-note" maxlength="200" placeholder="選填"></textarea>'
     +'<div class="actions"><button type="button" class="btn gray sm" onclick="closeModal()">取消</button>'
     +'<button type="button" class="btn sm" data-call="submitLeaveApply">送出申請</button></div>');
 }
@@ -8761,6 +8860,7 @@ async function submitLeaveApply(){
   const startDate = String(((document.getElementById('leave-apply-start')||{}).value)||'');
   const endDate = String(((document.getElementById('leave-apply-end')||{}).value)||'');
   const leaveType = String(((document.getElementById('leave-apply-type')||{}).value)||'');
+  const note = String(((document.getElementById('leave-apply-note')||{}).value)||'').trim();
   if(!startDate || !endDate){ alert2('請選擇日期段。'); return; }
   if(endDate<startDate){ alert2('結束日期不能早於開始日期。'); return; }
   if(LEAVE_TYPES.indexOf(leaveType)<0){ alert2('請選擇假期類型。'); return; }
@@ -8770,7 +8870,7 @@ async function submitLeaveApply(){
     const saved = await apiFetch('/api/leave-requests', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ startDate: startDate, endDate: endDate, leaveType: leaveType })
+      body: JSON.stringify({ startDate: startDate, endDate: endDate, leaveType: leaveType, note: note })
     });
     const request = saved && saved.request ? saved.request : saved;
     if(request && request.id){
@@ -8810,7 +8910,13 @@ async function decideLeaveRequest(id, decision){
     cells.forEach(function(cell){
       if(!cell || !cell.userId || !cell.date) return;
       rosterCells = rosterCells.filter(function(c){ return !(String(c.userId)===String(cell.userId) && c.date===cell.date); });
-      if(cell.value) rosterCells.push({ userId: String(cell.userId), date: cell.date, value: cell.value });
+      if(cell.value) rosterCells.push({
+        userId: String(cell.userId),
+        date: cell.date,
+        value: cell.value,
+        shift: cell.shift || '',
+        note: cell.note || '',
+      });
     });
     applyLeaveQuota(result && result.quota);
   }catch(e){
@@ -8827,30 +8933,40 @@ function leaveRequestRowsHtml(){
       ? '<button type="button" class="btn green sm" data-call="decideLeaveRequest" data-arg0="'+escHtml(String(row.id))+'" data-arg1="同意">同意</button>'
         +'<button type="button" class="btn red sm" data-call="decideLeaveRequest" data-arg0="'+escHtml(String(row.id))+'" data-arg1="拒絕">拒絕</button>'
       : '';
-    return '<tr><td>'+escHtml(row.userName||row.userId)+'</td><td>'+escHtml(leaveRangeLabel(row))+'</td><td>'+escHtml(String(row.days||''))+'</td><td>'+escHtml(row.leaveType||'—')+'</td><td>'+escHtml(row.atLabel||'')+'</td><td>'+escHtml(row.status||'')+'</td><td class="actions-row">'+actions+'</td></tr>';
+    return '<tr><td>'+escHtml(row.userName||row.userId)+'</td><td>'+escHtml(leaveRangeLabel(row))+'</td><td>'+escHtml(String(row.days||''))+'</td><td>'+escHtml(row.leaveType||'—')+'</td><td>'+escHtml(row.note||'—')+'</td><td>'+escHtml(row.atLabel||'')+'</td><td>'+escHtml(row.status||'')+'</td><td class="actions-row">'+actions+'</td></tr>';
   }).join('');
   return '<h3 style="margin-top:16px">申請記錄</h3>'
     +(rows
-      ? '<div class="table-wrap"><table><tr><th>員工</th><th>日期段</th><th>天數</th><th>類型</th><th>申請時間</th><th>狀態</th><th>審批</th></tr>'+rows+'</table></div>'
+      ? '<div class="table-wrap"><table><tr><th>員工</th><th>日期段</th><th>天數</th><th>類型</th><th>備注</th><th>申請時間</th><th>狀態</th><th>審批</th></tr>'+rows+'</table></div>'
       : '<p style="color:#888">這個月還沒有請假申請。</p>');
 }
 async function saveRosterCell(userId, date, value){
   if(!canEditRoster()){ alert2('只有經理、主管或系統管理員可以改更表。'); return; }
   userId = String(userId||'');
   date = String(date||'');
-  value = value==null ? '' : String(value);
+  let shift = '';
+  let note = '';
+  if(arguments.length < 3){
+    const picked = document.querySelector('#modal-content .roster-choice.green');
+    value = picked ? String(picked.getAttribute('data-value') || '') : '';
+    if(!value){ alert2('請選擇門市或休息。'); return; }
+    shift = String((document.getElementById('roster-edit-shift') || {}).value || '');
+    note = String((document.getElementById('roster-edit-note') || {}).value || '').trim();
+  }else{
+    value = value==null ? '' : String(value);
+  }
   try{
     await apiFetch('/api/roster', {
       method:'PUT',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ userId: userId, date: date, value: value || null })
+      body: JSON.stringify({ userId: userId, date: date, value: value || null, shift: shift, note: note })
     });
   }catch(e){
     alert2(e.message||'儲存失敗');
     return;
   }
   rosterCells = rosterCells.filter(function(c){ return !(String(c.userId)===userId && c.date===date); });
-  if(value) rosterCells.push({ userId: userId, date: date, value: value });
+  if(value) rosterCells.push({ userId: userId, date: date, value: value, shift: shift, note: note });
   closeModal();
   render();
 }
@@ -8875,14 +8991,18 @@ function vRoster(){
   const rows = people.map(function(u){
     const mine = currentUser && String(u.id)===String(currentUser.id) ? ' roster-mine' : '';
     const cells = days.map(function(day){
-      const value = rosterCellValue(u.id, day.date);
+      const cell = rosterCell(u.id, day.date);
+      const value = cell ? cell.value : '';
       const weekend = day.wd===0 || day.wd===6 ? ' roster-weekend' : '';
       const isToday = day.date===today ? ' roster-today' : '';
       const tone = value ? ' roster-v-'+value : '';
       const cls = 'roster-cell'+weekend+isToday+tone+(editable?' editable':'');
-      const label = value ? escHtml(value) : (editable ? '<span class="roster-plus">編</span>' : '');
-      if(!editable) return '<td class="'+cls+'">'+label+'</td>';
-      return '<td class="'+cls+'" data-call="askRosterCell" data-arg0="'+escHtml(String(u.id))+'" data-arg1="'+escHtml(day.date)+'">'+label+'</td>';
+      const tip = cell && (cell.shift || cell.note)
+        ? ' title="'+escHtml([cell.shift, cell.note].filter(Boolean).join('｜'))+'"'
+        : '';
+      const label = rosterCellBody(cell, editable);
+      if(!editable) return '<td class="'+cls+'"'+tip+'>'+label+'</td>';
+      return '<td class="'+cls+'"'+tip+' data-call="askRosterCell" data-arg0="'+escHtml(String(u.id))+'" data-arg1="'+escHtml(day.date)+'">'+label+'</td>';
     }).join('');
     const tag = u.active===false ? ' <span class="tag s-cancel">已停用</span>' : (isPartTimeAccount(u) ? ' <span class="tag dept">兼職</span>' : '');
     return '<tr class="'+mine+'"><th class="roster-name">'+escHtml(u.name||'')+tag+'</th>'+cells+'</tr>';
@@ -9010,7 +9130,7 @@ function vClockIn(){
     ? '<button type="button" class="btn clock-btn" data-call="doClockIn"'+(clockBusy?' disabled':'')+'>'+(clockBusy?'正在定位…':'打卡')+'</button>'
     : '<div class="info-banner" style="margin-bottom:12px">請用手機打開這個頁面再打卡。電腦不能定位到門市。</div>';
   return '<div class="card"><h2>📍 打卡</h2>'
-    +'<p class="clock-note">在觀塘、荔枝角、灣仔或屯門門市約 10 米內，用手機會記下你的打卡。</p>'
+    +'<p class="clock-note">在觀塘、荔枝角、灣仔或屯門門市約 20 米內，用手機會記下你的打卡。</p>'
     +punch
     +(clockMessage?'<p style="font-size:15px;font-weight:bold;color:#2e7d32">'+escHtml(clockMessage)+'</p>':'')
     +'<h3 style="margin-top:8px">'+(clockCanManage?'今日全部打卡':'我的今日打卡')+'</h3>'
