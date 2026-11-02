@@ -5497,8 +5497,7 @@ function vPersonalSettings(){
       <button type="button" class="btn green sm" data-call="exportUsersToGoogleDrive">匯出用戶到 Drive</button>
     </div>
   </div>`
-    : '')
-  + shiftPeriodCard();
+    : '');
 }
 async function exportUsersToGoogleDrive(){
   if(!currentUser){ alert2('請先登入。'); return; }
@@ -5607,10 +5606,19 @@ function vSystemSettings(){
   </div>`;
 }
 
+function vSystemShiftPeriods(){
+  if(!currentUser){
+    return '<div class="card"><h2>時間段設置</h2><p>請先登入。</p></div>';
+  }
+  if(!canEditRoster()){
+    return '<div class="card"><h2>時間段設置</h2><p>只有經理、主管或系統管理員可以設定更表時間段。</p></div>';
+  }
+  return shiftPeriodCard();
+}
 function shiftPeriodCard(){
   if(!canEditRoster()) return '';
   if(!systemSettingsState.loaded && !systemSettingsState.loading){
-    loadSystemSettings().then(function(){ if(currentView==='settings') render(); });
+    loadSystemSettings().then(function(){ if(currentView==='systemShiftPeriods') render(); });
   }
   const rows = (systemSettingsState.shiftPeriods || []).map(function(item){
     const label = String(item.label || '');
@@ -5637,7 +5645,7 @@ async function saveShiftPeriods(periods){
   systemSettingsState.loaded = true;
   systemSettingsState.loading = false;
   systemSettingsState.error = '';
-  if(currentView==='settings') render();
+  if(currentView==='systemShiftPeriods') render();
 }
 async function addShiftPeriod(){
   const start = String((document.getElementById('shift-start') || {}).value || '').trim().slice(0, 5);
@@ -6667,6 +6675,9 @@ async function logout(){
   resetHoldView();
   rosterLoadedKey = '';
   rosterCells = [];
+  rosterHiddenIds = {};
+  rosterHiddenOpen = false;
+  try{ sessionStorage.removeItem(ROSTER_HIDDEN_KEY); }catch(e){}
   leaveRows = [];
   leaveCanReview = false;
   leaveMessage = '';
@@ -6888,7 +6899,11 @@ function getSidebarItemsForModule(mod){
   if(mod==='createStaff') return [['createStaff','創建員工']];
   if(mod==='staffDirectory') return [['staffDirectory','員工資料']];
   if(mod==='settings') return [['settings','更改密碼']];
-  if(mod==='systemSettings') return [['systemSettings','紅日假期']];
+  if(mod==='systemSettings'){
+    const items = [['systemSettings','紅日假期']];
+    if(canEditRoster()) items.push(['systemShiftPeriods','時間段設置']);
+    return items;
+  }
   if(mod==='transfer'){
     return [
       ['transferProducts','貨品'],
@@ -7063,6 +7078,7 @@ function render(){
     staffDirectory: vStaffDirectory,
     settings: vPersonalSettings,
     systemSettings: vSystemSettings,
+    systemShiftPeriods: vSystemShiftPeriods,
     transferInventory: vTransferInventory,
     transferApply: vTransferApply,
     transferHistory: vTransferHistory,
@@ -7121,7 +7137,7 @@ function go(v){
   if(v==='createStaff'){ currentModule='createStaff'; }
   if(v==='staffDirectory'){ currentModule='staffDirectory'; }
   if(v==='settings'){ currentModule='settings'; }
-  if(v==='systemSettings'){ currentModule='systemSettings'; }
+  if(v==='systemSettings' || v==='systemShiftPeriods'){ currentModule='systemSettings'; }
   if(v==='transferInventory' || v==='transferApply' || v==='transferHistory' || v==='transferStockLog' || v==='transferProductLog' || v==='transferProducts'){ currentModule='transfer'; }
   if(v==='dailyToday' || v==='dailyProgress' || v==='dailyUnit' || v==='dailyHistory' || v==='dailyRecords' || v==='dailyNew' || v==='dailyRecurring' || v==='dailyOpLogs'){ currentModule='daily'; }
   if(v==='roster'){ currentModule='roster'; }
@@ -8641,6 +8657,44 @@ const ROSTER_WEEKDAYS = ['日','一','二','三','四','五','六'];
 let rosterMonth = '';
 let rosterFilter = '全部';
 let rosterCells = [];
+const ROSTER_HIDDEN_KEY = 'store-web-roster-hidden-v1';
+let rosterHiddenIds = {};
+let rosterHiddenOpen = false;
+function loadRosterHidden(){
+  rosterHiddenIds = {};
+  try{
+    const raw = JSON.parse(sessionStorage.getItem(ROSTER_HIDDEN_KEY) || '[]');
+    (Array.isArray(raw) ? raw : []).forEach(function(id){ rosterHiddenIds[String(id)] = true; });
+  }catch(e){}
+}
+function saveRosterHidden(){
+  try{ sessionStorage.setItem(ROSTER_HIDDEN_KEY, JSON.stringify(Object.keys(rosterHiddenIds))); }catch(e){}
+}
+function rosterHidePerson(userId){
+  userId = String(userId||'');
+  if(!userId) return;
+  rosterHiddenIds[userId] = true;
+  saveRosterHidden();
+  render();
+}
+function rosterShowPerson(userId){
+  delete rosterHiddenIds[String(userId||'')];
+  if(!Object.keys(rosterHiddenIds).length) rosterHiddenOpen = false;
+  saveRosterHidden();
+  render();
+}
+function rosterShowAllHidden(){
+  rosterHiddenIds = {};
+  rosterHiddenOpen = false;
+  saveRosterHidden();
+  render();
+}
+function rosterToggleHiddenPanel(){
+  if(!Object.keys(rosterHiddenIds).length) return;
+  rosterHiddenOpen = !rosterHiddenOpen;
+  render();
+}
+loadRosterHidden();
 let rosterLoadedKey = '';
 let rosterLoading = false;
 let leaveRows = [];
@@ -8978,7 +9032,8 @@ function vRoster(){
     setTimeout(function(){ loadRosterMonth(month); }, 0);
   }
   const days = rosterDays(rosterMonth);
-  const people = rosterVisiblePeople();
+  const hiddenPeople = rosterPeople().filter(function(u){ return rosterHiddenIds[String(u.id)]; });
+  const people = rosterVisiblePeople().filter(function(u){ return !rosterHiddenIds[String(u.id)]; });
   const today = hkYmd();
   const editable = canEditRoster();
   const parts = rosterMonth.split('-');
@@ -9005,7 +9060,7 @@ function vRoster(){
       return '<td class="'+cls+'"'+tip+' data-call="askRosterCell" data-arg0="'+escHtml(String(u.id))+'" data-arg1="'+escHtml(day.date)+'">'+label+'</td>';
     }).join('');
     const tag = u.active===false ? ' <span class="tag s-cancel">已停用</span>' : (isPartTimeAccount(u) ? ' <span class="tag dept">兼職</span>' : '');
-    return '<tr class="'+mine+'"><th class="roster-name">'+escHtml(u.name||'')+tag+'</th>'+cells+'</tr>';
+    return '<tr class="'+mine+'"><th class="roster-name roster-hide" title="點擊隱藏這位員工" data-call="rosterHidePerson" data-arg0="'+escHtml(String(u.id))+'">'+escHtml(u.name||'')+tag+'</th>'+cells+'</tr>';
   }).join('');
   const filterOpts = ['全部'].concat(ROSTER_FILTERS).map(function(name){
     return '<option'+(rosterFilter===name?' selected':'')+'>'+name+'</option>';
@@ -9013,18 +9068,31 @@ function vRoster(){
   const applyBtn = canApplyLeave()
     ? '<button type="button" class="btn green sm" data-call="openLeaveApply">申請請假</button>'
     : '';
+  const hiddenBtn = '<button type="button" class="btn gray sm" data-call="rosterToggleHiddenPanel"'+(hiddenPeople.length?'':' disabled')+'>'
+    +(rosterHiddenOpen && hiddenPeople.length ? '收起隱藏項' : '展開隱藏項')
+    +'（'+hiddenPeople.length+'）</button>';
+  const hiddenPanel = rosterHiddenOpen && hiddenPeople.length
+    ? '<div class="roster-hidden-panel">'
+      + hiddenPeople.map(function(u){
+        return '<button type="button" class="btn sm" data-call="rosterShowPerson" data-arg0="'+escHtml(String(u.id))+'">'+escHtml(u.name||'')+'</button>';
+      }).join('')
+      + '<button type="button" class="btn gray sm" data-call="rosterShowAllHidden">全部顯示</button>'
+      + '</div>'
+    : '';
   return '<div class="card"><h2>🗓️ 更表｜'+title+'</h2>'
-    +'<p style="font-size:13px;color:#666;margin:0 0 10px">'+(editable?'按「申請請假」送出自己的請假。點日曆上的「編」，可安排門市或休息。':'按「申請請假」送出自己的請假。你可以查看所有同事的更表。')+'</p>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px">'+(editable?'按「申請請假」送出自己的請假。點日曆上的「編」，可安排門市或休息。點員工名字可隱藏該列。':'按「申請請假」送出自己的請假。你可以查看所有同事的更表。點員工名字可隱藏該列。')+'</p>'
     +'<div class="roster-bar">'
     +applyBtn
+    +hiddenBtn
     +'<button type="button" class="btn gray sm" data-call="rosterShiftMonth" data-arg0="-1">上一月</button>'
     +'<input type="month" value="'+escHtml(rosterMonth)+'" onchange="rosterSetMonth(this.value)">'
     +'<button type="button" class="btn gray sm" data-call="rosterShiftMonth" data-arg0="1">下一月</button>'
     +'<select onchange="rosterSetFilter(this.value)">'+filterOpts+'</select>'
     +'</div>'
+    +hiddenPanel
     +(rosterLoading && rosterLoadedKey!==rosterMonth ? '<p style="color:#888">更表載入中…</p>' : '')
     +'<div class="roster-wrap"><table class="roster-table"><thead><tr><th class="roster-name">員工</th>'+head+'</tr></thead><tbody>'
-    +(rows || '<tr><td class="roster-name" colspan="'+(days.length+1)+'">'+(rosterFilter==='全部'?'沒有可顯示的員工。':'這個月沒有符合篩選的員工。')+'</td></tr>')
+    +(rows || '<tr><td class="roster-name" colspan="'+(days.length+1)+'">'+(hiddenPeople.length && rosterFilter==='全部'?'員工已隱藏，可按「展開隱藏項」找回。':(rosterFilter==='全部'?'沒有可顯示的員工。':'這個月沒有符合篩選的員工。'))+'</td></tr>')
     +'</tbody></table></div>'
     +(leaveMessage?'<p style="font-size:15px;font-weight:bold;color:#2e7d32;margin-top:10px">'+escHtml(leaveMessage)+'</p>':'')
     +leaveRequestRowsHtml()
