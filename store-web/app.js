@@ -9408,7 +9408,8 @@ function vClockIn(){
   const mobile = isMobileChrome();
   const rows = clockRows.map(function(row){
     const who = clockCanManage ? escHtml(row.userName||row.userId)+'｜' : '';
-    return '<tr><td>'+escHtml(row.atLabel||'')+'</td><td>'+who+escHtml(row.store||'')+'</td></tr>';
+    const place = clockPlaceHtml(row);
+    return '<tr><td>'+escHtml(row.atLabel||'')+'</td><td>'+who+escHtml(row.store||'')+'</td><td style="font-size:12px;line-height:1.45">'+place+'</td></tr>';
   }).join('');
   const punch = mobile
     ? '<button type="button" class="btn clock-btn" data-call="doClockIn"'+(clockBusy?' disabled':'')+'>'+(clockBusy?'正在定位…':'打卡')+'</button>'
@@ -9419,10 +9420,22 @@ function vClockIn(){
     +(clockMessage?'<p style="font-size:15px;font-weight:bold;color:#2e7d32">'+escHtml(clockMessage)+'</p>':'')
     +'<h3 style="margin-top:8px">'+(clockCanManage?'今日全部打卡':'我的今日打卡')+'</h3>'
     +(clockLoading && !clockLoaded ? '<p style="color:#888">載入中…</p>' : (
-      rows ? '<div class="table-wrap"><table><tr><th>時間</th><th>'+(clockCanManage?'員工｜門市':'門市')+'</th></tr>'+rows+'</table></div>'
+      rows ? '<div class="table-wrap"><table><tr><th>時間</th><th>'+(clockCanManage?'員工｜門市':'門市')+'</th><th>具體位置</th></tr>'+rows+'</table></div>'
         : '<p style="color:#888">今日還沒有打卡。</p>'
     ))
     +'</div>';
+}
+function clockPlaceHtml(row){
+  const lat = Number(row && row.lat);
+  const lng = Number(row && row.lng);
+  if(!Number.isFinite(lat) || !Number.isFinite(lng)) return '—';
+  const parts = [];
+  parts.push(lat.toFixed(6)+', '+lng.toFixed(6));
+  if(row.distanceM!=null && row.distanceM!=='') parts.push('距門市針約 '+escHtml(String(row.distanceM))+' 米');
+  if(row.accuracy!=null && row.accuracy!=='') parts.push('誤差約 '+escHtml(String(row.accuracy))+' 米');
+  const mapUrl = 'https://www.google.com/maps?q='+encodeURIComponent(lat+','+lng);
+  return parts.join('<br>')
+    +'<br><a href="'+escHtml(mapUrl)+'" target="_blank" rel="noopener noreferrer">在地圖查看</a>';
 }
 const HOLD_STORES = ['觀塘','荔枝角','灣仔','屯門'];
 const HOLD_STATUSES = ['留貨','已付','換貨'];

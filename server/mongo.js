@@ -1838,12 +1838,19 @@ export function matchClockStore(lat, lng, accuracy) {
 
 function publicClockIn(doc) {
   const at = doc.createdAt instanceof Date ? doc.createdAt : new Date(doc.createdAt);
+  const lat = Number(doc.lat);
+  const lng = Number(doc.lng);
+  const accuracy = Number(doc.accuracy);
+  const distanceM = Number(doc.distanceM);
   return {
     id: String(doc._id),
     userId: String(doc.userId || ''),
     userName: String(doc.userName || ''),
     store: String(doc.store || ''),
-    distanceM: doc.distanceM,
+    lat: Number.isFinite(lat) ? lat : null,
+    lng: Number.isFinite(lng) ? lng : null,
+    accuracy: Number.isFinite(accuracy) ? Math.round(accuracy) : null,
+    distanceM: Number.isFinite(distanceM) ? Math.round(distanceM) : null,
     at: at.toISOString(),
     atLabel: hkClockLabel(at),
   };
