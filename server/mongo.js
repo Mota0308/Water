@@ -1270,9 +1270,64 @@ export async function listUsersPublic() {
 }
 
 const ROSTER_VALUES = new Set(['觀塘', '荔枝角', '灣仔', '屯門', '休息', '請假']);
+const ROSTER_MAX_ENTRIES = 8;
 
 function rosterCol() {
   return db.collection('roster_cells');
+}
+
+function normalizeRosterEntry(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = String(raw.value || '').trim();
+  if (!ROSTER_VALUES.has(value)) return null;
+  return {
+    value,
+    shift: String(raw.shift || '').trim().slice(0, 40),
+    note: String(raw.note || '').trim().slice(0, 200),
+  };
+}
+
+function rosterEntriesFromDoc(doc) {
+  if (Array.isArray(doc?.entries) && doc.entries.length) {
+    const out = [];
+    for (const item of doc.entries) {
+      const entry = normalizeRosterEntry(item);
+      if (entry) out.push(entry);
+      if (out.length >= ROSTER_MAX_ENTRIES) break;
+    }
+    return out;
+  }
+  const value = String(doc?.value || '').trim();
+  if (!ROSTER_VALUES.has(value)) return [];
+  return [{
+    value,
+    shift: String(doc?.shift || '').trim().slice(0, 40),
+    note: String(doc?.note || '').trim().slice(0, 200),
+  }];
+}
+
+function publicRosterCell(doc) {
+  const entries = rosterEntriesFromDoc(doc);
+  if (!entries.length) return null;
+  const primary = entries[0];
+  return {
+    userId: String(doc.userId || ''),
+    date: String(doc.date || ''),
+    value: primary.value,
+    shift: primary.shift,
+    note: primary.note,
+    entries,
+  };
+}
+
+async function assertRosterShiftsAllowed(entries) {
+  const needed = [...new Set(entries.map((e) => e.shift).filter(Boolean))];
+  if (!needed.length) return;
+  const settings = await getSystemSettingsInternal();
+  const allowed = new Set((settings.shiftPeriods || []).map((item) => item.label));
+  for (const label of needed) {
+    if (!allowed.has(label)) throw new Error('請選擇已設定的時間段');
+  }
 }
 
 function isPartTimeStaff(u) {
@@ -1316,13 +1371,7 @@ export async function getRosterMonth(month) {
   const docs = await rosterCol().find({ date: { $regex: `^${key}-` } }).toArray();
   return {
     month: key,
-    cells: docs.map((doc) => ({
-      userId: String(doc.userId || ''),
-      date: String(doc.date || ''),
-      value: String(doc.value || ''),
-      shift: String(doc.shift || ''),
-      note: String(doc.note || ''),
-    })).filter((cell) => cell.userId && cell.date && ROSTER_VALUES.has(cell.value)),
+    cells: docs.map((doc) => publicRosterCell(doc)).filter((cell) => cell && cell.userId && cell.date),
   };
 }
 
@@ -1331,43 +1380,65 @@ export async function setRosterCell(actor, body) {
   if (!canEditRoster(actor)) throw new Error('沒有權限修改更表');
   const userId = String(body?.userId || '').trim();
   const date = parseRosterDate(body?.date);
-  const raw = body?.value == null ? '' : String(body.value).trim();
-  const shift = body?.shift == null ? '' : String(body.shift).trim().slice(0, 40);
-  const note = body?.note == null ? '' : String(body.note).trim().slice(0, 200);
   if (!userId || !date) throw new Error('請選擇員工和日期');
-  if (raw && !ROSTER_VALUES.has(raw)) throw new Error('請選擇門市、休息或請假');
-  if (shift) {
-    const settings = await getSystemSettingsInternal();
-    if (!settings.shiftPeriods.some((item) => item.label === shift)) {
-      throw new Error('請選擇已設定的時間段');
+  let entries = [];
+  if (Array.isArray(body?.entries)) {
+    for (const item of body.entries) {
+      const entry = normalizeRosterEntry(item);
+      if (!entry) throw new Error('請選擇門市、休息或請假');
+      entries.push(entry);
+      if (entries.length > ROSTER_MAX_ENTRIES) throw new Error(`同一天最多 ${ROSTER_MAX_ENTRIES} 段`);
+    }
+  } else {
+    const raw = body?.value == null ? '' : String(body.value).trim();
+    if (raw) {
+      const entry = normalizeRosterEntry({
+        value: raw,
+        shift: body?.shift,
+        note: body?.note,
+      });
+      if (!entry) throw new Error('請選擇門市、休息或請假');
+      entries = [entry];
     }
   }
+  await assertRosterShiftsAllowed(entries);
   const target = await usersCol().findOne({ $or: [{ _id: userId }, { id: userId }, { phone: userId }] });
   if (!target || isAdminAccount(target)) throw new Error('找不到這位員工');
   const month = date.slice(0, 7);
   if (target.active === false && month >= hkMonthKey()) {
     throw new Error('已停用的員工只可以改過去月份的更表');
   }
-  const _id = `${String(target.id || target._id)}|${date}`;
-  if (!raw) {
+  const uid = String(target.id || target._id);
+  const _id = `${uid}|${date}`;
+  if (!entries.length) {
     await rosterCol().deleteOne({ _id });
-    return { ok: true, userId: String(target.id || target._id), date, value: null, shift: '', note: '' };
+    return { ok: true, userId: uid, date, value: null, shift: '', note: '', entries: [] };
   }
+  const primary = entries[0];
   await rosterCol().replaceOne(
     { _id },
     {
       _id,
-      userId: String(target.id || target._id),
+      userId: uid,
       date,
-      value: raw,
-      shift,
-      note,
+      value: primary.value,
+      shift: primary.shift,
+      note: primary.note,
+      entries,
       updatedBy: String(actor.id || actor._id || ''),
       updatedAt: new Date(),
     },
     { upsert: true }
   );
-  return { ok: true, userId: String(target.id || target._id), date, value: raw, shift, note };
+  return {
+    ok: true,
+    userId: uid,
+    date,
+    value: primary.value,
+    shift: primary.shift,
+    note: primary.note,
+    entries,
+  };
 }
 
 function leaveRequestsCol() {
@@ -1645,7 +1716,11 @@ export async function decideLeaveRequest(actor, id, body) {
   if (decision === '同意') {
     if (!dates.length) throw new Error('這筆申請的日期無效');
     for (const date of dates) {
-      await setRosterCell(actor, { userId: doc.userId, date, value: '請假', shift: '', note: '' });
+      await setRosterCell(actor, {
+        userId: doc.userId,
+        date,
+        entries: [{ value: '請假', shift: '', note: '' }],
+      });
     }
   }
   await leaveRequestsCol().updateOne(
@@ -1661,7 +1736,14 @@ export async function decideLeaveRequest(actor, id, body) {
   );
   const next = await leaveRequestsCol().findOne({ _id: oid });
   const cells = decision === '同意'
-    ? dates.map((date) => ({ userId: String(doc.userId), date, value: '請假', shift: '', note: '' }))
+    ? dates.map((date) => ({
+      userId: String(doc.userId),
+      date,
+      value: '請假',
+      shift: '',
+      note: '',
+      entries: [{ value: '請假', shift: '', note: '' }],
+    }))
     : [];
   const applicant = await getUserById(doc.userId);
   const leaves = await leaveRequestsCol().find({

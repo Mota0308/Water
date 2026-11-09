@@ -392,9 +392,16 @@
   .roster-name.roster-hide:hover { background:#f3f6fb; }
   .roster-hidden-panel { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:0 0 10px; }
   .roster-table thead th.roster-name { z-index:3; background:#f7f9fc; }
-  .roster-cell { text-align:center; font-size:12px; font-weight:bold; padding:6px 4px; min-width:92px; min-height:44px; line-height:1.2; }
+  .roster-cell { text-align:center; font-size:12px; font-weight:bold; padding:6px 4px; min-width:100px; min-height:44px; line-height:1.2; vertical-align:top; }
+  .roster-entry { padding:2px 0; }
+  .roster-entry + .roster-entry { border-top:1px dashed rgba(0,0,0,.12); margin-top:3px; padding-top:4px; }
+  .roster-entry-place { font-weight:bold; }
   .roster-meta { display:block; margin-top:2px; font-size:10px; font-weight:normal; line-height:1.25; white-space:nowrap; }
-  .roster-note { max-width:88px; margin-left:auto; margin-right:auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .roster-note { max-width:96px; margin-left:auto; margin-right:auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .roster-edit-list { display:flex; flex-direction:column; gap:8px; margin:10px 0; }
+  .roster-edit-item { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; padding:8px 10px; border:1px solid #e6ebf2; border-radius:8px; background:#fafbfd; }
+  .roster-edit-item.editing { border-color:#90caf9; background:#eef6ff; }
+  .roster-edit-form { margin:12px 0; padding:10px; border:1px dashed #ccd4de; border-radius:8px; }
   .shift-add { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0; }
   .shift-add input[type=time] { width:140px; margin:0; }
   .roster-cell.editable { cursor:pointer; }

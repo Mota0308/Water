@@ -8714,18 +8714,68 @@ function isRosterPerson(u){
   if(u.login==='admin' || u.id==='adm' || u.identity==='系統管理員') return false;
   return true;
 }
+let rosterEditState = null;
+function rosterNormalizeEntries(cell){
+  if(!cell) return [];
+  if(Array.isArray(cell.entries) && cell.entries.length){
+    return cell.entries.map(function(item){
+      return {
+        value: String(item && item.value || ''),
+        shift: String(item && item.shift || ''),
+        note: String(item && item.note || ''),
+      };
+    }).filter(function(item){ return !!item.value; });
+  }
+  if(cell.value){
+    return [{ value: String(cell.value), shift: String(cell.shift||''), note: String(cell.note||'') }];
+  }
+  return [];
+}
 function rosterCell(userId, date){
-  return rosterCells.find(function(c){ return c && String(c.userId)===String(userId) && c.date===date; }) || null;
+  const hit = rosterCells.find(function(c){ return c && String(c.userId)===String(userId) && c.date===date; }) || null;
+  if(!hit) return null;
+  const entries = rosterNormalizeEntries(hit);
+  if(!entries.length) return null;
+  return {
+    userId: String(hit.userId),
+    date: hit.date,
+    value: entries[0].value,
+    shift: entries[0].shift,
+    note: entries[0].note,
+    entries: entries,
+  };
 }
 function rosterCellValue(userId, date){
   const hit = rosterCell(userId, date);
   return hit ? hit.value : '';
 }
+function rosterCellHasValue(cell, value){
+  if(!cell) return false;
+  return rosterNormalizeEntries(cell).some(function(item){ return item.value === value; });
+}
+function rosterCellTone(cell){
+  const entries = rosterNormalizeEntries(cell);
+  if(!entries.length) return '';
+  if(entries.some(function(item){ return item.value === '請假'; })) return ' roster-v-請假';
+  return ' roster-v-'+entries[0].value;
+}
 function rosterCellBody(cell, editable){
-  if(!cell || !cell.value) return editable ? '<span class="roster-plus">編</span>' : '';
-  return escHtml(cell.value)
-    +(cell.shift ? '<div class="roster-meta">'+escHtml(cell.shift)+'</div>' : '')
-    +(cell.note ? '<div class="roster-meta roster-note">'+escHtml(cell.note)+'</div>' : '');
+  const entries = rosterNormalizeEntries(cell);
+  if(!entries.length) return editable ? '<span class="roster-plus">編</span>' : '';
+  return entries.map(function(item){
+    return '<div class="roster-entry">'
+      +'<div class="roster-entry-place">'+escHtml(item.value)+'</div>'
+      +(item.shift ? '<div class="roster-meta">'+escHtml(item.shift)+'</div>' : '')
+      +(item.note ? '<div class="roster-meta roster-note">'+escHtml(item.note)+'</div>' : '')
+      +'</div>';
+  }).join('');
+}
+function rosterCellTip(cell){
+  const entries = rosterNormalizeEntries(cell);
+  if(!entries.length) return '';
+  return entries.map(function(item){
+    return [item.value, item.shift, item.note].filter(Boolean).join(' ');
+  }).join('｜');
 }
 function rosterPeople(){
   const current = hkYmd().slice(0, 7);
@@ -8749,7 +8799,9 @@ function rosterVisiblePeople(){
   if(rosterFilter==='全部') return people;
   return people.filter(function(u){
     return rosterCells.some(function(c){
-      return String(c.userId)===String(u.id) && String(c.date||'').indexOf(rosterMonth+'-')===0 && c.value===rosterFilter;
+      return String(c.userId)===String(u.id)
+        && String(c.date||'').indexOf(rosterMonth+'-')===0
+        && rosterCellHasValue(c, rosterFilter);
     });
   });
 }
@@ -8795,7 +8847,18 @@ async function loadRosterMonth(month){
     const data = await apiFetch('/api/roster?month='+encodeURIComponent(month));
     const leave = await apiFetch('/api/leave-requests?month='+encodeURIComponent(month));
     if(rosterMonth!==month) return;
-    rosterCells = Array.isArray(data.cells) ? data.cells : [];
+    rosterCells = (Array.isArray(data.cells) ? data.cells : []).map(function(cell){
+      const entries = rosterNormalizeEntries(cell);
+      if(!entries.length) return null;
+      return {
+        userId: String(cell.userId),
+        date: cell.date,
+        value: entries[0].value,
+        shift: entries[0].shift,
+        note: entries[0].note,
+        entries: entries,
+      };
+    }).filter(Boolean);
     try{ await loadSystemSettings(); }catch(e){}
     leaveRows = Array.isArray(leave.rows) ? leave.rows : [];
     leaveCanReview = !!leave.canReview;
@@ -8818,33 +8881,131 @@ function rosterPickChoice(btn){
   box.querySelectorAll('.roster-choice').forEach(function(el){ el.classList.remove('green'); });
   btn.classList.add('green');
 }
-function rosterChoiceButtons(userId, date, current){
-  const cell = rosterCell(userId, date);
+function rosterShiftOptionsHtml(selected){
+  const shifts = (systemSettingsState.shiftPeriods || []).map(function(item){ return String(item.label || ''); }).filter(Boolean);
+  if(selected && shifts.indexOf(selected) < 0) shifts.unshift(selected);
+  return '<option value="">不指定</option>' + shifts.map(function(label){
+    return '<option'+(selected === label ? ' selected' : '')+'>'+escHtml(label)+'</option>';
+  }).join('');
+}
+function rosterEditListHtml(){
+  const entries = (rosterEditState && rosterEditState.entries) || [];
+  if(!entries.length) return '<p class="clock-note">尚未加入任何時段。可在下方選門市和時間段後按「加入」。</p>';
+  return '<div class="roster-edit-list">'+entries.map(function(item, idx){
+    const editing = rosterEditState && rosterEditState.editIndex === idx;
+    return '<div class="roster-edit-item'+(editing?' editing':'')+'">'
+      +'<div><b>'+escHtml(item.value)+'</b>'
+      +(item.shift ? '　'+escHtml(item.shift) : '')
+      +(item.note ? '<div class="roster-meta">'+escHtml(item.note)+'</div>' : '')
+      +'</div>'
+      +'<div class="actions" style="margin:0">'
+      +'<button type="button" class="btn gray sm" data-call="rosterEditBegin" data-arg0="'+idx+'">'+(editing?'取消改':'修改')+'</button>'
+      +'<button type="button" class="btn red sm" data-call="rosterEditRemove" data-arg0="'+idx+'">刪除</button>'
+      +'</div></div>';
+  }).join('')+'</div>';
+}
+function rosterEditFormHtml(){
+  const editing = rosterEditState && rosterEditState.editIndex >= 0;
+  const draft = editing ? rosterEditState.entries[rosterEditState.editIndex] : null;
+  const current = draft ? draft.value : '';
   const buttons = ROSTER_CHOICES.map(function(choice){
     const on = current===choice ? ' green' : '';
     return '<button type="button" class="btn sm roster-choice'+on+'" data-value="'+escHtml(choice)+'" onclick="rosterPickChoice(this)">'+escHtml(choice)+'</button>';
   }).join('');
-  const shifts = (systemSettingsState.shiftPeriods || []).map(function(item){ return String(item.label || ''); }).filter(Boolean);
-  if(cell && cell.shift && shifts.indexOf(cell.shift) < 0) shifts.unshift(cell.shift);
-  const shiftOpts = '<option value="">不指定</option>' + shifts.map(function(label){
-    return '<option'+(cell && cell.shift === label ? ' selected' : '')+'>'+escHtml(label)+'</option>';
-  }).join('');
-  return '<label>時間段</label><select id="roster-edit-shift">'+shiftOpts+'</select>'
-    +'<label>備注</label><textarea id="roster-edit-note" maxlength="200" placeholder="選填">'+escHtml(cell && cell.note || '')+'</textarea>'
-    +'<div class="actions" style="flex-wrap:wrap">'+buttons
-    +'<span style="flex-basis:100%;height:0"></span>'
-    +'<button type="button" class="btn sm" data-call="saveRosterCell" data-arg0="'+escHtml(userId)+'" data-arg1="'+escHtml(date)+'">儲存</button>'
-    +'<button type="button" class="btn gray sm" data-call="saveRosterCell" data-arg0="'+escHtml(userId)+'" data-arg1="'+escHtml(date)+'" data-arg2="">清除</button>'
+  return '<div class="roster-edit-form">'
+    +'<p style="font-size:13px;color:#666;margin:0 0 8px">'+(editing?'正在修改第 '+(rosterEditState.editIndex+1)+' 段。改完後按「更新這段」。':'選門市／休息與時間段，可加入多段。')+'</p>'
+    +'<div class="actions" style="flex-wrap:wrap;margin:0 0 8px">'+buttons+'</div>'
+    +'<label>時間段</label><select id="roster-edit-shift">'+rosterShiftOptionsHtml(draft ? draft.shift : '')+'</select>'
+    +'<label>備注</label><textarea id="roster-edit-note" maxlength="200" placeholder="選填">'+escHtml(draft && draft.note || '')+'</textarea>'
+    +'<div class="actions" style="margin-top:10px">'
+    +'<button type="button" class="btn sm" data-call="rosterEditCommit">'+(editing?'更新這段':'加入')+'</button>'
+    +(editing?'<button type="button" class="btn gray sm" data-call="rosterEditBegin" data-arg0="-1">取消修改</button>':'')
+    +'</div></div>';
+}
+function rosterEditModalHtml(){
+  if(!rosterEditState) return '';
+  const person = users.find(function(u){ return String(u.id)===String(rosterEditState.userId); });
+  const count = rosterEditState.entries.length;
+  return '<h3>編更</h3>'
+    +'<p id="roster-edit-now" style="font-size:13px">'+escHtml(person?person.name:rosterEditState.userId)+'｜'+escHtml(rosterEditState.date)
+    +(count ? '｜已有 '+count+' 段' : '｜尚未編更')+'</p>'
+    +'<p style="font-size:13px;color:#666">同一天可加入多個不同門市和時間段，每段都可以修改或刪除。</p>'
+    +rosterEditListHtml()
+    +rosterEditFormHtml()
+    +'<div class="actions" style="flex-wrap:wrap">'
+    +'<button type="button" class="btn sm" data-call="saveRosterCell" data-arg0="'+escHtml(rosterEditState.userId)+'" data-arg1="'+escHtml(rosterEditState.date)+'">儲存整天</button>'
+    +'<button type="button" class="btn gray sm" data-call="saveRosterCell" data-arg0="'+escHtml(rosterEditState.userId)+'" data-arg1="'+escHtml(rosterEditState.date)+'" data-arg2="">清除整天</button>'
     +'<button type="button" class="btn gray sm" onclick="closeModal()">取消</button></div>';
+}
+function refreshRosterEditModal(){
+  if(!rosterEditState) return;
+  const el = document.getElementById('modal-content');
+  if(el){
+    el.innerHTML = rosterEditModalHtml();
+    el.classList.add('modal-wide');
+  }
 }
 function askRosterCell(userId, date){
   if(!canEditRoster()) return;
   userId = String(userId||'');
   date = String(date||'');
-  const person = users.find(function(u){ return String(u.id)===userId; });
-  const current = rosterCellValue(userId, date);
-  showModal('<h3>編更</h3><p id="roster-edit-now" style="font-size:13px">'+escHtml(person?person.name:userId)+'｜'+escHtml(date)+(current?'｜目前 '+escHtml(current):'｜尚未編更')+'</p>'
-    +rosterChoiceButtons(userId, date, current));
+  const cell = rosterCell(userId, date);
+  rosterEditState = {
+    userId: userId,
+    date: date,
+    entries: rosterNormalizeEntries(cell).map(function(item){
+      return { value: item.value, shift: item.shift, note: item.note };
+    }),
+    editIndex: -1,
+  };
+  if(!systemSettingsState.loaded && !systemSettingsState.loading){
+    loadSystemSettings().then(function(){ if(rosterEditState) refreshRosterEditModal(); });
+  }
+  showModal(rosterEditModalHtml());
+  try{
+    const modalEl = document.getElementById('modal-content');
+    if(modalEl) modalEl.classList.add('modal-wide');
+  }catch(e){}
+}
+function rosterEditBegin(index){
+  if(!rosterEditState) return;
+  index = Number(index);
+  if(!Number.isFinite(index) || index < 0){
+    rosterEditState.editIndex = -1;
+  }else if(index >= rosterEditState.entries.length){
+    return;
+  }else if(rosterEditState.editIndex === index){
+    rosterEditState.editIndex = -1;
+  }else{
+    rosterEditState.editIndex = index;
+  }
+  refreshRosterEditModal();
+}
+function rosterEditRemove(index){
+  if(!rosterEditState) return;
+  index = Number(index);
+  if(!Number.isFinite(index) || index < 0 || index >= rosterEditState.entries.length) return;
+  rosterEditState.entries.splice(index, 1);
+  if(rosterEditState.editIndex === index) rosterEditState.editIndex = -1;
+  else if(rosterEditState.editIndex > index) rosterEditState.editIndex -= 1;
+  refreshRosterEditModal();
+}
+function rosterEditCommit(){
+  if(!rosterEditState) return;
+  const picked = document.querySelector('#modal-content .roster-choice.green');
+  const value = picked ? String(picked.getAttribute('data-value') || '') : '';
+  if(!value){ alert2('請選擇門市或休息。'); return; }
+  const shift = String((document.getElementById('roster-edit-shift') || {}).value || '');
+  const note = String((document.getElementById('roster-edit-note') || {}).value || '').trim();
+  const entry = { value: value, shift: shift, note: note };
+  if(rosterEditState.editIndex >= 0){
+    rosterEditState.entries[rosterEditState.editIndex] = entry;
+    rosterEditState.editIndex = -1;
+  }else{
+    if(rosterEditState.entries.length >= 8){ alert2('同一天最多 8 段。'); return; }
+    rosterEditState.entries.push(entry);
+  }
+  refreshRosterEditModal();
 }
 function canApplyLeave(){
   return !!(currentUser && currentUser.active!==false && isRosterPerson(currentUser));
@@ -8964,13 +9125,17 @@ async function decideLeaveRequest(id, decision){
     cells.forEach(function(cell){
       if(!cell || !cell.userId || !cell.date) return;
       rosterCells = rosterCells.filter(function(c){ return !(String(c.userId)===String(cell.userId) && c.date===cell.date); });
-      if(cell.value) rosterCells.push({
-        userId: String(cell.userId),
-        date: cell.date,
-        value: cell.value,
-        shift: cell.shift || '',
-        note: cell.note || '',
-      });
+      const entries = rosterNormalizeEntries(cell);
+      if(entries.length){
+        rosterCells.push({
+          userId: String(cell.userId),
+          date: cell.date,
+          value: entries[0].value,
+          shift: entries[0].shift,
+          note: entries[0].note,
+          entries: entries,
+        });
+      }
     });
     applyLeaveQuota(result && result.quota);
   }catch(e){
@@ -8998,29 +9163,39 @@ async function saveRosterCell(userId, date, value){
   if(!canEditRoster()){ alert2('只有經理、主管或系統管理員可以改更表。'); return; }
   userId = String(userId||'');
   date = String(date||'');
-  let shift = '';
-  let note = '';
-  if(arguments.length < 3){
-    const picked = document.querySelector('#modal-content .roster-choice.green');
-    value = picked ? String(picked.getAttribute('data-value') || '') : '';
-    if(!value){ alert2('請選擇門市或休息。'); return; }
-    shift = String((document.getElementById('roster-edit-shift') || {}).value || '');
-    note = String((document.getElementById('roster-edit-note') || {}).value || '').trim();
-  }else{
-    value = value==null ? '' : String(value);
+  let entries = [];
+  if(arguments.length >= 3 && (value==null || value==='')){
+    entries = [];
+  }else if(rosterEditState && String(rosterEditState.userId)===userId && rosterEditState.date===date){
+    entries = rosterEditState.entries.map(function(item){
+      return { value: item.value, shift: item.shift || '', note: item.note || '' };
+    });
+  }else if(arguments.length >= 3 && value){
+    entries = [{ value: String(value), shift: '', note: '' }];
   }
   try{
-    await apiFetch('/api/roster', {
+    const data = await apiFetch('/api/roster', {
       method:'PUT',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ userId: userId, date: date, value: value || null, shift: shift, note: note })
+      body: JSON.stringify({ userId: userId, date: date, entries: entries })
     });
+    rosterCells = rosterCells.filter(function(c){ return !(String(c.userId)===userId && c.date===date); });
+    const saved = rosterNormalizeEntries(data);
+    if(saved.length){
+      rosterCells.push({
+        userId: String(data.userId || userId),
+        date: data.date || date,
+        value: saved[0].value,
+        shift: saved[0].shift,
+        note: saved[0].note,
+        entries: saved,
+      });
+    }
   }catch(e){
     alert2(e.message||'儲存失敗');
     return;
   }
-  rosterCells = rosterCells.filter(function(c){ return !(String(c.userId)===userId && c.date===date); });
-  if(value) rosterCells.push({ userId: userId, date: date, value: value, shift: shift, note: note });
+  rosterEditState = null;
   closeModal();
   render();
 }
@@ -9047,14 +9222,12 @@ function vRoster(){
     const mine = currentUser && String(u.id)===String(currentUser.id) ? ' roster-mine' : '';
     const cells = days.map(function(day){
       const cell = rosterCell(u.id, day.date);
-      const value = cell ? cell.value : '';
       const weekend = day.wd===0 || day.wd===6 ? ' roster-weekend' : '';
       const isToday = day.date===today ? ' roster-today' : '';
-      const tone = value ? ' roster-v-'+value : '';
+      const tone = rosterCellTone(cell);
       const cls = 'roster-cell'+weekend+isToday+tone+(editable?' editable':'');
-      const tip = cell && (cell.shift || cell.note)
-        ? ' title="'+escHtml([cell.shift, cell.note].filter(Boolean).join('｜'))+'"'
-        : '';
+      const tipText = rosterCellTip(cell);
+      const tip = tipText ? ' title="'+escHtml(tipText)+'"' : '';
       const label = rosterCellBody(cell, editable);
       if(!editable) return '<td class="'+cls+'"'+tip+'>'+label+'</td>';
       return '<td class="'+cls+'"'+tip+' data-call="askRosterCell" data-arg0="'+escHtml(String(u.id))+'" data-arg1="'+escHtml(day.date)+'">'+label+'</td>';
@@ -9080,7 +9253,7 @@ function vRoster(){
       + '</div>'
     : '';
   return '<div class="card"><h2>🗓️ 更表｜'+title+'</h2>'
-    +'<p style="font-size:13px;color:#666;margin:0 0 10px">'+(editable?'按「申請請假」送出自己的請假。點日曆上的「編」，可安排門市或休息。點員工名字可隱藏該列。':'按「申請請假」送出自己的請假。你可以查看所有同事的更表。點員工名字可隱藏該列。')+'</p>'
+    +'<p style="font-size:13px;color:#666;margin:0 0 10px">'+(editable?'按「申請請假」送出自己的請假。點日曆格子可編更，同一天可加多段門市和時間段。點員工名字可隱藏該列。':'按「申請請假」送出自己的請假。你可以查看所有同事的更表。點員工名字可隱藏該列。')+'</p>'
     +'<div class="roster-bar">'
     +applyBtn
     +hiddenBtn
@@ -12028,6 +12201,7 @@ function closeModal(){
   var el=document.getElementById('modal-content');
   if(el) el.classList.remove('modal-wide');
   document.getElementById('modal-bg').classList.add('hidden');
+  rosterEditState = null;
   try{ clearModalUploadDraft(); }catch(e){}
 }
 function alert2(msg){ showModal(`<h3>提示</h3><p style="font-size:14px">${msg}</p><div class="actions"><button class="btn sm" onclick="closeModal()">確定</button></div>`); }
