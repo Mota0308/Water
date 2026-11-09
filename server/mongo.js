@@ -1271,9 +1271,15 @@ export async function listUsersPublic() {
 
 const ROSTER_VALUES = new Set(['觀塘', '荔枝角', '灣仔', '屯門', '休息', '請假']);
 const ROSTER_MAX_ENTRIES = 8;
+const ROSTER_COLORS = new Set(['red', 'yellow', 'black', 'green', 'blue', 'orange']);
 
 function rosterCol() {
   return db.collection('roster_cells');
+}
+
+function normalizeRosterColor(raw) {
+  const color = String(raw || '').trim().toLowerCase();
+  return ROSTER_COLORS.has(color) ? color : '';
 }
 
 function normalizeRosterEntry(raw) {
@@ -1284,6 +1290,7 @@ function normalizeRosterEntry(raw) {
     value,
     shift: String(raw.shift || '').trim().slice(0, 40),
     note: String(raw.note || '').trim().slice(0, 200),
+    color: normalizeRosterColor(raw.color),
   };
 }
 
@@ -1303,6 +1310,7 @@ function rosterEntriesFromDoc(doc) {
     value,
     shift: String(doc?.shift || '').trim().slice(0, 40),
     note: String(doc?.note || '').trim().slice(0, 200),
+    color: normalizeRosterColor(doc?.color),
   }];
 }
 

@@ -393,7 +393,7 @@
   .roster-hidden-panel { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:0 0 10px; }
   .roster-table thead th.roster-name { z-index:3; background:#f7f9fc; }
   .roster-cell { text-align:center; font-size:12px; font-weight:bold; padding:6px 4px; min-width:100px; min-height:44px; line-height:1.2; vertical-align:top; }
-  .roster-entry { padding:2px 0; }
+  .roster-entry { padding:2px 0; border-radius:4px; }
   .roster-entry + .roster-entry { border-top:1px dashed rgba(0,0,0,.12); margin-top:3px; padding-top:4px; }
   .roster-entry-place { font-weight:bold; }
   .roster-meta { display:block; margin-top:2px; font-size:10px; font-weight:normal; line-height:1.25; white-space:nowrap; }
@@ -401,6 +401,18 @@
   .roster-edit-list { display:flex; flex-direction:column; gap:8px; margin:10px 0; }
   .roster-edit-item { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; padding:8px 10px; border:1px solid #e6ebf2; border-radius:8px; background:#fafbfd; }
   .roster-edit-item.editing { border-color:#90caf9; background:#eef6ff; }
+  .roster-edit-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:flex-end; }
+  .roster-color-picker { display:inline-flex; gap:4px; align-items:center; margin-right:2px; }
+  .roster-color-swatch { width:18px; height:18px; border-radius:50%; border:2px solid rgba(0,0,0,.18); padding:0; cursor:pointer; box-shadow:none; min-height:0; }
+  .roster-color-swatch.on { outline:2px solid #1565c0; outline-offset:1px; border-color:#fff; }
+  .roster-c-red { background:#e53935 !important; color:#fff !important; }
+  .roster-c-yellow { background:#fdd835 !important; color:#333 !important; }
+  .roster-c-black { background:#212121 !important; color:#fff !important; }
+  .roster-c-green { background:#43a047 !important; color:#fff !important; }
+  .roster-c-blue { background:#1e88e5 !important; color:#fff !important; }
+  .roster-c-orange { background:#fb8c00 !important; color:#fff !important; }
+  .roster-edit-item.roster-c-yellow .roster-meta,
+  .roster-entry.roster-c-yellow .roster-meta { color:#444; }
   .roster-edit-form { margin:12px 0; padding:10px; border:1px dashed #ccd4de; border-radius:8px; }
   .shift-add { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0; }
   .shift-add input[type=time] { width:140px; margin:0; }

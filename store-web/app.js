@@ -8715,6 +8715,18 @@ function isRosterPerson(u){
   return true;
 }
 let rosterEditState = null;
+const ROSTER_COLOR_OPTIONS = [
+  { id:'red', label:'紅' },
+  { id:'yellow', label:'黃' },
+  { id:'black', label:'黑' },
+  { id:'green', label:'綠' },
+  { id:'blue', label:'藍' },
+  { id:'orange', label:'橙' },
+];
+function rosterNormalizeColor(raw){
+  const color = String(raw || '').trim().toLowerCase();
+  return ROSTER_COLOR_OPTIONS.some(function(opt){ return opt.id === color; }) ? color : '';
+}
 function rosterNormalizeEntries(cell){
   if(!cell) return [];
   if(Array.isArray(cell.entries) && cell.entries.length){
@@ -8723,11 +8735,17 @@ function rosterNormalizeEntries(cell){
         value: String(item && item.value || ''),
         shift: String(item && item.shift || ''),
         note: String(item && item.note || ''),
+        color: rosterNormalizeColor(item && item.color),
       };
     }).filter(function(item){ return !!item.value; });
   }
   if(cell.value){
-    return [{ value: String(cell.value), shift: String(cell.shift||''), note: String(cell.note||'') }];
+    return [{
+      value: String(cell.value),
+      shift: String(cell.shift||''),
+      note: String(cell.note||''),
+      color: rosterNormalizeColor(cell.color),
+    }];
   }
   return [];
 }
@@ -8742,6 +8760,7 @@ function rosterCell(userId, date){
     value: entries[0].value,
     shift: entries[0].shift,
     note: entries[0].note,
+    color: entries[0].color || '',
     entries: entries,
   };
 }
@@ -8756,6 +8775,7 @@ function rosterCellHasValue(cell, value){
 function rosterCellTone(cell){
   const entries = rosterNormalizeEntries(cell);
   if(!entries.length) return '';
+  if(entries[0].color) return ' roster-c-'+entries[0].color;
   if(entries.some(function(item){ return item.value === '請假'; })) return ' roster-v-請假';
   return ' roster-v-'+entries[0].value;
 }
@@ -8763,7 +8783,8 @@ function rosterCellBody(cell, editable){
   const entries = rosterNormalizeEntries(cell);
   if(!entries.length) return editable ? '<span class="roster-plus">編</span>' : '';
   return entries.map(function(item){
-    return '<div class="roster-entry">'
+    const colorCls = item.color ? ' roster-c-'+item.color : '';
+    return '<div class="roster-entry'+colorCls+'">'
       +'<div class="roster-entry-place">'+escHtml(item.value)+'</div>'
       +(item.shift ? '<div class="roster-meta">'+escHtml(item.shift)+'</div>' : '')
       +(item.note ? '<div class="roster-meta roster-note">'+escHtml(item.note)+'</div>' : '')
@@ -8856,6 +8877,7 @@ async function loadRosterMonth(month){
         value: entries[0].value,
         shift: entries[0].shift,
         note: entries[0].note,
+        color: entries[0].color || '',
         entries: entries,
       };
     }).filter(Boolean);
@@ -8888,17 +8910,27 @@ function rosterShiftOptionsHtml(selected){
     return '<option'+(selected === label ? ' selected' : '')+'>'+escHtml(label)+'</option>';
   }).join('');
 }
+function rosterColorPickerHtml(idx, selected){
+  return '<div class="roster-color-picker" title="選擇格子顏色">'
+    + ROSTER_COLOR_OPTIONS.map(function(opt){
+      const on = selected === opt.id ? ' on' : '';
+      return '<button type="button" class="roster-color-swatch roster-c-'+opt.id+on+'" title="'+escHtml(opt.label)+'" data-call="rosterEditSetColor" data-arg0="'+idx+'" data-arg1="'+escHtml(opt.id)+'"></button>';
+    }).join('')
+    +'</div>';
+}
 function rosterEditListHtml(){
   const entries = (rosterEditState && rosterEditState.entries) || [];
   if(!entries.length) return '<p class="clock-note">尚未加入任何時段。可在下方選門市和時間段後按「加入」。</p>';
   return '<div class="roster-edit-list">'+entries.map(function(item, idx){
     const editing = rosterEditState && rosterEditState.editIndex === idx;
-    return '<div class="roster-edit-item'+(editing?' editing':'')+'">'
+    const colorCls = item.color ? ' roster-c-'+item.color : '';
+    return '<div class="roster-edit-item'+(editing?' editing':'')+colorCls+'">'
       +'<div><b>'+escHtml(item.value)+'</b>'
       +(item.shift ? '　'+escHtml(item.shift) : '')
       +(item.note ? '<div class="roster-meta">'+escHtml(item.note)+'</div>' : '')
       +'</div>'
-      +'<div class="actions" style="margin:0">'
+      +'<div class="actions roster-edit-actions" style="margin:0">'
+      +rosterColorPickerHtml(idx, item.color || '')
       +'<button type="button" class="btn gray sm" data-call="rosterEditBegin" data-arg0="'+idx+'">'+(editing?'取消改':'修改')+'</button>'
       +'<button type="button" class="btn red sm" data-call="rosterEditRemove" data-arg0="'+idx+'">刪除</button>'
       +'</div></div>';
@@ -8954,7 +8986,7 @@ function askRosterCell(userId, date){
     userId: userId,
     date: date,
     entries: rosterNormalizeEntries(cell).map(function(item){
-      return { value: item.value, shift: item.shift, note: item.note };
+      return { value: item.value, shift: item.shift, note: item.note, color: item.color || '' };
     }),
     editIndex: -1,
   };
@@ -8990,6 +9022,15 @@ function rosterEditRemove(index){
   else if(rosterEditState.editIndex > index) rosterEditState.editIndex -= 1;
   refreshRosterEditModal();
 }
+function rosterEditSetColor(index, color){
+  if(!rosterEditState) return;
+  index = Number(index);
+  if(!Number.isFinite(index) || index < 0 || index >= rosterEditState.entries.length) return;
+  const next = rosterNormalizeColor(color);
+  const cur = rosterEditState.entries[index];
+  cur.color = cur.color === next ? '' : next;
+  refreshRosterEditModal();
+}
 function rosterEditCommit(){
   if(!rosterEditState) return;
   const picked = document.querySelector('#modal-content .roster-choice.green');
@@ -8997,7 +9038,8 @@ function rosterEditCommit(){
   if(!value){ alert2('請選擇門市或休息。'); return; }
   const shift = String((document.getElementById('roster-edit-shift') || {}).value || '');
   const note = String((document.getElementById('roster-edit-note') || {}).value || '').trim();
-  const entry = { value: value, shift: shift, note: note };
+  const prev = rosterEditState.editIndex >= 0 ? rosterEditState.entries[rosterEditState.editIndex] : null;
+  const entry = { value: value, shift: shift, note: note, color: prev && prev.color ? prev.color : '' };
   if(rosterEditState.editIndex >= 0){
     rosterEditState.entries[rosterEditState.editIndex] = entry;
     rosterEditState.editIndex = -1;
@@ -9168,10 +9210,10 @@ async function saveRosterCell(userId, date, value){
     entries = [];
   }else if(rosterEditState && String(rosterEditState.userId)===userId && rosterEditState.date===date){
     entries = rosterEditState.entries.map(function(item){
-      return { value: item.value, shift: item.shift || '', note: item.note || '' };
+      return { value: item.value, shift: item.shift || '', note: item.note || '', color: item.color || '' };
     });
   }else if(arguments.length >= 3 && value){
-    entries = [{ value: String(value), shift: '', note: '' }];
+    entries = [{ value: String(value), shift: '', note: '', color: '' }];
   }
   try{
     const data = await apiFetch('/api/roster', {
@@ -9188,6 +9230,7 @@ async function saveRosterCell(userId, date, value){
         value: saved[0].value,
         shift: saved[0].shift,
         note: saved[0].note,
+        color: saved[0].color || '',
         entries: saved,
       });
     }
